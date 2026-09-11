@@ -43,6 +43,9 @@
 //! | Order submission | Market and limit, spot and perps |
 //! | Order cancellation | By venue order id, falling back to the client order id |
 //! | Order books | **Not implemented** — the venue publishes no book channel |
+//! | Instrument reload | Hourly by default, configurable; `None` disables |
+//! | Socket state reporting | Link state surfaced to the engine, reconnect requestable |
+//! | Python bindings | `nautilus_trader.adapters.sodex` |
 //! | Account state | **Not implemented** |
 //! | Order status and fill reports | **Not implemented** |
 //! | Position reports | **Not implemented** |
@@ -63,6 +66,29 @@
 //! eighteen candidate parameter shapes were all refused as `invalid params`, so its selector
 //! remains unknown. That channel is the next thing to add, and finding its shape is a
 //! question for the venue rather than for guesswork.
+//!
+//! # Reused rather than rebuilt
+//!
+//! The parts below come from the engine's own crates, and are listed because the alternative —
+//! a hand-rolled equivalent — is easy to write by accident and hard to notice afterwards. One
+//! already happened here: a keepalive state machine was written before checking that
+//! `WebSocketConfig` covered it.
+//!
+//! | Concern | Component |
+//! |---------|-----------|
+//! | Heartbeat, dead-peer detection, reconnect backoff | `nautilus_network::websocket::WebSocketConfig` |
+//! | Per-endpoint request pacing | `HttpClient`'s GCRA limiter via `default_quota` |
+//! | Order-count pacing | `nautilus_network::ratelimiter` |
+//! | Transient failure retry | `nautilus_network::retry::RetryManager` |
+//! | Task lifecycle | `nautilus_common::live::task::TaskHandles` |
+//! | Instrument set snapshots | `nautilus_core::AtomicMap` |
+//! | Socket state and reconnect control | `nautilus_live::SocketControlFactory` |
+//!
+//! One thing is deliberately *not* reused. The venue meters request **weight** — endpoints cost
+//! between 1 and 20 against one shared per-minute budget — and the library's limiter consumes
+//! exactly one cell per call with no weighted form, so [`http::WeightBudget`] is hand-rolled.
+//! That is recorded here so the next reader does not spend time looking for the library
+//! facility it duplicates.
 //!
 //! # Backtesting
 //!

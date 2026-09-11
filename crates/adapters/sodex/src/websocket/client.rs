@@ -15,6 +15,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use nautilus_live::SocketControl;
 use nautilus_network::{
     RECONNECTED,
     error::SendError,
@@ -226,6 +227,12 @@ pub struct SodexWebSocketClient {
     probe_interval_secs: u64,
     connection: parking_lot::Mutex<Option<Connection>>,
     state: Arc<Mutex<State>>,
+    /// Reports link state to the engine and accepts reconnect requests from it.
+    ///
+    /// Without it the transport reconnects on its own but nothing outside this client can see
+    /// that it happened, so an operator watching the node has no way to tell a quiet market
+    /// from a link that keeps dropping.
+    socket_control: Option<SocketControl>,
 }
 
 impl SodexWebSocketClient {
@@ -237,7 +244,15 @@ impl SodexWebSocketClient {
             probe_interval_secs: DEFAULT_IDLE_PROBE_SECS,
             connection: parking_lot::Mutex::new(None),
             state: Arc::new(Mutex::new(State::default())),
+            socket_control: None,
         }
+    }
+
+    /// Reports this socket's state to the engine, and lets the engine ask for a reconnect.
+    #[must_use]
+    pub(crate) fn with_socket_control(mut self, control: SocketControl) -> Self {
+        self.socket_control = Some(control);
+        self
     }
 
     /// Overrides how long the client waits before probing an idle link.
@@ -295,9 +310,18 @@ impl SodexWebSocketClient {
         let client = WebSocketClient::epoch_builder()
             .config(self.config())
             .epoch_handler(message_handler)
+            .maybe_state_sink(self.socket_control.as_ref().map(SocketControl::sink))
             .connect()
             .await
             .map_err(|error| WsError::Transport(error.to_string()))?;
+
+        if let Some(control) = &self.socket_control {
+            // Lets the engine drive a reconnect — on a deliberate restart, say — rather than
+            // only reacting to one the transport decided on.
+            let handle = client.reconnect_handle();
+            control.register(move || handle.request_reconnect());
+        }
+
         let client = Arc::new(client);
 
         let (events_tx, events_rx) = unbounded_channel();

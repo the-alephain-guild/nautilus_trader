@@ -53,6 +53,7 @@ use nautilus_common::{
         },
     },
 };
+use nautilus_live::SocketControlFactory;
 use nautilus_core::{
     UnixNanos,
     datetime::datetime_to_unix_nanos,
@@ -124,6 +125,7 @@ pub struct SodexDataClient {
     is_connected: Arc<AtomicBool>,
     tasks: TaskHandles,
     cancellation: CancellationToken,
+    socket_factory: SocketControlFactory,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     clock: &'static AtomicTime,
 }
@@ -166,6 +168,7 @@ impl SodexDataClient {
             is_connected: Arc::new(AtomicBool::new(false)),
             tasks: TaskHandles::default(),
             cancellation: CancellationToken::new(),
+            socket_factory: SocketControlFactory::new(client_id, Some(config.venue())),
             data_sender: get_data_event_sender(),
             clock: get_atomic_clock_realtime(),
             config,
@@ -467,10 +470,10 @@ impl DataClient for SodexDataClient {
         // seen, and the symbol ids loaded here are what order submission later needs.
         load_instruments(&self.http, self.market, self.venue, &self.catalog).await?;
 
-        let ws = Arc::new(SodexWebSocketClient::new(
-            self.config.network,
-            self.config.market,
-        ));
+        let ws = Arc::new(
+            SodexWebSocketClient::new(self.config.network, self.config.market)
+                .with_socket_control(self.socket_factory.control("sodex-data-streams")),
+        );
         let events = ws.connect().await?;
 
         self.tasks.push(get_runtime().spawn(run_stream(
