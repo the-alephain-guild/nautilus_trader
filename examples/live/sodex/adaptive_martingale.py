@@ -72,6 +72,7 @@ from nautilus_trader.live import LiveNode
 from nautilus_trader.model import Bar
 from nautilus_trader.model import BarType
 from nautilus_trader.model import ClientId
+from nautilus_trader.model import ClientOrderId
 from nautilus_trader.model import InstrumentId
 from nautilus_trader.model import OrderFilled
 from nautilus_trader.model import OrderRejected
@@ -292,6 +293,7 @@ class AdaptiveMartingale(Strategy):
 
         self._regime = Regime.NEUTRAL
         self._state = MartingaleState.IDLE
+        self._layer_order_ids: list[ClientOrderId] = []
         self._layer_prices: list[float] = []
         self._layer_qtys: list[float] = []
         self._avg_entry = 0.0
@@ -651,7 +653,12 @@ class AdaptiveMartingale(Strategy):
         """
         On an order fill.
         """
-        self._order_in_flight = False
+        # An order can fill across several events, so the in-flight guard must hold until the order
+        # itself is done. Releasing on the first partial would let the next bar submit a second
+        # order while this one is still working.
+        order = self.cache.order(event.client_order_id)
+        if order is None or order.leaves_qty.as_double() <= 0.0:
+            self._order_in_flight = False
 
         if event.order_side == OrderSide.SELL:
             log_msg = f"exit_filled qty={event.last_qty} price={event.last_px}"
@@ -660,14 +667,31 @@ class AdaptiveMartingale(Strategy):
 
         price = float(event.last_px)
         qty = event.last_qty.as_double()
-        self._layer_prices.append(price)
-        self._layer_qtys.append(qty)
+
+        # A layer is an order, not a fill. Paper trading showed one market buy arriving as 0.00001
+        # then 0.00102, which appended two layers for a single order — consuming a pyramid factor
+        # early and overstating exposure. Keying on the client order id folds partials back into
+        # the layer they belong to, at their volume-weighted price.
+        if self._layer_order_ids and self._layer_order_ids[-1] == event.client_order_id:
+            index = len(self._layer_prices) - 1
+            held = self._layer_qtys[index]
+            self._layer_prices[index] = (self._layer_prices[index] * held + price * qty) / (
+                held + qty
+            )
+            self._layer_qtys[index] = held + qty
+        else:
+            self._layer_order_ids.append(event.client_order_id)
+            self._layer_prices.append(price)
+            self._layer_qtys.append(qty)
+
+        index = len(self._layer_prices) - 1
         self._avg_entry = self._weighted_average()
         self._state = MartingaleState.SCALING
         self._peak_price = max(self._peak_price, price)
 
         log_msg = (
-            f"layer_filled layer={len(self._layer_prices) - 1} price={price:.4f} qty={qty} "
+            f"layer_filled layer={index} fill_price={price:.4f} fill_qty={qty} "
+            f"layer_price={self._layer_prices[index]:.4f} layer_qty={self._layer_qtys[index]} "
             f"avg_entry={self._avg_entry:.4f}"
         )
         self.log.info(log_msg, LogColor.GREEN)
@@ -697,6 +721,7 @@ class AdaptiveMartingale(Strategy):
 
     def _reset_position_state(self) -> None:
         self._state = MartingaleState.IDLE
+        self._layer_order_ids.clear()
         self._layer_prices.clear()
         self._layer_qtys.clear()
         self._avg_entry = 0.0
