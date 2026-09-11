@@ -48,7 +48,8 @@
 //! | Python bindings | `nautilus_trader.adapters.sodex` |
 //! | Account state | Coin balances, with free derived from total minus locked |
 //! | Order status reports | Open orders and history, reconciled together |
-//! | Fill reports | **Not implemented** — one observed fill away |
+//! | Fill accounting | Inferred from order reports; per-fill reports **not implemented** |
+//! | Commission | Computed from the venue's maker/taker rates |
 //! | Position reports | **Not implemented** (perps); correctly empty on spot |
 //!
 //! # How the account reads were found
@@ -71,12 +72,27 @@
 //!
 //! # What is left, and what it costs
 //!
-//! **Fills.** `/accounts/{wallet}/trades` exists and answers, but an account that has never
-//! traded answers `[]`, so its wire shape cannot be read off it. Typing it by analogy to the
-//! order shape is precisely the move that produced this integration's worst failures, so it waits
-//! for one observed fill — which the `observe_fill` example produces in a single testnet
-//! round-trip. Until then a live run learns that an order was accepted, and learns it was filled
-//! only on the next reconciliation pass, from `executedQty` on the order record.
+//! **Per-fill reports, not fill accounting.** An earlier version of this note said the client
+//! could not reconcile. That was wrong, and the distinction matters because it decides whether a
+//! deployment turns reconciliation on. Nautilus infers a fill from an order status report when
+//! the venue's `filled_qty` exceeds what the engine knows
+//! (`nautilus_execution::reconciliation::orders::create_inferred_fill`), using the report's
+//! average price and a commission this client supplies. Order reports are implemented, so
+//! **positions, average prices and fees do reconcile.**
+//!
+//! What is missing is granularity. `/accounts/{wallet}/trades` exists and answers, but an account
+//! that has never traded answers `[]`, so its wire shape is unobserved — and typing it by analogy
+//! to the order shape is precisely the move that produced this integration's worst failures. So
+//! until one fill has been seen (the `observe_fill` example produces one in a single testnet
+//! round-trip), a live run learns fills at reconciliation cadence rather than per trade, with one
+//! synthetic trade id per inferred fill instead of the venue's own, and a liquidity side that is
+//! known only for market and post-only orders.
+//!
+//! Commission is why that degradation is tolerable rather than quietly wrong. The trait's default
+//! supplies none, which would have left reconciled P&L with no fees at all; this client computes
+//! it from the instrument's own maker and taker rates, and charges the larger of the two when an
+//! inferred fill leaves the liquidity side unknown — understating fees is the error that compounds
+//! into a position larger than the risk model intended.
 //!
 //! **Perps positions.** The endpoint exists; its payload needs an open perps position to observe,
 //! and the testnet account holds no perps balance to open one with. `generate_position_status_reports`

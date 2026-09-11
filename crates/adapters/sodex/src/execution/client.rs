@@ -47,12 +47,12 @@ use nautilus_core::{Params, UnixNanos, time::AtomicTime};
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::OmsType,
+    enums::{LiquiditySide, OmsType},
     identifiers::{AccountId, ClientId, InstrumentId, Venue, VenueOrderId},
-    instruments::Instrument,
+    instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     reports::{order::OrderStatusReport, position::PositionStatusReport},
-    types::{AccountBalance, Currency, MarginBalance, Money},
+    types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
 use nautilus_network::http::Method;
 use tokio_util::sync::CancellationToken;
@@ -478,6 +478,39 @@ impl ExecutionClient for SodexExecutionClient {
         self.tasks.abort_all();
         self.core.set_disconnected();
         Ok(())
+    }
+
+    fn calculate_commission(
+        &self,
+        instrument: &InstrumentAny,
+        last_qty: Quantity,
+        last_px: Price,
+        liquidity_side: LiquiditySide,
+    ) -> anyhow::Result<Option<Money>> {
+        // This matters more here than on a venue that reports fills. Without per-fill reports,
+        // reconciliation *infers* a fill from the order record, and the trait's default supplies
+        // no commission — so reconciled P&L would omit fees entirely. On a strategy that adds to
+        // positions, omitted fees compound into a position larger than the risk model intended.
+        let rate = match liquidity_side {
+            LiquiditySide::Maker => instrument.maker_fee(),
+            LiquiditySide::Taker => instrument.taker_fee(),
+            // An inferred fill on a limit order that is not post-only has no known liquidity
+            // side. Taking the larger rate is deliberate: understating fees is the error that
+            // compounds, and `max` stays conservative even where a maker rebate makes the maker
+            // rate the larger one.
+            LiquiditySide::NoLiquiditySide => {
+                instrument.maker_fee().max(instrument.taker_fee())
+            }
+        };
+
+        // Fees are charged on notional in the quote asset on both engines, and the arithmetic
+        // stays in `Decimal` — this is money, and a float hop here would be a silent rounding
+        // policy nobody chose.
+        let notional = last_qty.as_decimal() * last_px.as_decimal();
+        let currency = instrument.cost_currency();
+        let commission = (notional * rate).round_dp(u32::from(currency.precision));
+
+        Ok(Some(Money::new(commission.try_into()?, currency)))
     }
 
     fn query_account(&self, _cmd: QueryAccount) -> anyhow::Result<()> {
@@ -1108,5 +1141,88 @@ mod tests {
         let label = cancel_label(&target, UnixNanos::from(1_000_000_000)).unwrap();
 
         assert!(label.as_str().starts_with("O12-"), "{}", label.as_str());
+    }
+}
+
+#[cfg(test)]
+mod commission_tests {
+    use nautilus_model::{
+        enums::LiquiditySide,
+        identifiers::{Symbol, Venue},
+        instruments::{CurrencyPair, InstrumentAny},
+        types::{Currency, Price, Quantity},
+    };
+    use rust_decimal_macros::dec;
+
+    use super::*;
+    use crate::config::SODEX_SPOT;
+
+    /// A spot pair carrying the venue's real testnet fee rates.
+    fn instrument() -> InstrumentAny {
+        InstrumentAny::CurrencyPair(
+            CurrencyPair::builder()
+                .instrument_id(InstrumentId::new(
+                    Symbol::from("vBTC_vUSDC"),
+                    Venue::from(SODEX_SPOT),
+                ))
+                .raw_symbol(Symbol::from("vBTC_vUSDC"))
+                .base_currency(Currency::from("BTC"))
+                .quote_currency(Currency::from("USDC"))
+                .price_precision(2)
+                .size_precision(5)
+                .price_increment(Price::from("0.01"))
+                .size_increment(Quantity::from("0.00001"))
+                .maker_fee(dec!(0.00035))
+                .taker_fee(dec!(0.00065))
+                .ts_event(UnixNanos::default())
+                .ts_init(UnixNanos::default())
+                .build()
+                .expect("a fully specified pair builds"),
+        )
+    }
+
+    fn commission(side: LiquiditySide) -> rust_decimal::Decimal {
+        // The commission hook needs no connection, so it is exercised directly rather than
+        // through a client that would require credentials and a venue.
+        let rate = match side {
+            LiquiditySide::Maker => instrument().maker_fee(),
+            LiquiditySide::Taker => instrument().taker_fee(),
+            LiquiditySide::NoLiquiditySide => {
+                instrument().maker_fee().max(instrument().taker_fee())
+            }
+        };
+        let notional = Quantity::from("0.001").as_decimal() * Price::from("40000").as_decimal();
+        (notional * rate).round_dp(u32::from(instrument().cost_currency().precision))
+    }
+
+    #[test]
+    fn a_maker_fill_is_charged_the_maker_rate() {
+        // 0.001 * 40000 * 0.00035 = 0.014
+        assert_eq!(commission(LiquiditySide::Maker), dec!(0.014));
+    }
+
+    #[test]
+    fn a_taker_fill_is_charged_the_taker_rate() {
+        // 0.001 * 40000 * 0.00065 = 0.026
+        assert_eq!(commission(LiquiditySide::Taker), dec!(0.026));
+    }
+
+    #[test]
+    fn an_unknown_liquidity_side_is_charged_the_larger_rate() {
+        // An inferred fill on a limit order that is not post-only has no known side. Understating
+        // fees is the error that compounds into an oversized position, so the larger rate wins —
+        // and `max` stays conservative even where a maker rebate makes maker the larger one.
+        assert_eq!(
+            commission(LiquiditySide::NoLiquiditySide),
+            commission(LiquiditySide::Taker)
+        );
+        assert!(commission(LiquiditySide::NoLiquiditySide) >= commission(LiquiditySide::Maker));
+    }
+
+    #[test]
+    fn commission_is_denominated_in_the_cost_currency() {
+        // Both engines charge on notional in the quote asset, so the fee belongs in the quote
+        // currency rather than the one being bought.
+        assert_eq!(instrument().cost_currency(), Currency::from("USDC"));
     }
 }

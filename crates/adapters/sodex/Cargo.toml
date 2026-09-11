@@ -74,3 +74,4 @@ pyo3-stub-gen = { workspace = true, optional = true }
 
 [dev-dependencies]
 rstest = { workspace = true }
+rust_decimal_macros = { workspace = true }

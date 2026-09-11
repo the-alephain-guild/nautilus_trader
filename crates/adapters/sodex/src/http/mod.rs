@@ -42,9 +42,6 @@ use crate::common::Market;
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(
-        // Prefixed for the same reason as `SodexMarket`: `Network` is far too generic a name
-        // to put into a strategy's namespace through a star import.
-        name = "SodexNetwork",
         module = "nautilus_trader.adapters.sodex",
         eq,
         eq_int,

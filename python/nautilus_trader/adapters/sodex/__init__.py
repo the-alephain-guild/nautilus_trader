@@ -41,6 +41,8 @@ from nautilus_trader._libnautilus.sodex import *  # noqa: F403 (undefined-local-
 
 
 __all__ = [
+    "Market",
+    "Network",
     "SODEX",
     "SODEX_PERPS",
     "SODEX_PERPS_VENUE",
@@ -50,8 +52,6 @@ __all__ = [
     "SodexDataClientFactory",
     "SodexExecClientConfig",
     "SodexExecutionClientFactory",
-    "SodexMarket",
-    "SodexNetwork",
 ]
 
 fixup_module_names(globals(), __name__)

@@ -23,18 +23,14 @@ Credentials come from the environment — ``SODEX_ACCOUNT_ID``, ``SODEX_API_KEY_
 ``SODEX_API_PRIVATE_KEY`` — rather than being written here. The key must be a registered API
 key, never the master wallet: the master key can authorize withdrawals and belongs offline.
 
-Two limits of this adapter shape what the tester can do, and both are worth knowing before
-reading its output:
+Reconciliation is **on**. The adapter reads the account's balances, open orders and order
+history, and Nautilus infers fills from those reports — so positions, average prices and fees do
+get reconciled, including orders this client did not place.
 
-- **No fills are reported.** The venue's account stream exists but its subscription parameters
-  are not yet known, so the client learns that an order was accepted and never that it filled.
-  A position opened here will not appear in the engine's position state.
-- **No reconciliation.** There is no order-status query, so orders this client did not place —
-  or fills that happened while it was disconnected — stay invisible. Reconciliation is left off
-  for that reason rather than enabled and silently doing nothing.
-
-Because of the first point, ``close_positions_on_stop`` cannot work: the engine believes it
-holds no position. Cancelling resting orders on stop does work, and is enabled.
+One limit remains, and it is granularity rather than capability: the venue's per-fill endpoint
+answers ``[]`` on an account that has never traded, so its wire shape is unobserved and this
+adapter does not parse it. Fills therefore arrive at reconciliation cadence rather than per
+trade, each carrying a synthetic trade id instead of the venue's own.
 
 """
 
@@ -42,13 +38,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from nautilus_trader.adapters.sodex import Market
+from nautilus_trader.adapters.sodex import Network
 from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import SodexDataClientConfig
 from nautilus_trader.adapters.sodex import SodexDataClientFactory
 from nautilus_trader.adapters.sodex import SodexExecClientConfig
 from nautilus_trader.adapters.sodex import SodexExecutionClientFactory
-from nautilus_trader.adapters.sodex import SodexMarket
-from nautilus_trader.adapters.sodex import SodexNetwork
 from nautilus_trader.common import Environment
 from nautilus_trader.config import LiveRiskEngineConfig
 from nautilus_trader.live import LiveNode
@@ -62,8 +58,8 @@ from nautilus_trader.testkit import ExecTesterConfig
 
 # WARNING: With DRY_RUN = False this submits orders to the configured network.
 DRY_RUN = True
-NETWORK = SodexNetwork.TESTNET
-MARKET = SodexMarket.SPOT
+NETWORK = Network.TESTNET
+MARKET = Market.SPOT
 TRADER_ID = TraderId.from_str("TESTER-001")
 STRATEGY_ID = StrategyId.from_str("EXEC_TESTER-001")
 INSTRUMENT_ID = InstrumentId.from_str(f"vBTC_vUSDC.{SODEX_SPOT}")
@@ -76,9 +72,8 @@ def main() -> None:
     """
     node = (
         LiveNode.builder("SODEX-EXEC-TESTER-001", TRADER_ID, Environment.LIVE)
-        # Left off deliberately: reconciliation needs an order-status query this adapter does
-        # not have, so enabling it would look like a safety net while providing none.
-        .with_reconciliation(reconciliation=False)
+        # On: the account reads give the engine order status, and it infers fills from them.
+        .with_reconciliation(reconciliation=True)
         .with_risk_engine_config(LiveRiskEngineConfig(bypass=True))
         .add_data_client(
             SODEX_SPOT,
@@ -108,8 +103,9 @@ def main() -> None:
             # by name rather than by value — the two numbering schemes disagree on IOC and FOK.
             use_post_only=True,
             cancel_orders_on_stop=True,
-            # Cannot work without fill reports: the engine believes it holds no position.
-            close_positions_on_stop=False,
+            # Works now that fills are accounted for through reconciliation, though a position
+            # opened moments before the stop may not have been reconciled yet.
+            close_positions_on_stop=True,
             dry_run=DRY_RUN,
             log_data=False,
         ),
