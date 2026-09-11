@@ -49,7 +49,8 @@ struct SigningPayload<'a, T: Serialize> {
 ///
 /// `params` must be a concrete `Serialize` type whose field order mirrors the
 /// corresponding Go struct — see the [module docs](super) for why a
-/// [`serde_json::Value`] cannot be used here.
+/// [`serde_json::Value`] cannot be used here: its key order is decided by a Cargo feature
+/// this crate does not control.
 ///
 /// # Errors
 ///
@@ -203,22 +204,44 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// Guards the trap the module docs describe: routing the same data through
-    /// `serde_json::Value` re-sorts keys alphabetically and silently breaks the contract.
-    /// Kept as a test so the claim stays true rather than merely documented.
+    /// Guards the trap the module docs describe, without asserting the trap's shape.
+    ///
+    /// An earlier version of this test asserted that a `Value` round-trip *reorders* keys, and
+    /// it failed the moment the crate was built with the `python` feature — which enables
+    /// `serde_json/preserve_order` transitively and makes the round-trip order-preserving.
+    /// That failure was the test doing its job in the wrong place: the hazard is not that
+    /// `Value` sorts, it is that **whether it sorts depends on a feature this crate does not
+    /// control**, so the same payload could hash two ways in two builds.
+    ///
+    /// What is pinned here is therefore the property that holds in every configuration: the
+    /// signing payload is produced by serializing the concrete type directly, in declaration
+    /// order, and that encoding is stable regardless of how `Value` happens to behave.
     #[test]
-    fn value_roundtrip_reorders_keys_and_must_not_be_used() {
+    fn the_signing_encoding_is_taken_from_the_typed_struct_not_from_a_value() {
         let direct = serde_json::to_string(&doc_example_params()).unwrap();
-        let via_value: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&doc_example_params()).unwrap()).unwrap();
-        let reordered = serde_json::to_string(&via_value).unwrap();
 
-        assert_ne!(
-            direct, reordered,
-            "if these ever match, serde_json gained order preservation and the module docs need revisiting"
+        // Declaration order, which is the venue's contract.
+        assert!(
+            direct.starts_with(r#"{"accountID""#),
+            "the typed encoding must lead with the first declared field, got {direct}"
         );
-        assert!(direct.starts_with(r#"{"accountID""#));
-        assert!(reordered.starts_with(r#"{"accountID""#) || reordered.starts_with(r#"{"orders""#));
+
+        // And the digest is computed from that encoding, not from a re-encoded `Value`.
+        let via_value: serde_json::Value = serde_json::from_str(&direct).unwrap();
+        let reordered = serde_json::to_string(&via_value).unwrap();
+        let digest_direct = payload_hash("newOrder", &doc_example_params()).unwrap();
+        let digest_of_direct_text =
+            keccak256(format!(r#"{{"type":"newOrder","params":{direct}}}"#).as_bytes());
+
+        assert_eq!(
+            digest_direct, digest_of_direct_text,
+            "payload_hash must hash the typed encoding verbatim"
+        );
+
+        // `reordered` may or may not equal `direct` depending on the feature set; either way it
+        // is not what gets signed. Asserting only that the digest follows the typed form keeps
+        // this test meaningful in both configurations.
+        let _ = reordered;
     }
 
     #[test]

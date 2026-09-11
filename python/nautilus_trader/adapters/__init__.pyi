@@ -19,6 +19,7 @@ from . import lighter
 from . import okx
 from . import polymarket
 from . import sandbox
+from . import sodex
 from . import tardis
 
 __all__ = [
@@ -40,5 +41,6 @@ __all__ = [
     "okx",
     "polymarket",
     "sandbox",
+    "sodex",
     "tardis",
 ]

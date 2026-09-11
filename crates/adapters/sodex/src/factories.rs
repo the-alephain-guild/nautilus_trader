@@ -51,6 +51,14 @@ const fn account_type_for(market: Market) -> AccountType {
 
 /// Builds SoDEX market data clients.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.adapters.sodex", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.sodex")
+)]
 pub struct SodexDataClientFactory;
 
 impl SodexDataClientFactory {
@@ -93,6 +101,14 @@ impl DataClientFactory for SodexDataClientFactory {
 
 /// Builds SoDEX execution clients.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.adapters.sodex", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.sodex")
+)]
 pub struct SodexExecutionClientFactory;
 
 impl SodexExecutionClientFactory {

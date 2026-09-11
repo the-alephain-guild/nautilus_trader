@@ -81,5 +81,7 @@ pub mod execution;
 pub mod factories;
 pub mod http;
 pub mod providers;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod signing;
 pub mod websocket;

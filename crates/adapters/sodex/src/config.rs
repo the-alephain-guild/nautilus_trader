@@ -71,6 +71,14 @@ pub enum ConfigError {
 /// Deliberately credential-free. Reading market data does not require a key, so a data-only
 /// deployment holds no secret at all.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.adapters.sodex", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.sodex")
+)]
 pub struct SodexDataClientConfig {
     /// Which gateway to reach.
     pub network: Network,
@@ -105,6 +113,14 @@ impl SodexDataClientConfig {
 
 /// Configuration for the execution client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.adapters.sodex", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.sodex")
+)]
 pub struct SodexExecClientConfig {
     /// Which gateway to reach.
     pub network: Network,
@@ -209,7 +225,7 @@ impl SodexExecClientConfig {
     }
 }
 
-const fn default_timeout_secs() -> u64 {
+pub(crate) const fn default_timeout_secs() -> u64 {
     30
 }
 

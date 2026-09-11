@@ -19,6 +19,33 @@ workspace = true
 name = "nautilus_sodex"
 crate-type = ["rlib"]
 
+[features]
+# The venue settles on-chain and quotes token amounts at 18 decimals, so the
+# wider fixed-point width is the right default here rather than an opt-in. Left
+# undeclared, this crate would clamp decimals at 9 places when built alone and at
+# 16 when feature unification turned it on for the Python extension — the same
+# venue string normalised two different ways depending on who built the crate.
+default = ["high-precision"]
+high-precision = ["nautilus-model/high-precision"]
+extension-module = [
+  "nautilus-common/extension-module",
+  "nautilus-core/extension-module",
+  "nautilus-model/extension-module",
+  "nautilus-network/extension-module",
+  "pyo3/extension-module",
+  "python",
+]
+python = [
+  "dep:nautilus-system",
+  "nautilus-common/python",
+  "nautilus-core/python",
+  "nautilus-model/python",
+  "nautilus-network/python",
+  "nautilus-system/python",
+  "pyo3",
+  "pyo3-stub-gen",
+]
+
 [dependencies]
 nautilus-common = { workspace = true, features = ["live"] }
 nautilus-core = { workspace = true }
@@ -26,6 +53,7 @@ nautilus-execution = { workspace = true }
 nautilus-live = { workspace = true }
 nautilus-model = { workspace = true }
 nautilus-network = { workspace = true }
+nautilus-system = { workspace = true, optional = true }
 alloy = { workspace = true, features = ["sol-types", "signer-local"] }
 alloy-primitives = { workspace = true }
 serde = { workspace = true }
@@ -40,3 +68,9 @@ tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true }
 ustr = { workspace = true }
+
+pyo3 = { workspace = true, optional = true }
+pyo3-stub-gen = { workspace = true, optional = true }
+
+[dev-dependencies]
+rstest = { workspace = true }

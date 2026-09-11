@@ -13,9 +13,27 @@ pub const CHAIN_ID_TESTNET: u64 = 138565;
 /// Which orderbook an action targets. Also selects the EIP-712 domain name, which is why
 /// this is not merely cosmetic: signing a perps action under the `spot` domain produces a
 /// signature the gateway will reject.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        module = "nautilus_trader.adapters.sodex",
+        eq,
+        eq_int,
+        frozen,
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE"
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.adapters.sodex")
+)]
 pub enum Market {
+    /// Spot, the default: it holds no leverage and has no liquidation, so a configuration
+    /// that forgets to state a market cannot silently open a leveraged position.
+    #[default]
     Spot,
     Perps,
 }

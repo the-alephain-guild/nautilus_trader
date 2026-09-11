@@ -33,10 +33,28 @@ pub use requests::{CancelOrderRequest, ClientOrderId, NewOrderRequest, OrderItem
 use crate::common::Market;
 
 /// Gateway host for the two networks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        module = "nautilus_trader.adapters.sodex",
+        eq,
+        eq_int,
+        frozen,
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE"
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.adapters.sodex")
+)]
 pub enum Network {
     Mainnet,
+    /// Testnet, the default: a configuration that forgets to state a network must not end up
+    /// signing against mainnet with real funds.
+    #[default]
     Testnet,
 }
 
