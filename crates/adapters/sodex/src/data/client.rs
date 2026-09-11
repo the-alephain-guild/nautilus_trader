@@ -43,7 +43,7 @@ use std::{
 use async_trait::async_trait;
 use nautilus_common::{
     clients::DataClient,
-    live::{get_runtime, runner::get_data_event_sender},
+    live::{get_runtime, runner::get_data_event_sender, task::TaskHandles},
     messages::{
         DataEvent,
         data::{
@@ -52,7 +52,6 @@ use nautilus_common::{
             SubscribeTrades, UnsubscribeBars, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
-    providers::InstrumentProvider,
 };
 use nautilus_core::{
     UnixNanos,
@@ -65,6 +64,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
 };
 use parking_lot::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     history::{BarRequest, fetch_bars},
@@ -74,7 +74,7 @@ use crate::{
     common::Market,
     config::SodexDataClientConfig,
     http::SodexHttpClient,
-    providers::SodexInstrumentProvider,
+    providers::{InstrumentCatalog, load_instruments, spawn_instrument_refresh},
     websocket::{Candle, SodexWebSocketClient, SodexWsEvent, Subscription},
 };
 
@@ -115,12 +115,15 @@ pub struct SodexDataClient {
     market: Market,
     config: SodexDataClientConfig,
     http: Arc<SodexHttpClient>,
-    provider: SodexInstrumentProvider,
+    /// The published instrument set. Readers are synchronous trait methods, so they must not
+    /// block on a network call; the refresh task publishes whole snapshots here instead.
+    catalog: Arc<InstrumentCatalog>,
     ws: Option<Arc<SodexWebSocketClient>>,
     /// What each subscribed feed maps to, keyed as the venue's push frames are.
     feeds: Arc<Mutex<Feeds>>,
     is_connected: Arc<AtomicBool>,
-    stream_task: Option<tokio::task::JoinHandle<()>>,
+    tasks: TaskHandles,
+    cancellation: CancellationToken,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     clock: &'static AtomicTime,
 }
@@ -132,6 +135,7 @@ impl std::fmt::Debug for SodexDataClient {
             .field("venue", &self.venue)
             .field("connected", &self.is_connected.load(Ordering::Relaxed))
             .field("bar_feeds", &self.feeds.lock().bars.len())
+            .field("instruments", &self.catalog.len())
             .finish()
     }
 }
@@ -150,19 +154,18 @@ impl SodexDataClient {
             None,
         )
         .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))?;
-        let provider =
-            SodexInstrumentProvider::with_options(config.network, config.market, config.timeout_secs)?;
 
         Ok(Self {
             client_id,
             venue: config.venue(),
             market: config.market,
             http: Arc::new(http),
-            provider,
+            catalog: Arc::new(InstrumentCatalog::new()),
             ws: None,
             feeds: Arc::new(Mutex::new(Feeds::default())),
             is_connected: Arc::new(AtomicBool::new(false)),
-            stream_task: None,
+            tasks: TaskHandles::default(),
+            cancellation: CancellationToken::new(),
             data_sender: get_data_event_sender(),
             clock: get_atomic_clock_realtime(),
             config,
@@ -184,8 +187,7 @@ impl SodexDataClient {
     /// would produce ticks that claim a tick size the instrument does not have.
     fn tick_feed(&self, instrument_id: &InstrumentId) -> anyhow::Result<TickFeed> {
         let instrument = self
-            .provider
-            .store()
+            .catalog
             .find(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("{instrument_id} has not been loaded"))?;
 
@@ -421,9 +423,10 @@ impl DataClient for SodexDataClient {
 
     fn stop(&mut self) -> anyhow::Result<()> {
         log::info!("sodex_data_client_stop client_id={}", self.client_id);
-        if let Some(task) = self.stream_task.take() {
-            task.abort();
-        }
+        // Cancel first, then abort: the refresh loop selects on the token and will leave its
+        // own await point, which an abort alone could cut mid-request.
+        self.cancellation.cancel();
+        self.tasks.abort_all();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
     }
@@ -438,6 +441,8 @@ impl DataClient for SodexDataClient {
             get_runtime().spawn(async move { ws.close().await });
         }
         *self.feeds.lock() = Feeds::default();
+        // A fresh token, so a later connect is not cancelled by this stop.
+        self.cancellation = CancellationToken::new();
         Ok(())
     }
 
@@ -460,7 +465,7 @@ impl DataClient for SodexDataClient {
 
         // Instruments first: a bar cannot be published for an instrument the engine has never
         // seen, and the symbol ids loaded here are what order submission later needs.
-        self.provider.load_all(None).await?;
+        load_instruments(&self.http, self.market, self.venue, &self.catalog).await?;
 
         let ws = Arc::new(SodexWebSocketClient::new(
             self.config.network,
@@ -468,19 +473,30 @@ impl DataClient for SodexDataClient {
         ));
         let events = ws.connect().await?;
 
-        self.stream_task = Some(get_runtime().spawn(run_stream(
+        self.tasks.push(get_runtime().spawn(run_stream(
             events,
             Arc::clone(&self.feeds),
             self.data_sender.clone(),
             self.clock,
         )));
+        if let Some(task) = spawn_instrument_refresh(
+            self.config.update_instruments_interval_mins,
+            Arc::clone(&self.http),
+            self.market,
+            self.venue,
+            Arc::clone(&self.catalog),
+            self.cancellation.clone(),
+            self.client_id,
+        ) {
+            self.tasks.push(task);
+        }
         self.ws = Some(ws);
         self.is_connected.store(true, Ordering::Relaxed);
 
         log::info!(
             "sodex_data_client_connected venue={} instruments={}",
             self.venue,
-            self.provider.len()
+            self.catalog.len()
         );
         Ok(())
     }
@@ -489,9 +505,8 @@ impl DataClient for SodexDataClient {
         if let Some(ws) = self.ws.take() {
             ws.close().await;
         }
-        if let Some(task) = self.stream_task.take() {
-            task.abort();
-        }
+        self.cancellation.cancel();
+        self.tasks.abort_all();
         *self.feeds.lock() = Feeds::default();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
@@ -619,8 +634,7 @@ impl DataClient for SodexDataClient {
     }
 
     fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
-        let instruments: Vec<InstrumentAny> =
-            self.provider.store().get_all().values().cloned().collect();
+        let instruments: Vec<InstrumentAny> = self.catalog.all();
         let response = DataResponse::Instruments(InstrumentsResponse::new(
             request.request_id,
             request.client_id.unwrap_or(self.client_id),
@@ -636,7 +650,7 @@ impl DataClient for SodexDataClient {
     }
 
     fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
-        let Some(instrument) = self.provider.store().find(&request.instrument_id) else {
+        let Some(instrument) = self.catalog.find(&request.instrument_id) else {
             log::warn!("sodex_instrument_unknown id={}", request.instrument_id);
             return Ok(());
         };
@@ -645,7 +659,7 @@ impl DataClient for SodexDataClient {
             request.request_id,
             request.client_id.unwrap_or(self.client_id),
             instrument.id(),
-            instrument.clone(),
+            instrument,
             datetime_to_unix_nanos(request.start),
             datetime_to_unix_nanos(request.end),
             self.clock.get_time_ns(),

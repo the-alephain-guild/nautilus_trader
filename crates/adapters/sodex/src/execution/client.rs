@@ -20,14 +20,13 @@
 //! independently would leave a stop that never activates and a take-profit that fires with
 //! no position, so a contingent list is denied rather than flattened.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nautilus_common::{
     clients::ExecutionClient,
-    live::{get_runtime, runner::get_exec_event_sender},
+    live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
     messages::execution::{CancelOrder, SubmitOrder, SubmitOrderList},
-    providers::InstrumentProvider,
 };
 use nautilus_core::{Params, UnixNanos, time::AtomicTime};
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
@@ -39,7 +38,7 @@ use nautilus_model::{
     types::{AccountBalance, MarginBalance},
 };
 use nautilus_network::http::Method;
-use parking_lot::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use super::parse::OrderSpec;
 use crate::{
@@ -51,7 +50,7 @@ use crate::{
         requests::{CancelItem, ClientOrderId as VenueClientOrderId},
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
-    providers::SodexInstrumentProvider,
+    providers::{InstrumentCatalog, load_instruments, spawn_instrument_refresh},
 };
 
 /// Live execution client for one SoDEX engine.
@@ -61,11 +60,12 @@ pub struct SodexExecutionClient {
     clock: &'static AtomicTime,
     emitter: ExecutionEventEmitter,
     http: Arc<SodexHttpClient>,
-    provider: SodexInstrumentProvider,
+    /// The published instrument set, which is where an order's numeric symbol id comes from.
+    catalog: Arc<InstrumentCatalog>,
     /// Venue account id, resolved once at construction.
     venue_account_id: u64,
-    /// Numeric symbol ids by instrument, shared with the tasks that submit and cancel.
-    symbol_ids: Arc<Mutex<HashMap<InstrumentId, u64>>>,
+    tasks: TaskHandles,
+    cancellation: CancellationToken,
 }
 
 impl std::fmt::Debug for SodexExecutionClient {
@@ -74,7 +74,7 @@ impl std::fmt::Debug for SodexExecutionClient {
             .field("client_id", &self.core.client_id)
             .field("venue", &self.core.venue)
             .field("connected", &self.core.is_connected())
-            .field("symbols", &self.symbol_ids.lock().len())
+            .field("instruments", &self.catalog.len())
             .finish()
     }
 }
@@ -108,15 +108,7 @@ impl SodexExecutionClient {
         )
         .map_err(|e| anyhow::anyhow!("failed to build signed HTTP client: {e}"))?;
 
-        // The provider shares this client's order allowance even though it only reads: the
-        // venue counts an account's orders, so two independently-paced clients on one account
-        // could together exceed the rate neither of them broke alone.
-        let provider = SodexInstrumentProvider::with_options(
-            config.network,
-            config.market,
-            config.timeout_secs,
-        )?
-        .with_shared_order_quota(http.order_quota());
+
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
@@ -131,14 +123,15 @@ impl SodexExecutionClient {
             clock,
             emitter,
             http: Arc::new(http),
-            provider,
+            catalog: Arc::new(InstrumentCatalog::new()),
             venue_account_id,
-            symbol_ids: Arc::new(Mutex::new(HashMap::new())),
+            tasks: TaskHandles::default(),
+            cancellation: CancellationToken::new(),
         })
     }
 
     fn symbol_id(&self, instrument_id: &InstrumentId) -> anyhow::Result<u64> {
-        self.symbol_ids.lock().get(instrument_id).copied().ok_or_else(|| {
+        self.catalog.symbol_id(instrument_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "no venue symbol id for {instrument_id}; instruments have not been loaded"
             )
@@ -369,6 +362,12 @@ impl ExecutionClient for SodexExecutionClient {
         }
         self.core.set_stopped();
         self.core.set_disconnected();
+        // Cancel before aborting: the refresh loop selects on the token and leaves its own
+        // await point, which an abort alone could cut mid-request.
+        self.cancellation.cancel();
+        self.tasks.abort_all();
+        // Stops any in-flight retry backoff from outliving the client.
+        self.http.shutdown();
         log::info!("sodex_exec_client_stop client_id={}", self.core.client_id);
         Ok(())
     }
@@ -381,27 +380,38 @@ impl ExecutionClient for SodexExecutionClient {
         // Orders address instruments by numeric symbol id, so nothing can be submitted until
         // the listing has been read. Failing here rather than on the first order keeps a
         // missing id from surfacing as a rejected trade.
-        self.provider.load_all(None).await?;
+        load_instruments(
+            &self.http,
+            self.config.market,
+            self.core.venue,
+            &self.catalog,
+        )
+        .await?;
 
-        let mut ids = self.symbol_ids.lock();
-        ids.clear();
-        for instrument_id in self.provider.store().get_all().keys() {
-            if let Some(symbol_id) = self.provider.symbol_id(instrument_id) {
-                ids.insert(*instrument_id, symbol_id);
-            }
+        if let Some(task) = spawn_instrument_refresh(
+            self.config.update_instruments_interval_mins,
+            Arc::clone(&self.http),
+            self.config.market,
+            self.core.venue,
+            Arc::clone(&self.catalog),
+            self.cancellation.clone(),
+            self.core.client_id,
+        ) {
+            self.tasks.push(task);
         }
-        let loaded = ids.len();
-        drop(ids);
 
         self.core.set_connected();
         log::info!(
-            "sodex_exec_client_connected venue={} instruments={loaded}",
-            self.core.venue
+            "sodex_exec_client_connected venue={} instruments={}",
+            self.core.venue,
+            self.catalog.len()
         );
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
+        self.cancellation.cancel();
+        self.tasks.abort_all();
         self.core.set_disconnected();
         Ok(())
     }

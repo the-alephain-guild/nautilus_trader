@@ -70,8 +70,17 @@ pub type OrderRateLimiter = RateLimiter<Ustr, MonotonicClock>;
 
 /// Builds the order-count limiter: one cell per order, on both the second and minute buckets.
 ///
-/// Shared between every client that submits on one account, because the venue counts the
-/// account's orders rather than each connection's.
+/// **The venue counts orders per account; this limiter counts them per client.** One execution
+/// client on an account therefore paces correctly, which is the deployment this adapter
+/// supports. Two execution clients on the same account would each pace against their own
+/// allowance and could together exceed the rate neither of them broke alone — the venue would
+/// reject the excess rather than anything worse, but the pacing would stop doing its job.
+///
+/// Not solved here rather than solved badly: the natural fix is one limiter per account id, and
+/// the signing client does not know the account id — it holds an API key, and the venue's own
+/// guidance is that each trading process registers its own key. Closing it properly means
+/// threading the account id into the transport, which is worth doing when a second execution
+/// client on one account is actually a thing someone runs, and not before.
 #[must_use]
 pub fn order_rate_limiter() -> Arc<OrderRateLimiter> {
     let per_second = Quota::per_second(

@@ -83,6 +83,7 @@ fn assert_data_factory_extracts_from_python_object(py: Python<'_>) {
             network: Network::Testnet,
             market: Market::Spot,
             instrument_ids: Vec::new(),
+            update_instruments_interval_mins: Some(30),
             timeout_secs: 7,
         },
     )
@@ -118,6 +119,7 @@ fn assert_data_factory_extracts_from_python_object(py: Python<'_>) {
     // The timeout used to be dropped on the way through: the HTTP builder hardcoded 30 and
     // this field was never read, so a config asking for 7 silently got 30.
     assert_eq!(sodex_config.timeout_secs, 7);
+    assert_eq!(sodex_config.update_instruments_interval_mins, Some(30));
     assert_eq!(client.client_id(), ClientId::from("SODEX-DATA-EXTRACTED"));
     assert_eq!(client.venue().map(|v| v.to_string()), Some(SODEX_SPOT.to_string()));
 }
@@ -134,6 +136,7 @@ fn assert_exec_factory_extracts_from_python_object(py: Python<'_>) {
             account_id: Some(TEST_ACCOUNT_ID),
             api_key_name: Some("api-key-01".to_string()),
             api_private_key: Some(TEST_API_KEY.into()),
+            update_instruments_interval_mins: None,
             timeout_secs: 11,
         },
     )
@@ -195,6 +198,7 @@ fn assert_both_engines_reachable_from_one_factory(py: Python<'_>) {
                 network: Network::Testnet,
                 market,
                 instrument_ids: Vec::new(),
+                update_instruments_interval_mins: None,
                 timeout_secs: 30,
             },
         )

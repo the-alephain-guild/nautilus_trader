@@ -21,12 +21,12 @@ use std::{collections::HashMap, str::FromStr};
 
 use async_trait::async_trait;
 use nautilus_common::providers::{InstrumentProvider, InstrumentStore};
-use nautilus_core::UnixNanos;
+use nautilus_core::{AtomicMap, UnixNanos};
 use nautilus_model::{
     currencies::CURRENCY_MAP,
     enums::CurrencyType,
     identifiers::{InstrumentId, Symbol, Venue},
-    instruments::{CryptoPerpetual, CurrencyPair, InstrumentAny},
+    instruments::{Instrument, CryptoPerpetual, CurrencyPair, InstrumentAny},
     types::{Currency, Money, Price, Quantity, fixed::FIXED_PRECISION},
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -273,6 +273,131 @@ pub struct SodexInstrumentProvider {
     symbol_ids: HashMap<InstrumentId, u64>,
 }
 
+/// One reading of the venue's instrument listing.
+///
+/// Carried as a value rather than applied to a provider because the refresh runs on a spawned
+/// task: [`InstrumentProvider`] is an `?Send` trait, so its futures cannot be spawned onto the
+/// multi-threaded runtime. Fetching through a plain function keeps the reload on the same code
+/// path as the initial load without routing it through the trait.
+#[derive(Debug, Clone, Default)]
+pub struct Listing {
+    pub instruments: Vec<InstrumentAny>,
+    pub symbol_ids: HashMap<InstrumentId, u64>,
+}
+
+/// Reads the venue's instrument listing.
+///
+/// Skips anything not in trading status, so a halted or delisted pair is absent rather than
+/// present and unusable.
+///
+/// # Errors
+///
+/// Returns the transport failure, or a parse failure for a symbol whose numeric fields the
+/// engine's types cannot hold.
+pub async fn fetch_instruments(
+    client: &SodexHttpClient,
+    market: Market,
+    venue: Venue,
+) -> anyhow::Result<Listing> {
+    let ts = UnixNanos::default();
+    let mut listing = Listing::default();
+
+    match market {
+        Market::Spot => {
+            let symbols: Vec<SpotSymbol> = client
+                .get_public("/markets/symbols", None)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to load spot symbols: {e}"))?;
+            ingest_spot(&mut listing, symbols, venue, ts)?;
+        }
+        Market::Perps => {
+            let symbols: Vec<PerpsSymbol> = client
+                .get_public("/markets/symbols", None)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to load perps symbols: {e}"))?;
+            ingest_perps(&mut listing, symbols, venue, ts)?;
+        }
+    }
+
+    Ok(listing)
+}
+
+/// The loaded instrument set, shared between the clients that read it and the task that
+/// refreshes it.
+///
+/// Reads happen on synchronous trait methods — `request_instruments`, and the precision lookup
+/// a subscription needs — while the refresh happens on a task that must `await` the venue.
+/// Holding the provider behind a lock would force those readers to block on a network call, so
+/// the provider stays on the refresh side and publishes whole snapshots here instead: readers
+/// see either the previous set or the next one, never a half-built one.
+#[derive(Debug, Default)]
+pub struct InstrumentCatalog {
+    instruments: AtomicMap<InstrumentId, InstrumentAny>,
+    symbol_ids: AtomicMap<InstrumentId, u64>,
+}
+
+impl InstrumentCatalog {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replaces the published set with what the provider currently holds.
+    ///
+    /// A replacement rather than a merge, for the same reason the provider rebuilds rather
+    /// than merges: the venue's listing is the authority, and a stale local entry for a
+    /// delisted symbol is worse than an absent one.
+    pub fn publish(&self, listing: &Listing) {
+        self.instruments.store(
+            listing
+                .instruments
+                .iter()
+                .map(|instrument| (Instrument::id(instrument), instrument.clone()))
+                .collect(),
+        );
+        self.symbol_ids.store(
+            listing
+                .symbol_ids
+                .iter()
+                .map(|(id, symbol_id)| (*id, *symbol_id))
+                .collect(),
+        );
+    }
+
+    /// Every published instrument.
+    #[must_use]
+    pub fn all(&self) -> Vec<InstrumentAny> {
+        self.instruments.load().values().cloned().collect()
+    }
+
+    /// One published instrument.
+    #[must_use]
+    pub fn find(&self, instrument_id: &InstrumentId) -> Option<InstrumentAny> {
+        self.instruments.get_cloned(instrument_id)
+    }
+
+    /// The numeric symbol id an order must carry.
+    ///
+    /// `None` before the instrument has been published. Callers must treat that as an error
+    /// rather than a default — submitting without it would mean guessing an id.
+    #[must_use]
+    pub fn symbol_id(&self, instrument_id: &InstrumentId) -> Option<u64> {
+        self.symbol_ids.get_cloned(instrument_id)
+    }
+
+    /// Number of published instruments.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.instruments.len()
+    }
+
+    /// Whether nothing has been published yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.instruments.is_empty()
+    }
+}
+
 impl std::fmt::Debug for SodexInstrumentProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SodexInstrumentProvider")
@@ -314,20 +439,6 @@ impl SodexInstrumentProvider {
         })
     }
 
-    /// Shares an account's order allowance with this provider's HTTP client.
-    ///
-    /// The provider itself places no orders, but its client is a real client on the same
-    /// account; pacing them together is what keeps a sibling execution client's allowance
-    /// honest.
-    #[must_use]
-    pub fn with_shared_order_quota(
-        mut self,
-        orders: std::sync::Arc<crate::http::ratelimit::OrderRateLimiter>,
-    ) -> Self {
-        self.client = self.client.with_shared_order_quota(orders);
-        self
-    }
-
     /// The venue these instruments belong to.
     #[must_use]
     pub const fn venue(&self) -> Venue {
@@ -344,6 +455,12 @@ impl SodexInstrumentProvider {
         self.symbol_ids.get(instrument_id).copied()
     }
 
+    /// The full reverse map, for publishing into a shared catalogue.
+    #[must_use]
+    pub const fn symbol_ids(&self) -> &HashMap<InstrumentId, u64> {
+        &self.symbol_ids
+    }
+
     /// Number of instruments currently mapped.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -356,29 +473,54 @@ impl SodexInstrumentProvider {
         self.symbol_ids.is_empty()
     }
 
-    fn ingest_spot(&mut self, symbols: Vec<SpotSymbol>, ts: UnixNanos) -> anyhow::Result<()> {
-        for symbol in symbols {
-            if symbol.status != STATUS_TRADING {
-                continue;
-            }
-            let instrument = parse_spot_instrument(&symbol, self.venue, ts)?;
-            self.symbol_ids.insert(instrument.id, symbol.id);
-            self.store.add(InstrumentAny::CurrencyPair(instrument));
-        }
-        Ok(())
-    }
+}
 
-    fn ingest_perps(&mut self, symbols: Vec<PerpsSymbol>, ts: UnixNanos) -> anyhow::Result<()> {
-        for symbol in symbols {
-            if symbol.status != STATUS_TRADING {
-                continue;
-            }
-            let instrument = parse_perps_instrument(&symbol, self.venue, ts)?;
-            self.symbol_ids.insert(instrument.id, symbol.id);
-            self.store.add(InstrumentAny::CryptoPerpetual(instrument));
+/// Folds a spot symbol listing into a [`Listing`], skipping anything not trading.
+///
+/// # Errors
+///
+/// Returns a parse failure for a symbol whose numeric fields the engine's types cannot hold.
+pub fn ingest_spot(
+    listing: &mut Listing,
+    symbols: Vec<SpotSymbol>,
+    venue: Venue,
+    ts: UnixNanos,
+) -> anyhow::Result<()> {
+    for symbol in symbols {
+        if symbol.status != STATUS_TRADING {
+            continue;
         }
-        Ok(())
+        let instrument = parse_spot_instrument(&symbol, venue, ts)?;
+        listing.symbol_ids.insert(instrument.id, symbol.id);
+        listing
+            .instruments
+            .push(InstrumentAny::CurrencyPair(instrument));
     }
+    Ok(())
+}
+
+/// Folds a perps symbol listing into a [`Listing`], skipping anything not trading.
+///
+/// # Errors
+///
+/// Returns a parse failure for a symbol whose numeric fields the engine's types cannot hold.
+pub fn ingest_perps(
+    listing: &mut Listing,
+    symbols: Vec<PerpsSymbol>,
+    venue: Venue,
+    ts: UnixNanos,
+) -> anyhow::Result<()> {
+    for symbol in symbols {
+        if symbol.status != STATUS_TRADING {
+            continue;
+        }
+        let instrument = parse_perps_instrument(&symbol, venue, ts)?;
+        listing.symbol_ids.insert(instrument.id, symbol.id);
+        listing
+            .instruments
+            .push(InstrumentAny::CryptoPerpetual(instrument));
+    }
+    Ok(())
 }
 
 #[async_trait(?Send)]
@@ -392,29 +534,14 @@ impl InstrumentProvider for SodexInstrumentProvider {
     }
 
     async fn load_all(&mut self, _filters: Option<&HashMap<String, String>>) -> anyhow::Result<()> {
-        let ts = UnixNanos::default();
+        let listing = fetch_instruments(&self.client, self.market, self.venue).await?;
 
         // Rebuilding rather than merging: the venue's listing is the authority, and a stale
         // local entry for a delisted symbol is worse than an absent one.
-        self.symbol_ids.clear();
-
-        match self.market {
-            Market::Spot => {
-                let symbols: Vec<SpotSymbol> =
-                    self.client
-                        .get_public("/markets/symbols", None)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("failed to load spot symbols: {e}"))?;
-                self.ingest_spot(symbols, ts)?;
-            }
-            Market::Perps => {
-                let symbols: Vec<PerpsSymbol> =
-                    self.client
-                        .get_public("/markets/symbols", None)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("failed to load perps symbols: {e}"))?;
-                self.ingest_perps(symbols, ts)?;
-            }
+        self.symbol_ids = listing.symbol_ids;
+        self.store = InstrumentStore::default();
+        for instrument in listing.instruments {
+            self.store.add(instrument);
         }
 
         Ok(())
@@ -593,54 +720,207 @@ mod tests {
 
     #[test]
     fn halted_symbols_are_not_loaded() {
-        let mut provider = SodexInstrumentProvider::new(Network::Testnet, Market::Spot).unwrap();
+        let mut listing = Listing::default();
         let mut halted = spot_symbol();
         halted.status = "HALT".to_string();
 
-        provider
-            .ingest_spot(vec![halted], UnixNanos::default())
-            .unwrap();
+        ingest_spot(
+            &mut listing,
+            vec![halted],
+            Venue::from(SODEX_SPOT),
+            UnixNanos::default(),
+        )
+        .unwrap();
 
-        assert!(provider.is_empty());
+        assert!(listing.instruments.is_empty());
     }
 
     #[test]
     fn loading_populates_the_reverse_map_for_order_submission() {
-        let mut provider = SodexInstrumentProvider::new(Network::Testnet, Market::Spot).unwrap();
-        provider
-            .ingest_spot(vec![spot_symbol()], UnixNanos::default())
-            .unwrap();
+        let mut listing = Listing::default();
+        ingest_spot(
+            &mut listing,
+            vec![spot_symbol()],
+            Venue::from(SODEX_SPOT),
+            UnixNanos::default(),
+        )
+        .unwrap();
+
+        let catalog = InstrumentCatalog::new();
+        catalog.publish(&listing);
 
         let id = instrument_id_for("vBTC_vUSDC", Venue::from(SODEX_SPOT));
-        assert_eq!(provider.symbol_id(&id), Some(1));
-        assert_eq!(provider.len(), 1);
+        assert_eq!(catalog.symbol_id(&id), Some(1));
+        assert_eq!(catalog.len(), 1);
     }
 
     #[test]
     fn an_unloaded_instrument_has_no_symbol_id() {
         // Callers must treat this as an error: guessing an id would submit an order against
         // whatever instrument happens to hold that number.
-        let provider = SodexInstrumentProvider::new(Network::Testnet, Market::Spot).unwrap();
+        let catalog = InstrumentCatalog::new();
         let id = instrument_id_for("vBTC_vUSDC", Venue::from(SODEX_SPOT));
 
-        assert_eq!(provider.symbol_id(&id), None);
+        assert_eq!(catalog.symbol_id(&id), None);
+        assert!(catalog.is_empty());
     }
 
     #[test]
-    fn reloading_rebuilds_rather_than_accumulates() {
-        // The venue listing is the authority; a delisted symbol must disappear rather than
-        // linger from an earlier load.
-        let mut provider = SodexInstrumentProvider::new(Network::Testnet, Market::Spot).unwrap();
-        provider
-            .ingest_spot(vec![spot_symbol()], UnixNanos::default())
-            .unwrap();
-        assert_eq!(provider.len(), 1);
+    fn a_refresh_replaces_the_published_set_rather_than_adding_to_it() {
+        // The venue listing is the authority, so a delisted symbol must disappear rather than
+        // linger from an earlier reload. The refresh publishes whole snapshots for exactly
+        // this reason.
+        let catalog = InstrumentCatalog::new();
+        let venue = Venue::from(SODEX_SPOT);
 
-        provider.symbol_ids.clear();
-        provider
-            .ingest_spot(vec![spot_symbol()], UnixNanos::default())
-            .unwrap();
+        let mut first = Listing::default();
+        ingest_spot(
+            &mut first,
+            vec![spot_symbol()],
+            venue,
+            UnixNanos::default(),
+        )
+        .unwrap();
+        catalog.publish(&first);
+        assert_eq!(catalog.len(), 1);
 
-        assert_eq!(provider.len(), 1, "reload must not double-count");
+        // The same pair listed again: a merge would double-count, a replacement will not.
+        catalog.publish(&first);
+        assert_eq!(catalog.len(), 1, "a reload must not accumulate");
+
+        // And the pair delisted: it must be gone, not stale.
+        catalog.publish(&Listing::default());
+        assert!(
+            catalog.is_empty(),
+            "a delisted pair must disappear from the catalogue"
+        );
+        let id = instrument_id_for("vBTC_vUSDC", venue);
+        assert_eq!(
+            catalog.symbol_id(&id),
+            None,
+            "its symbol id must go with it, or an order could still be addressed to it"
+        );
+    }
+}
+
+/// Loads the venue listing and publishes it.
+///
+/// # Errors
+///
+/// Returns the load failure. Called on connect, where failing is the right outcome: nothing can
+/// be subscribed or submitted without the listing, so continuing would only defer the error to
+/// the first request.
+pub async fn load_instruments(
+    client: &SodexHttpClient,
+    market: Market,
+    venue: Venue,
+    catalog: &InstrumentCatalog,
+) -> anyhow::Result<()> {
+    let listing = fetch_instruments(client, market, venue).await?;
+    catalog.publish(&listing);
+    Ok(())
+}
+
+/// Spawns the periodic reload, or returns `None` when it is disabled.
+///
+/// A reload failure is logged and the loop continues: the previously published listing is still
+/// the best available answer, and tearing the client down over a transient venue hiccup would
+/// be a worse outcome than trading one interval on slightly stale instruments.
+///
+/// Cancellation is checked in the same `select!` as the sleep, so a shutdown does not wait out
+/// a full interval.
+#[must_use]
+pub fn spawn_instrument_refresh(
+    interval_mins: Option<u64>,
+    client: std::sync::Arc<SodexHttpClient>,
+    market: Market,
+    venue: Venue,
+    catalog: std::sync::Arc<InstrumentCatalog>,
+    cancellation: tokio_util::sync::CancellationToken,
+    client_id: nautilus_model::identifiers::ClientId,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let minutes = interval_mins.filter(|minutes| *minutes > 0)?;
+    let interval = std::time::Duration::from_secs(minutes.saturating_mul(60));
+
+    Some(nautilus_common::live::get_runtime().spawn(async move {
+        loop {
+            let sleep = tokio::time::sleep(interval);
+            tokio::pin!(sleep);
+
+            tokio::select! {
+                () = cancellation.cancelled() => {
+                    log::debug!("sodex_instrument_refresh_cancelled client_id={client_id}");
+                    break;
+                }
+                () = &mut sleep => match load_instruments(&client, market, venue, &catalog).await {
+                    Ok(()) => log::debug!(
+                        "sodex_instruments_refreshed client_id={client_id} count={}",
+                        catalog.len()
+                    ),
+                    Err(e) => log::warn!(
+                        "sodex_instrument_refresh_failed client_id={client_id} error={e}"
+                    ),
+                },
+            }
+        }
+    }))
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use nautilus_model::identifiers::ClientId;
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::{config::SODEX_SPOT, http::SodexHttpClient};
+
+    fn client() -> std::sync::Arc<SodexHttpClient> {
+        std::sync::Arc::new(
+            SodexHttpClient::new_public(Network::Testnet, Market::Spot).expect("client builds"),
+        )
+    }
+
+    #[tokio::test]
+    async fn no_interval_means_no_refresh_task() {
+        // A deployment that asks for no reload must not get one. The `None` and `0` forms are
+        // both spellings of "off" and a config round-tripped through Python can produce either.
+        for interval in [None, Some(0)] {
+            let task = spawn_instrument_refresh(
+                interval,
+                client(),
+                Market::Spot,
+                Venue::from(SODEX_SPOT),
+                std::sync::Arc::new(InstrumentCatalog::new()),
+                CancellationToken::new(),
+                ClientId::from("SODEX-TEST"),
+            );
+
+            assert!(task.is_none(), "interval {interval:?} must not spawn a task");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_the_refresh_without_waiting_out_the_interval() {
+        // The loop selects on the token alongside the sleep. Without that, a shutdown would
+        // block for up to a full interval — an hour, at the default.
+        let cancellation = CancellationToken::new();
+        let task = spawn_instrument_refresh(
+            Some(60),
+            client(),
+            Market::Spot,
+            Venue::from(SODEX_SPOT),
+            std::sync::Arc::new(InstrumentCatalog::new()),
+            cancellation.clone(),
+            ClientId::from("SODEX-TEST"),
+        )
+        .expect("a positive interval spawns a task");
+
+        cancellation.cancel();
+
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+        assert!(
+            stopped.is_ok(),
+            "the task should exit on cancellation, not at the next interval"
+        );
     }
 }

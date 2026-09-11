@@ -219,23 +219,6 @@ impl SodexHttpClient {
         })
     }
 
-    /// Shares this client's order allowance with another client on the same account.
-    ///
-    /// The venue counts an account's orders, not a connection's, so a deployment running a
-    /// data client and an execution client against one account must not give each its own
-    /// allowance — that would let the pair place twice the permitted rate.
-    #[must_use]
-    pub fn with_shared_order_quota(mut self, orders: Arc<OrderRateLimiter>) -> Self {
-        self.orders = orders;
-        self
-    }
-
-    /// The order allowance this client paces against, for sharing with a sibling client.
-    #[must_use]
-    pub fn order_quota(&self) -> Arc<OrderRateLimiter> {
-        Arc::clone(&self.orders)
-    }
-
     /// Cancels every in-flight retry loop, so a shutdown does not wait out a backoff.
     pub fn shutdown(&self) {
         self.cancellation.cancel();

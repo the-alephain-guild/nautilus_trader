@@ -87,6 +87,14 @@ pub struct SodexDataClientConfig {
     /// Restricts instrument loading to these ids. Empty means load everything.
     #[serde(default)]
     pub instrument_ids: Vec<InstrumentId>,
+    /// How often to reload the venue's instrument listing, in minutes.
+    ///
+    /// A young venue lists and delists pairs while a session is running, and nothing pushes
+    /// that: without a reload, a long-running process keeps trading against the listing it saw
+    /// at startup and never learns of a new pair — or that one it holds a symbol id for has
+    /// gone. `None` or `0` disables the reload, which is only appropriate for a short run.
+    #[serde(default = "default_instrument_refresh_mins")]
+    pub update_instruments_interval_mins: Option<u64>,
     /// HTTP timeout in seconds.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
@@ -100,6 +108,7 @@ impl SodexDataClientConfig {
             network,
             market,
             instrument_ids: Vec::new(),
+            update_instruments_interval_mins: default_instrument_refresh_mins(),
             timeout_secs: default_timeout_secs(),
         }
     }
@@ -138,6 +147,14 @@ pub struct SodexExecClientConfig {
     /// Private key of the registered API key. Falls back to [`ENV_API_PRIVATE_KEY`].
     #[serde(default)]
     pub api_private_key: Option<SecretString>,
+    /// How often to reload the venue's instrument listing, in minutes.
+    ///
+    /// A young venue lists and delists pairs while a session is running, and nothing pushes
+    /// that: without a reload, a long-running process keeps trading against the listing it saw
+    /// at startup and never learns of a new pair — or that one it holds a symbol id for has
+    /// gone. `None` or `0` disables the reload, which is only appropriate for a short run.
+    #[serde(default = "default_instrument_refresh_mins")]
+    pub update_instruments_interval_mins: Option<u64>,
     /// HTTP timeout in seconds.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
@@ -153,6 +170,7 @@ impl SodexExecClientConfig {
             account_id: None,
             api_key_name: None,
             api_private_key: None,
+            update_instruments_interval_mins: default_instrument_refresh_mins(),
             timeout_secs: default_timeout_secs(),
         }
     }
@@ -227,6 +245,12 @@ impl SodexExecClientConfig {
 
 pub(crate) const fn default_timeout_secs() -> u64 {
     30
+}
+
+/// Hourly: frequent enough that a new listing becomes tradable within the session, rare enough
+/// that it costs nothing against the request budget.
+pub(crate) const fn default_instrument_refresh_mins() -> Option<u64> {
+    Some(60)
 }
 
 /// Reads an environment variable, treating blank values as absent.

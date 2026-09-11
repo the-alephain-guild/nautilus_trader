@@ -6,7 +6,10 @@ use pyo3::pymethods;
 
 use crate::{
     common::Market,
-    config::{SodexDataClientConfig, SodexExecClientConfig, default_timeout_secs},
+    config::{
+        SodexDataClientConfig, SodexExecClientConfig, default_instrument_refresh_mins,
+        default_timeout_secs,
+    },
     http::Network,
 };
 
@@ -22,18 +25,25 @@ impl SodexDataClientConfig {
         network = None,
         market = None,
         instrument_ids = None,
+        update_instruments_interval_mins = None,
         timeout_secs = None,
     ))]
     fn py_new(
         network: Option<Network>,
         market: Option<Market>,
         instrument_ids: Option<Vec<InstrumentId>>,
+        update_instruments_interval_mins: Option<u64>,
         timeout_secs: Option<u64>,
     ) -> Self {
         Self {
             network: network.unwrap_or_default(),
             market: market.unwrap_or_default(),
             instrument_ids: instrument_ids.unwrap_or_default(),
+            // An explicit `0` disables the reload; omitting the argument keeps the default
+            // rather than disabling it, because silence should not turn a protection off.
+            update_instruments_interval_mins: update_instruments_interval_mins
+                .map(Some)
+                .unwrap_or_else(default_instrument_refresh_mins),
             timeout_secs: timeout_secs.unwrap_or_else(default_timeout_secs),
         }
     }
@@ -83,14 +93,17 @@ impl SodexExecClientConfig {
         account_id = None,
         api_key_name = None,
         api_private_key = None,
+        update_instruments_interval_mins = None,
         timeout_secs = None,
     ))]
+    #[expect(clippy::too_many_arguments)]
     fn py_new(
         network: Option<Network>,
         market: Option<Market>,
         account_id: Option<u64>,
         api_key_name: Option<String>,
         api_private_key: Option<String>,
+        update_instruments_interval_mins: Option<u64>,
         timeout_secs: Option<u64>,
     ) -> Self {
         Self {
@@ -99,6 +112,9 @@ impl SodexExecClientConfig {
             account_id,
             api_key_name,
             api_private_key: api_private_key.map(SecretString::from),
+            update_instruments_interval_mins: update_instruments_interval_mins
+                .map(Some)
+                .unwrap_or_else(default_instrument_refresh_mins),
             timeout_secs: timeout_secs.unwrap_or_else(default_timeout_secs),
         }
     }
