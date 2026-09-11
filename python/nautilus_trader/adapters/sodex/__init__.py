@@ -46,12 +46,12 @@ __all__ = [
     "SODEX_PERPS_VENUE",
     "SODEX_SPOT",
     "SODEX_SPOT_VENUE",
-    "Market",
-    "Network",
     "SodexDataClientConfig",
     "SodexDataClientFactory",
     "SodexExecClientConfig",
     "SodexExecutionClientFactory",
+    "SodexMarket",
+    "SodexNetwork",
 ]
 
 fixup_module_names(globals(), __name__)

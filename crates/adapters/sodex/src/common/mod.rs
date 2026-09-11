@@ -18,6 +18,9 @@ pub const CHAIN_ID_TESTNET: u64 = 138565;
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(
+        // Prefixed for the Python surface: this module is imported with `*`, and a bare
+        // `Market` would shadow whatever else a strategy has by that name.
+        name = "SodexMarket",
         module = "nautilus_trader.adapters.sodex",
         eq,
         eq_int,

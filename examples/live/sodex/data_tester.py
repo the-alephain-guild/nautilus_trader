@@ -35,10 +35,10 @@ rather than set to False-by-omission: it would never produce data.
 from __future__ import annotations
 
 from nautilus_trader.adapters.sodex import SODEX_SPOT
-from nautilus_trader.adapters.sodex import Market
-from nautilus_trader.adapters.sodex import Network
 from nautilus_trader.adapters.sodex import SodexDataClientConfig
 from nautilus_trader.adapters.sodex import SodexDataClientFactory
+from nautilus_trader.adapters.sodex import SodexMarket
+from nautilus_trader.adapters.sodex import SodexNetwork
 from nautilus_trader.common import Environment
 from nautilus_trader.live import LiveNode
 from nautilus_trader.model import BarType
@@ -68,8 +68,8 @@ def main() -> None:
             SODEX_SPOT,
             SodexDataClientFactory(),
             SodexDataClientConfig(
-                network=Network.TESTNET,
-                market=Market.SPOT,
+                network=SodexNetwork.TESTNET,
+                market=SodexMarket.SPOT,
             ),
         )
         .build()

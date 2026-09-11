@@ -43,12 +43,12 @@ from __future__ import annotations
 from decimal import Decimal
 
 from nautilus_trader.adapters.sodex import SODEX_SPOT
-from nautilus_trader.adapters.sodex import Market
-from nautilus_trader.adapters.sodex import Network
 from nautilus_trader.adapters.sodex import SodexDataClientConfig
 from nautilus_trader.adapters.sodex import SodexDataClientFactory
 from nautilus_trader.adapters.sodex import SodexExecClientConfig
 from nautilus_trader.adapters.sodex import SodexExecutionClientFactory
+from nautilus_trader.adapters.sodex import SodexMarket
+from nautilus_trader.adapters.sodex import SodexNetwork
 from nautilus_trader.common import Environment
 from nautilus_trader.config import LiveRiskEngineConfig
 from nautilus_trader.live import LiveNode
@@ -62,8 +62,8 @@ from nautilus_trader.testkit import ExecTesterConfig
 
 # WARNING: With DRY_RUN = False this submits orders to the configured network.
 DRY_RUN = True
-NETWORK = Network.TESTNET
-MARKET = Market.SPOT
+NETWORK = SodexNetwork.TESTNET
+MARKET = SodexMarket.SPOT
 TRADER_ID = TraderId.from_str("TESTER-001")
 STRATEGY_ID = StrategyId.from_str("EXEC_TESTER-001")
 INSTRUMENT_ID = InstrumentId.from_str(f"vBTC_vUSDC.{SODEX_SPOT}")
