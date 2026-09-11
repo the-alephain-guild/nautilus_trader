@@ -468,7 +468,14 @@ impl DataClient for SodexDataClient {
 
         // Instruments first: a bar cannot be published for an instrument the engine has never
         // seen, and the symbol ids loaded here are what order submission later needs.
-        load_instruments(&self.http, self.market, self.venue, &self.catalog).await?;
+        load_instruments(
+            &self.http,
+            self.market,
+            self.venue,
+            &self.catalog,
+            Some(&self.data_sender),
+        )
+        .await?;
 
         let ws = Arc::new(
             SodexWebSocketClient::new(self.config.network, self.config.market)
@@ -490,6 +497,7 @@ impl DataClient for SodexDataClient {
             Arc::clone(&self.catalog),
             self.cancellation.clone(),
             self.client_id,
+            Some(self.data_sender.clone()),
         ) {
             self.tasks.push(task);
         }

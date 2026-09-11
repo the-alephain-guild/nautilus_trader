@@ -465,11 +465,13 @@ impl ExecutionClient for SodexExecutionClient {
         // Orders address instruments by numeric symbol id, so nothing can be submitted until
         // the listing has been read. Failing here rather than on the first order keeps a
         // missing id from surfacing as a rejected trade.
+        // No sender: instrument definitions are data, and the data client publishes them.
         load_instruments(
             &self.http,
             self.config.market,
             self.core.venue,
             &self.catalog,
+            None,
         )
         .await?;
 
@@ -484,6 +486,7 @@ impl ExecutionClient for SodexExecutionClient {
             Arc::clone(&self.catalog),
             self.cancellation.clone(),
             self.core.client_id,
+            None,
         ) {
             self.tasks.push(task);
         }

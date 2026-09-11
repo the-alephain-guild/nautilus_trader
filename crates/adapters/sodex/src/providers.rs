@@ -20,7 +20,10 @@
 use std::{collections::HashMap, str::FromStr};
 
 use async_trait::async_trait;
-use nautilus_common::providers::{InstrumentProvider, InstrumentStore};
+use nautilus_common::{
+    messages::DataEvent,
+    providers::{InstrumentProvider, InstrumentStore},
+};
 use nautilus_core::{AtomicMap, UnixNanos};
 use nautilus_model::{
     currencies::CURRENCY_MAP,
@@ -31,6 +34,7 @@ use nautilus_model::{
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     common::{Market, decimal::normalize as normalize_decimal},
@@ -840,9 +844,25 @@ pub async fn load_instruments(
     market: Market,
     venue: Venue,
     catalog: &InstrumentCatalog,
+    data_sender: Option<&UnboundedSender<DataEvent>>,
 ) -> anyhow::Result<()> {
     let listing = fetch_instruments(client, market, venue).await?;
     catalog.publish(&listing);
+
+    // The catalog is this client's own lookup; the engine keeps a separate cache, and anything
+    // reading an instrument through the engine — a strategy sizing an order, the portfolio, the
+    // risk engine — sees only what arrived as an event. Publishing after the catalog update keeps
+    // a consumer from observing a definition this client cannot yet resolve.
+    //
+    // Only the data client passes a sender. Definitions are data, and having both clients emit
+    // them would publish the same listing twice on a node that runs the pair.
+    if let Some(sender) = data_sender {
+        for instrument in &listing.instruments {
+            if let Err(e) = sender.send(DataEvent::Instrument(instrument.clone())) {
+                log::error!("sodex_instrument_event_undeliverable error={e}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -863,6 +883,7 @@ pub fn spawn_instrument_refresh(
     catalog: std::sync::Arc<InstrumentCatalog>,
     cancellation: tokio_util::sync::CancellationToken,
     client_id: nautilus_model::identifiers::ClientId,
+    data_sender: Option<UnboundedSender<DataEvent>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let minutes = interval_mins.filter(|minutes| *minutes > 0)?;
     let interval = std::time::Duration::from_secs(minutes.saturating_mul(60));
@@ -877,7 +898,13 @@ pub fn spawn_instrument_refresh(
                     log::debug!("sodex_instrument_refresh_cancelled client_id={client_id}");
                     break;
                 }
-                () = &mut sleep => match load_instruments(&client, market, venue, &catalog).await {
+                () = &mut sleep => match load_instruments(
+                    &client,
+                    market,
+                    venue,
+                    &catalog,
+                    data_sender.as_ref(),
+                ).await {
                     Ok(()) => log::debug!(
                         "sodex_instruments_refreshed client_id={client_id} count={}",
                         catalog.len()
@@ -918,6 +945,7 @@ mod refresh_tests {
                 std::sync::Arc::new(InstrumentCatalog::new()),
                 CancellationToken::new(),
                 ClientId::from("SODEX-TEST"),
+                None,
             );
 
             assert!(task.is_none(), "interval {interval:?} must not spawn a task");
@@ -937,6 +965,7 @@ mod refresh_tests {
             std::sync::Arc::new(InstrumentCatalog::new()),
             cancellation.clone(),
             ClientId::from("SODEX-TEST"),
+            None,
         )
         .expect("a positive interval spawns a task");
 
