@@ -12,15 +12,24 @@
 //! same opaque message. [`SignedRequest`] is produced without touching the network so this
 //! step is testable on its own rather than only observable as a rejection.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Duration};
 
-use nautilus_network::http::{HttpClient, HttpClientError, HttpResponse, Method};
+use nautilus_core::{consts::NAUTILUS_USER_AGENT, time::get_atomic_clock_realtime};
+use nautilus_network::{
+    http::{HttpClient, HttpClientError, HttpResponse, Method},
+    ratelimiter::quota::Quota,
+    retry::{RetryConfig, RetryError, RetryManager},
+};
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     Network,
     models::{ApiResponse, EnvelopeError},
-    ratelimit::{RateLimited, WeightBudget},
+    ratelimit::{
+        DEFAULT_ENDPOINT_WEIGHT, OrderRateLimiter, RateLimited, WeightBudget, await_order_quota,
+        order_rate_limiter,
+    },
     requests::RequestError,
 };
 use crate::{
@@ -40,6 +49,17 @@ pub const HEADER_API_KEY: &str = "X-API-Key";
 pub const HEADER_API_SIGN: &str = "X-API-Sign";
 /// Header carrying the nonce.
 pub const HEADER_API_NONCE: &str = "X-API-Nonce";
+
+/// Default HTTP timeout when a caller does not specify one.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+/// Ceiling on requests per second, as a backstop against a runaway loop.
+///
+/// Not the venue's limit — the venue meters weight and order counts, neither of which is a
+/// request rate. This only stops this client from flooding a single endpoint faster than any
+/// legitimate use would; the real budgets are enforced by
+/// [`WeightBudget`] and [`await_order_quota`].
+const REQUESTS_PER_SECOND_BACKSTOP: u32 = 40;
 
 /// Failures from the REST layer.
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +107,11 @@ impl SignedRequest {
     }
 }
 
+/// Wall-clock milliseconds, for the rolling weight window.
+fn now_millis() -> u64 {
+    get_atomic_clock_realtime().get_time_ms()
+}
+
 /// Credentials for signed endpoints.
 #[derive(Debug)]
 struct Credentials {
@@ -106,6 +131,10 @@ pub struct SodexHttpClient {
     market: Market,
     credentials: Option<Credentials>,
     weights: std::sync::Mutex<WeightBudget>,
+    /// Order-count pacing, shared so one account's clients draw on one allowance.
+    orders: Arc<OrderRateLimiter>,
+    retry: RetryManager<ClientError>,
+    cancellation: CancellationToken,
 }
 
 impl SodexHttpClient {
@@ -115,12 +144,29 @@ impl SodexHttpClient {
     ///
     /// Returns [`ClientError::Transport`] if the underlying HTTP client cannot be built.
     pub fn new_public(network: Network, market: Market) -> Result<Self, ClientError> {
+        Self::public_with_options(network, market, DEFAULT_TIMEOUT_SECS, None)
+    }
+
+    /// A market-data client with an explicit timeout and proxy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Transport`] if the underlying HTTP client cannot be built.
+    pub fn public_with_options(
+        network: Network,
+        market: Market,
+        timeout_secs: u64,
+        proxy_url: Option<String>,
+    ) -> Result<Self, ClientError> {
         Ok(Self {
-            http: Self::build_http()?,
+            http: Self::build_http(timeout_secs, proxy_url)?,
             network,
             market,
             credentials: None,
             weights: std::sync::Mutex::new(WeightBudget::new()),
+            orders: order_rate_limiter(),
+            retry: Self::build_retry(),
+            cancellation: CancellationToken::new(),
         })
     }
 
@@ -139,9 +185,26 @@ impl SodexHttpClient {
         key_name: ApiKeyName,
         key: &ApiPrivateKey,
     ) -> Result<Self, ClientError> {
+        Self::signed_with_options(network, market, key_name, key, DEFAULT_TIMEOUT_SECS, None)
+    }
+
+    /// A signing client with an explicit timeout and proxy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the key cannot be parsed into a signer or the HTTP client
+    /// cannot be built.
+    pub fn signed_with_options(
+        network: Network,
+        market: Market,
+        key_name: ApiKeyName,
+        key: &ApiPrivateKey,
+        timeout_secs: u64,
+        proxy_url: Option<String>,
+    ) -> Result<Self, ClientError> {
         let signer = ExchangeSigner::new(key, market, network.chain_id())?;
         Ok(Self {
-            http: Self::build_http()?,
+            http: Self::build_http(timeout_secs, proxy_url)?,
             network,
             market,
             credentials: Some(Credentials {
@@ -150,7 +213,32 @@ impl SodexHttpClient {
                 nonces: NonceGenerator::new(),
             }),
             weights: std::sync::Mutex::new(WeightBudget::new()),
+            orders: order_rate_limiter(),
+            retry: Self::build_retry(),
+            cancellation: CancellationToken::new(),
         })
+    }
+
+    /// Shares this client's order allowance with another client on the same account.
+    ///
+    /// The venue counts an account's orders, not a connection's, so a deployment running a
+    /// data client and an execution client against one account must not give each its own
+    /// allowance — that would let the pair place twice the permitted rate.
+    #[must_use]
+    pub fn with_shared_order_quota(mut self, orders: Arc<OrderRateLimiter>) -> Self {
+        self.orders = orders;
+        self
+    }
+
+    /// The order allowance this client paces against, for sharing with a sibling client.
+    #[must_use]
+    pub fn order_quota(&self) -> Arc<OrderRateLimiter> {
+        Arc::clone(&self.orders)
+    }
+
+    /// Cancels every in-flight retry loop, so a shutdown does not wait out a backoff.
+    pub fn shutdown(&self) {
+        self.cancellation.cancel();
     }
 
     /// Whether this client can sign.
@@ -246,17 +334,31 @@ impl SodexHttpClient {
         &self,
         request: SignedRequest,
     ) -> Result<T, ClientError> {
+        self.send_weighted(request, DEFAULT_ENDPOINT_WEIGHT, 0).await
+    }
+
+    /// Sends a prepared write, declaring its cost on both metered axes.
+    ///
+    /// `orders` is the number of orders the request places, which is **not** the same as its
+    /// request weight: a batch of `N` orders costs one request's weight but `N` against the
+    /// order-count allowance. Passing it lets the client pace instead of being rejected; pass
+    /// `0` for a write that places none, such as a cancel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Status`] for a non-success HTTP status, or a transport, decoding
+    /// or venue-level error. Transient failures are not retried here — see
+    /// [`Self::write_is_retryable`] for why a write whose outcome is unknown must not be
+    /// repeated.
+    pub async fn send_weighted<T: serde::de::DeserializeOwned>(
+        &self,
+        request: SignedRequest,
+        weight: u32,
+        orders: u32,
+    ) -> Result<T, ClientError> {
+        await_order_quota(&self.orders, orders).await;
         let response = self
-            .http
-            .request(
-                request.method,
-                request.url,
-                None,
-                Some(request.headers),
-                Some(request.body),
-                None,
-                None,
-            )
+            .dispatch(&request, weight, Self::write_is_retryable)
             .await?;
 
         Self::decode(response)
@@ -277,16 +379,7 @@ impl SodexHttpClient {
         request: SignedRequest,
     ) -> Result<Option<T>, ClientError> {
         let response = self
-            .http
-            .request(
-                request.method,
-                request.url,
-                None,
-                Some(request.headers),
-                Some(request.body),
-                None,
-                None,
-            )
+            .dispatch(&request, DEFAULT_ENDPOINT_WEIGHT, Self::write_is_retryable)
             .await?;
 
         let status = response.status.as_u16();
@@ -315,23 +408,92 @@ impl SodexHttpClient {
         path: &str,
         params: Option<&HashMap<String, Vec<String>>>,
     ) -> Result<T, ClientError> {
-        let mut headers = HashMap::new();
-        headers.insert("Accept".to_string(), "application/json".to_string());
+        let url = self.url_for(path);
+        let keys = Self::rate_limit_keys(&url);
+        let headers = HashMap::from([("Accept".to_string(), "application/json".to_string())]);
 
+        let attempt = || async {
+            self.reserve_weight(DEFAULT_ENDPOINT_WEIGHT, now_millis())?;
+            self.http
+                .request(
+                    Method::GET,
+                    url.clone(),
+                    params,
+                    Some(headers.clone()),
+                    None,
+                    None,
+                    Some(keys.clone()),
+                )
+                .await
+                .map_err(ClientError::from)
+        };
+
+        // Reads carry no side effect, so the full retry policy applies.
         let response = self
-            .http
-            .request(
-                Method::GET,
-                self.url_for(path),
-                params,
-                Some(headers),
-                None,
-                None,
-                None,
+            .retry
+            .invocation(
+                &url,
+                attempt,
+                Self::read_is_retryable,
+                |error: RetryError| match error {
+                    RetryError::Canceled => {
+                        ClientError::Transport("client is shutting down".to_string())
+                    }
+                    other => ClientError::Transport(other.to_string()),
+                },
             )
+            .retry_delay(&Self::retry_delay)
+            .cancellation_token(&self.cancellation)
+            .execute()
             .await?;
 
         Self::decode(response)
+    }
+
+    /// Sends one prepared request, charging its weight and retrying per `retryable`.
+    ///
+    /// Weight is reserved inside the attempt, not around it: each attempt costs the venue's
+    /// budget whether or not it succeeds, and reserving once outside would under-count a retry.
+    async fn dispatch(
+        &self,
+        request: &SignedRequest,
+        weight: u32,
+        retryable: fn(&ClientError) -> bool,
+    ) -> Result<HttpResponse, ClientError> {
+        let keys = Self::rate_limit_keys(&request.url);
+
+        let attempt = || async {
+            self.reserve_weight(weight, now_millis())?;
+            self.http
+                .request(
+                    request.method.clone(),
+                    request.url.clone(),
+                    None,
+                    Some(request.headers.clone()),
+                    Some(request.body.clone()),
+                    None,
+                    Some(keys.clone()),
+                )
+                .await
+                .map_err(ClientError::from)
+        };
+
+        self.retry
+            .invocation(
+                &request.url,
+                attempt,
+                retryable,
+                |error: RetryError| match error {
+                    RetryError::Canceled => {
+                        ClientError::Transport("client is shutting down".to_string())
+                    }
+                    other => ClientError::Transport(other.to_string()),
+                },
+            )
+            .retry_delay(&Self::retry_delay)
+            .cancellation_token(&self.cancellation)
+            .execute()
+            .await
     }
 
     fn decode<T: serde::de::DeserializeOwned>(
@@ -353,16 +515,111 @@ impl SodexHttpClient {
             .map_err(|e| ClientError::Transport(e.to_string()))
     }
 
-    fn build_http() -> Result<HttpClient, ClientError> {
+    fn build_http(timeout_secs: u64, proxy_url: Option<String>) -> Result<HttpClient, ClientError> {
+        let backstop = Quota::per_second(
+            NonZeroU32::new(REQUESTS_PER_SECOND_BACKSTOP).expect("a non-zero literal"),
+        )
+        .expect("a one-second period is a valid replenish interval");
+
         HttpClient::builder()
-            .headers(HashMap::from([(
-                "Accept".to_string(),
-                "application/json".to_string(),
-            )]))
-            .rate_limiters(Vec::new())
-            .timeout_secs(30)
+            .headers(HashMap::from([
+                ("Accept".to_string(), "application/json".to_string()),
+                (
+                    "User-Agent".to_string(),
+                    NAUTILUS_USER_AGENT.to_string(),
+                ),
+            ]))
+            .default_quota(backstop)
+            .timeout_secs(timeout_secs)
+            .maybe_proxy_url(proxy_url)
             .build()
             .map_err(ClientError::from)
+    }
+
+    /// Retry policy for transient transport failures.
+    ///
+    /// A reset connection or a gateway 5xx is not a decision the venue made about the order,
+    /// so giving up on the first one turns a network hiccup into a missed trade. What must
+    /// *not* be retried is anything the venue answered deliberately — a rejection, a bad
+    /// signature, an unknown symbol — because repeating those only burns the weight budget.
+    /// [`Self::is_transient`] draws that line.
+    fn build_retry() -> RetryManager<ClientError> {
+        RetryManager::new(RetryConfig {
+            max_retries: 3,
+            initial_delay_ms: 200,
+            max_delay_ms: 5_000,
+            backoff_factor: 2.0,
+            jitter_ms: 250,
+            operation_timeout_ms: Some(30_000),
+            immediate_first: false,
+            max_elapsed_ms: Some(60_000),
+        })
+    }
+
+    /// Whether a **read** is worth another attempt.
+    ///
+    /// Reads have no side effect, so anything short of a deliberate venue decision can be
+    /// repeated.
+    fn read_is_retryable(error: &ClientError) -> bool {
+        match error {
+            // The request never reached a venue decision.
+            ClientError::Transport(_) => true,
+            // 5xx is the gateway failing; 429 is it asking for a pause.
+            ClientError::Status { status, .. } => *status >= 500 || *status == 429,
+            // Our own budget said wait. Retrying after the carried delay is the whole point.
+            ClientError::RateLimited(_) => true,
+            // Everything else is a decision: a rejection, a bad signature, a malformed body.
+            _ => false,
+        }
+    }
+
+    /// Whether a **write** is worth another attempt.
+    ///
+    /// Far narrower than [`Self::read_is_retryable`], and deliberately so. A transport failure
+    /// on a write does not say whether the venue received it: the request may have been
+    /// processed and only the response lost. Repeating it could place a second order.
+    ///
+    /// The only safe repeat is a failure raised **before anything was sent** — the weight
+    /// budget refusing to let the request out. Everything else is left to the caller, which
+    /// knows whether its action is safe to repeat.
+    ///
+    /// This is tighter than it has to be, and the reason is a gap elsewhere: the adapter has
+    /// no order-status query yet, so after an ambiguous write there is no way to ask the venue
+    /// what happened. When that query exists, a write retry can be made safe by reconciling
+    /// first, and this predicate can widen.
+    fn write_is_retryable(error: &ClientError) -> bool {
+        matches!(error, ClientError::RateLimited(_))
+    }
+
+    /// How long a failure itself says to wait, when it knows.
+    ///
+    /// The weight budget computes the exact moment capacity returns, so the retry loop should
+    /// use that rather than its own backoff curve, which would either wake too early and burn
+    /// another rejection or too late and lose the slot.
+    fn retry_delay(error: &ClientError) -> Option<Duration> {
+        match error {
+            ClientError::RateLimited(limited) => {
+                Some(Duration::from_millis(limited.retry_after_ms))
+            }
+            _ => None,
+        }
+    }
+
+    /// Rate-limit keys for a URL, most specific first, as the shared client documents.
+    ///
+    /// Derived from the path after the API version so that spot and perps share one bucket per
+    /// logical endpoint rather than splitting it by market, and so the host does not become
+    /// part of the key.
+    fn rate_limit_keys(url: &str) -> Vec<String> {
+        let path = url
+            .split_once("/api/v1/")
+            .map_or(url, |(_, rest)| rest)
+            .trim_start_matches('/');
+
+        match path.split_once('/') {
+            Some((head, _)) => vec![path.to_string(), head.to_string()],
+            None => vec![path.to_string()],
+        }
     }
 }
 
@@ -519,5 +776,109 @@ mod tests {
             client.reserve_weight(1, 1_000),
             Err(ClientError::RateLimited(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod transport_policy_tests {
+    use super::*;
+
+    fn limited() -> ClientError {
+        ClientError::RateLimited(RateLimited {
+            axis: crate::http::Axis::IpWeight,
+            needed: 20,
+            available: 0,
+            retry_after_ms: 1_500,
+        })
+    }
+
+    #[test]
+    fn a_read_retries_what_never_reached_a_venue_decision() {
+        assert!(SodexHttpClient::read_is_retryable(&ClientError::Transport(
+            "connection reset".to_string()
+        )));
+        assert!(SodexHttpClient::read_is_retryable(&ClientError::Status {
+            status: 503,
+            body: String::new()
+        }));
+        assert!(SodexHttpClient::read_is_retryable(&ClientError::Status {
+            status: 429,
+            body: String::new()
+        }));
+    }
+
+    #[test]
+    fn a_read_does_not_retry_a_decision_the_venue_made() {
+        // Repeating a rejection cannot change it and burns the weight budget doing so.
+        assert!(!SodexHttpClient::read_is_retryable(&ClientError::Status {
+            status: 400,
+            body: "invalid request body".to_string()
+        }));
+        assert!(!SodexHttpClient::read_is_retryable(
+            &ClientError::CredentialsRequired
+        ));
+    }
+
+    #[test]
+    fn a_write_does_not_retry_an_ambiguous_transport_failure() {
+        // This is the whole point of splitting the predicates. A transport failure on a write
+        // does not say whether the venue received it, so repeating it could place a second
+        // order — and there is no order-status query yet to find out which happened.
+        assert!(!SodexHttpClient::write_is_retryable(
+            &ClientError::Transport("connection reset".to_string())
+        ));
+        assert!(!SodexHttpClient::write_is_retryable(&ClientError::Status {
+            status: 503,
+            body: String::new()
+        }));
+    }
+
+    #[test]
+    fn a_write_retries_only_a_refusal_raised_before_anything_was_sent() {
+        // The weight budget rejects locally, so nothing reached the venue and the repeat is
+        // provably free of side effects.
+        assert!(SodexHttpClient::write_is_retryable(&limited()));
+    }
+
+    #[test]
+    fn a_rate_limited_failure_carries_its_own_wait() {
+        // The budget knows exactly when capacity returns; the backoff curve does not. Waking
+        // early would spend another rejection, waking late would lose the slot.
+        assert_eq!(
+            SodexHttpClient::retry_delay(&limited()),
+            Some(Duration::from_millis(1_500))
+        );
+        assert_eq!(
+            SodexHttpClient::retry_delay(&ClientError::Transport("x".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn rate_limit_keys_ignore_the_host_and_the_market_segment() {
+        // Spot and perps must share one bucket per logical endpoint: they are one venue behind
+        // one IP budget, and splitting the key would let the pair double the rate.
+        let spot = SodexHttpClient::rate_limit_keys(
+            "https://testnet-gw.sodex.dev/api/v1/spot/trade/orders",
+        );
+        let perps = SodexHttpClient::rate_limit_keys(
+            "https://mainnet-gw.sodex.dev/api/v1/perps/trade/orders",
+        );
+
+        assert_eq!(spot, vec!["spot/trade/orders".to_string(), "spot".to_string()]);
+        assert_eq!(
+            perps,
+            vec!["perps/trade/orders".to_string(), "perps".to_string()]
+        );
+        assert_ne!(spot, perps);
+    }
+
+    #[test]
+    fn the_configured_timeout_reaches_the_transport() {
+        // It previously did not: the builder hardcoded 30 seconds and the config field was
+        // dead, so a deployment asking for a shorter timeout silently got the default.
+        let client = SodexHttpClient::public_with_options(Network::Testnet, Market::Spot, 5, None);
+
+        assert!(client.is_ok());
     }
 }

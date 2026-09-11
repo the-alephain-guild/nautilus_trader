@@ -143,9 +143,15 @@ impl SodexDataClient {
     ///
     /// Returns an error if the HTTP client cannot be built.
     pub fn new(client_id: ClientId, config: SodexDataClientConfig) -> anyhow::Result<Self> {
-        let http = SodexHttpClient::new_public(config.network, config.market)
-            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))?;
-        let provider = SodexInstrumentProvider::new(config.network, config.market)?;
+        let http = SodexHttpClient::public_with_options(
+            config.network,
+            config.market,
+            config.timeout_secs,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))?;
+        let provider =
+            SodexInstrumentProvider::with_options(config.network, config.market, config.timeout_secs)?;
 
         Ok(Self {
             client_id,

@@ -46,7 +46,8 @@ use crate::{
     common::Market,
     config::SodexExecClientConfig,
     http::{
-        CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient, align_batch,
+        BatchCost, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
+        align_batch,
         requests::{CancelItem, ClientOrderId as VenueClientOrderId},
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
@@ -97,10 +98,25 @@ impl SodexExecutionClient {
 
         let name = crate::common::credential::ApiKeyName::parse(&key_name)?;
         let key = crate::common::credential::ApiPrivateKey::parse(private_key.expose_secret())?;
-        let http = SodexHttpClient::with_credentials(config.network, config.market, name, &key)
-            .map_err(|e| anyhow::anyhow!("failed to build signed HTTP client: {e}"))?;
+        let http = SodexHttpClient::signed_with_options(
+            config.network,
+            config.market,
+            name,
+            &key,
+            config.timeout_secs,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!("failed to build signed HTTP client: {e}"))?;
 
-        let provider = SodexInstrumentProvider::new(config.network, config.market)?;
+        // The provider shares this client's order allowance even though it only reads: the
+        // venue counts an account's orders, so two independently-paced clients on one account
+        // could together exceed the rate neither of them broke alone.
+        let provider = SodexInstrumentProvider::with_options(
+            config.network,
+            config.market,
+            config.timeout_secs,
+        )?
+        .with_shared_order_quota(http.order_quota());
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
@@ -195,7 +211,22 @@ impl Submission {
                 request,
             )?,
         };
-        http.send(signed).await
+
+        // The two axes disagree on a batch: `N` orders cost one request's weight but `N`
+        // against the order allowance. Declaring both lets the client pace rather than be
+        // rejected.
+        let orders = u32::try_from(self.order_count()).unwrap_or(u32::MAX);
+        let cost = BatchCost::for_batch(orders);
+        http.send_weighted(signed, cost.ip_weight, cost.order_count)
+            .await
+    }
+
+    /// How many orders this submission places.
+    fn order_count(&self) -> usize {
+        match self {
+            Self::Spot(request) => request.orders.len(),
+            Self::Perps(request) => request.orders.len(),
+        }
     }
 }
 
@@ -258,7 +289,11 @@ impl Cancellation {
                 request,
             )?,
         };
-        http.send(signed).await
+
+        // A cancel places no orders, so it draws only on the weight budget. Charging it to the
+        // order allowance would make winding down a book compete with opening one.
+        http.send_weighted(signed, BatchCost::for_batch(0).ip_weight, 0)
+            .await
     }
 }
 

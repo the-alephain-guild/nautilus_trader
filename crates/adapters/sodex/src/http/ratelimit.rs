@@ -18,8 +18,31 @@
 //!
 //! Axis 3 depends on cumulative traded volume, which only the venue knows, so this module
 //! models axes 1 and 2 and leaves axis 3 to be enforced by the venue's rejection.
+//!
+//! # Each axis gets the mechanism that fits it
+//!
+//! The two modelled axes are not the same shape, so they are not enforced the same way:
+//!
+//! - **Axis 2 (order count)** is a pure count, which is exactly what a GCRA rate limiter
+//!   expresses. It uses [`order_rate_limiter`] from `nautilus-network`, one cell per order,
+//!   and [`await_order_quota`] *paces* rather than rejects — a caller that would exceed the
+//!   rate waits for capacity instead of getting an error it has to handle.
+//! - **Axis 1 (request weight)** cannot be expressed that way. Endpoints cost between 1 and
+//!   20 against one shared 1200-per-minute budget, and the library's limiter consumes exactly
+//!   one cell per call with no weighted form. [`WeightBudget`] therefore stays hand-rolled,
+//!   and this paragraph exists so the next reader does not assume it is a duplicate of
+//!   something the library already provides.
+//!
+//! Pacing works **across** requests, not within one. A single batch larger than the
+//! per-second order allowance cannot be rescued by waiting, because all of its orders arrive
+//! at the venue in the same instant; that is a property of the request, and the venue will
+//! reject it. The execution client submits one order per request, so the pacing below is the
+//! operative limit in practice.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, num::NonZeroU32, sync::Arc};
+
+use nautilus_network::ratelimiter::{RateLimiter, clock::MonotonicClock, quota::Quota};
+use ustr::Ustr;
 
 /// Weight allowed per rolling window, per IP.
 pub const WEIGHT_PER_MINUTE: u32 = 1200;
@@ -35,6 +58,50 @@ pub const ORDERS_PER_MINUTE: u32 = 600;
 
 /// Orders per second permitted to an API-key client, per account.
 pub const ORDERS_PER_SECOND: u32 = 20;
+
+/// Bucket key for the per-second order allowance.
+pub const ORDER_BUCKET_SECOND: &str = "sodex/orders/second";
+
+/// Bucket key for the per-minute order allowance.
+pub const ORDER_BUCKET_MINUTE: &str = "sodex/orders/minute";
+
+/// Limiter for the venue's order-count axis.
+pub type OrderRateLimiter = RateLimiter<Ustr, MonotonicClock>;
+
+/// Builds the order-count limiter: one cell per order, on both the second and minute buckets.
+///
+/// Shared between every client that submits on one account, because the venue counts the
+/// account's orders rather than each connection's.
+#[must_use]
+pub fn order_rate_limiter() -> Arc<OrderRateLimiter> {
+    let per_second = Quota::per_second(
+        NonZeroU32::new(ORDERS_PER_SECOND).expect("ORDERS_PER_SECOND is a non-zero literal"),
+    )
+    .expect("a one-second period is a valid replenish interval");
+    let per_minute = Quota::per_minute(
+        NonZeroU32::new(ORDERS_PER_MINUTE).expect("ORDERS_PER_MINUTE is a non-zero literal"),
+    );
+
+    Arc::new(RateLimiter::new_with_quota(
+        None,
+        vec![
+            (Ustr::from(ORDER_BUCKET_SECOND), per_second),
+            (Ustr::from(ORDER_BUCKET_MINUTE), per_minute),
+        ],
+    ))
+}
+
+/// Waits until `orders` more orders fit within both allowances.
+///
+/// Paces in the caller's task, before the request is composed, so no shared transport task
+/// sleeps on another account's behalf. A zero count returns immediately rather than consuming
+/// a cell, which matters because a cancel-only request places no orders.
+pub async fn await_order_quota(limiter: &OrderRateLimiter, orders: u32) {
+    let keys = [Ustr::from(ORDER_BUCKET_SECOND), Ustr::from(ORDER_BUCKET_MINUTE)];
+    for _ in 0..orders {
+        limiter.await_keys_ready(Some(&keys)).await;
+    }
+}
 
 /// Raised when a request would exceed a budget. Carries how long to wait rather than a bare
 /// failure, so callers can back off precisely instead of guessing.
@@ -310,5 +377,63 @@ mod tests {
 
         assert_eq!(budget.available(1_000), 0);
         assert!(budget.try_consume(1, 1_000).is_err());
+    }
+}
+
+#[cfg(test)]
+mod order_quota_tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_zero_order_request_consumes_no_allowance() {
+        // A cancel places no orders. Charging it would make winding a book down compete with
+        // opening one, which is backwards — the venue deliberately gives cancels more room.
+        let limiter = order_rate_limiter();
+
+        await_order_quota(&limiter, 0).await;
+
+        // The whole per-second burst is still available.
+        for _ in 0..ORDERS_PER_SECOND {
+            await_order_quota(&limiter, 1).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_burst_passes_without_waiting_and_the_next_order_waits() {
+        // GCRA allows the documented burst immediately, then paces. Proving the pacing engages
+        // matters because the dead constants it replaces never throttled anything.
+        let limiter = order_rate_limiter();
+
+        let start = Instant::now();
+        await_order_quota(&limiter, ORDERS_PER_SECOND).await;
+        let burst_elapsed = start.elapsed();
+
+        assert!(
+            burst_elapsed < Duration::from_millis(200),
+            "the documented burst should not be paced, took {burst_elapsed:?}"
+        );
+
+        let start = Instant::now();
+        await_order_quota(&limiter, 1).await;
+
+        // One order beyond the burst waits for one replenish interval, which at 20/second is
+        // 50ms. Asserting a floor rather than a window keeps this from being timing-flaky.
+        assert!(
+            start.elapsed() >= Duration::from_millis(20),
+            "the order past the burst should have been paced"
+        );
+    }
+
+    #[test]
+    fn a_batch_costs_one_request_of_weight_but_every_order_of_allowance() {
+        // The axes disagree here, and collapsing them into one number is what this type exists
+        // to prevent: ten orders in one request are one request to the IP budget.
+        let cost = BatchCost::for_batch(10);
+
+        assert_eq!(cost.order_count, 10);
+        assert_eq!(cost.ip_weight, batch_weight(10));
+        assert!(cost.ip_weight < cost.order_count);
     }
 }

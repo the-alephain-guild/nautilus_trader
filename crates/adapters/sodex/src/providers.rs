@@ -35,7 +35,7 @@ use serde::Deserialize;
 use crate::{
     common::{Market, decimal::normalize as normalize_decimal},
     config::venue_for,
-    http::{Network, SodexHttpClient},
+    http::{Network, SodexHttpClient, client::DEFAULT_TIMEOUT_SECS},
 };
 
 /// Status string the venue uses for a tradable symbol.
@@ -290,7 +290,20 @@ impl SodexInstrumentProvider {
     ///
     /// Returns an error if the underlying HTTP client cannot be built.
     pub fn new(network: Network, market: Market) -> anyhow::Result<Self> {
-        let client = SodexHttpClient::new_public(network, market)
+        Self::with_options(network, market, DEFAULT_TIMEOUT_SECS)
+    }
+
+    /// Creates a provider with an explicit HTTP timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying HTTP client cannot be built.
+    pub fn with_options(
+        network: Network,
+        market: Market,
+        timeout_secs: u64,
+    ) -> anyhow::Result<Self> {
+        let client = SodexHttpClient::public_with_options(network, market, timeout_secs, None)
             .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))?;
         Ok(Self {
             client,
@@ -299,6 +312,20 @@ impl SodexInstrumentProvider {
             store: InstrumentStore::default(),
             symbol_ids: HashMap::new(),
         })
+    }
+
+    /// Shares an account's order allowance with this provider's HTTP client.
+    ///
+    /// The provider itself places no orders, but its client is a real client on the same
+    /// account; pacing them together is what keeps a sibling execution client's allowance
+    /// honest.
+    #[must_use]
+    pub fn with_shared_order_quota(
+        mut self,
+        orders: std::sync::Arc<crate::http::ratelimit::OrderRateLimiter>,
+    ) -> Self {
+        self.client = self.client.with_shared_order_quota(orders);
+        self
     }
 
     /// The venue these instruments belong to.
