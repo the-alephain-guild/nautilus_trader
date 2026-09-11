@@ -71,18 +71,34 @@
 //! all 127 non-empty subsets of them are refused for `accountUpdate`. That is not an exhausted
 //! guess list but a closed search: its selector needs something outside that struct.
 //!
-//! # A buy credits less than it ordered
+//! # The fee is charged in the asset you receive
 //!
-//! The venue charges a fee in the asset you **receive**, so a buy pays in the base asset and it
-//! comes out of what arrives: ordering `0.001` vBTC credited `0.00099935`, short by exactly the
-//! reported fee. Anything that sells back what it bought has to sell what was *received*, rounded
-//! down to the step size — a flattening sell sized from the order is rejected for insufficient
-//! balance, which is how this was found.
+//! Observed on both sides of a round trip, not inferred from one: a buy pays in the **base** asset
+//! and a sell in the **quote** one. The buy's comes out of what arrives — ordering `0.001` vBTC
+//! credited `0.00099935`, short by exactly the reported `0.00000065` — and the sell's comes out of
+//! the proceeds, `notional × rate` to the last digit.
 //!
-//! Fill reports therefore carry the fee in the venue's own asset rather than converting it.
-//! [`execution::calculate_commission`]-style estimation for an *inferred* fill still reports the
-//! quote-denominated equivalent, which is exact at the fill price — `fee_in_base × price` and
-//! `notional × rate` agree to the last digit on the observed trade.
+//! Two consequences, both of which cost something to learn:
+//!
+//! - **A buy credits less than it ordered**, so anything selling back what it bought must sell
+//!   what was *received*, rounded down to the step size. A flattening sell sized from the order is
+//!   rejected for insufficient balance, which is how this was found. Each round trip also leaves
+//!   base dust below the step size, which is unsellable by construction.
+//! - **Fill reports keep the venue's asset** rather than converting. The quote-denominated estimate
+//!   used for *inferred* fills is unaffected and exact: a sell's fee is `notional × rate` outright,
+//!   and a buy's base-denominated fee converted at the fill price comes to the same number. Both
+//!   are pinned against the observed trades.
+//!
+//! # A coin's listed precision is not its ledger precision
+//!
+//! The symbol listing reports `quoteCoinPrecision: 6` for vUSDC. The venue's ledger carries ten
+//! places — a fee of `0.0498075435`, a balance of `999.3931824565`. Registering the currency at the
+//! listed precision rounded that fee to `0.049808`, overstating it and leaving the recorded
+//! commission unable to reconcile against the balance it came out of.
+//!
+//! So venue coins are registered at the engine's full width. The listed precision governs *orders*
+//! — what price and size the venue accepts — and is carried separately on each instrument as
+//! `price_precision` and `size_precision`, where it belongs.
 //!
 //! # What is left
 //!

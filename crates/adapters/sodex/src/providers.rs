@@ -124,18 +124,23 @@ pub struct PerpsSymbol {
 /// than being replaced by this venue's view of it. The venue's coins are distinctly named —
 /// `vBTC`, `vUSDC` — so a clash is unlikely, but a precision quietly changed under another
 /// adapter would be very hard to trace back to here.
-fn resolve_currency(code: &str, precision: u8) -> Currency {
+fn resolve_currency(code: &str, _listed_precision: u8) -> Currency {
     if let Some(existing) = CURRENCY_MAP.lock().get(code) {
         return *existing;
     }
 
-    let currency = Currency::new(
-        code,
-        precision.min(FIXED_PRECISION),
-        0,
-        code,
-        CurrencyType::Crypto,
-    );
+    // Registered at the engine's full width rather than at the listing's `coinPrecision`, because
+    // those two are not the same thing and using the listing loses money.
+    //
+    // Observed: the symbol listing reports `quoteCoinPrecision: 6` for vUSDC, but the venue's own
+    // ledger carries more — a balance of `999.3931824565` and a fee of `0.0498075435`, both ten
+    // places. Registering at six rounded that fee to `0.049808`, overstating it and leaving the
+    // recorded commission unable to reconcile against the balance it came out of.
+    //
+    // The listing's precision governs *orders* — what price and size the venue will accept — and
+    // that is carried separately on the instrument as `price_precision` and `size_precision`. A
+    // currency's precision only bounds `Money`, which here has to hold whatever the ledger says.
+    let currency = Currency::new(code, FIXED_PRECISION, 0, code, CurrencyType::Crypto);
 
     if let Err(e) = Currency::register(currency, false) {
         // Not fatal: the instrument can still be built from the value. But a later lookup by code

@@ -519,14 +519,40 @@ mod fill_tests {
         }
     }
 
-    fn registered_fee_coin() -> Currency {
-        let currency = Currency::new("vBTC", 8, 0, "vBTC", nautilus_model::enums::CurrencyType::Crypto);
+    /// Registers a venue coin the way the provider does: at the engine's full width, not at the
+    /// precision the symbol listing reports for it.
+    fn registered_coin(code: &str) -> Currency {
+        let currency = Currency::new(
+            code,
+            nautilus_model::types::fixed::FIXED_PRECISION,
+            0,
+            code,
+            nautilus_model::enums::CurrencyType::Crypto,
+        );
         let _ = Currency::register(currency, false);
         currency
     }
 
+    /// The venue's own response for the flattening sell, verbatim.
+    fn sell_trade() -> TradeRecord {
+        TradeRecord {
+            trade_id: 9_458_097,
+            order_id: 1_290_029_653,
+            cl_ord_id: "fillprobe-1789115999154".to_string(),
+            symbol: "vBTC_vUSDC".to_string(),
+            side: OrderSide::Sell,
+            price: "77401".to_string(),
+            quantity: "0.00099".to_string(),
+            fee: "0.0498075435".to_string(),
+            fee_coin: "vUSDC".to_string(),
+            is_maker: false,
+            time: 1_789_116_003_061,
+        }
+    }
+
     fn report(trade: &TradeRecord) -> FillReport {
-        registered_fee_coin();
+        registered_coin("vBTC");
+        registered_coin("vUSDC");
         fill_report(
             trade,
             AccountId::from("SODEX_SPOT-60366"),
@@ -577,6 +603,54 @@ mod fill_tests {
     #[test]
     fn the_fill_is_stamped_with_its_own_time() {
         assert_eq!(report(&trade()).ts_event.as_u64(), 1_789_108_467_221 * 1_000_000);
+    }
+
+    #[test]
+    fn a_sell_pays_its_fee_in_the_quote_asset() {
+        // The other half of the rule, and observed rather than assumed from symmetry: the fee is
+        // charged in the asset received, so a sell pays in quote where a buy pays in base.
+        let report = report(&sell_trade());
+
+        assert_eq!(report.commission.currency.code.as_str(), "vUSDC");
+        assert_eq!(report.order_side, nautilus_model::enums::OrderSide::Sell);
+    }
+
+    #[test]
+    fn the_fee_is_carried_at_full_precision_not_the_listed_coin_precision() {
+        // This rounded before. The symbol listing reports `quoteCoinPrecision: 6` for vUSDC, but
+        // the venue's ledger carries ten places — fee `0.0498075435`, balance `999.3931824565`.
+        // Registering the coin at six turned that fee into `0.049808`, overstating it and leaving
+        // the recorded commission unable to reconcile against the balance it came out of.
+        let report = report(&sell_trade());
+
+        assert_eq!(
+            report.commission.as_decimal(),
+            Decimal::from_str("0.0498075435").unwrap(),
+            "the venue's fee must survive verbatim"
+        );
+    }
+
+    #[test]
+    fn the_fee_equals_notional_times_the_rate_on_both_sides() {
+        // Why the quote-denominated estimate used for *inferred* fills is exact: a sell's fee is
+        // `notional * rate` outright, and a buy's base-denominated fee converted at the fill price
+        // comes to the same number. Checked against both observed trades rather than assumed.
+        let rate = Decimal::from_str("0.00065").unwrap();
+
+        let sell = sell_trade();
+        let sell_notional = Decimal::from_str(&sell.quantity).unwrap()
+            * Decimal::from_str(&sell.price).unwrap();
+        assert_eq!(
+            sell_notional * rate,
+            Decimal::from_str(&sell.fee).unwrap()
+        );
+
+        let buy = trade();
+        let buy_fee_in_quote =
+            Decimal::from_str(&buy.fee).unwrap() * Decimal::from_str(&buy.price).unwrap();
+        let buy_notional =
+            Decimal::from_str(&buy.quantity).unwrap() * Decimal::from_str(&buy.price).unwrap();
+        assert_eq!(buy_notional * rate, buy_fee_in_quote);
     }
 
     #[test]
