@@ -5,8 +5,10 @@
 
 pub mod client;
 pub mod parse;
+pub mod reports;
 
 pub use client::SodexExecutionClient;
+pub use reports::{ReportError, order_status_report};
 pub use parse::{
     OrderSpec,
     OrderConversionError, is_fill, map_client_order_id, map_order_status, map_order_type,

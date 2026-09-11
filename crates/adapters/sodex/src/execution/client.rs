@@ -2,14 +2,26 @@
 //!
 //! # What this client can and cannot do
 //!
-//! Submission and cancellation are implemented against endpoints verified on the live
-//! testnet. Account queries, order status queries and position reports are **not**: the venue
-//! documentation this adapter was built from covers the trading endpoints, and inventing
-//! paths for the rest would produce a client that fails at run time in a way that reads like
-//! a credential problem. Those methods are therefore left to the trait's defaults, which log
-//! them as unimplemented, and the consequence is stated plainly: **this client cannot
-//! reconcile**. Orders it did not place, or fills that happened while it was disconnected,
-//! stay invisible to the engine until those endpoints exist.
+//! Submission, cancellation, account state and order reconciliation are implemented against
+//! endpoints verified on the live testnet. Fill reports are not, and the reason is narrow: the
+//! endpoint exists and answers, but an account that has never traded answers `[]`, so the wire
+//! shape cannot be read off it. Typing it by analogy to the order shape is exactly the move that
+//! produced this integration's worst failures, so it waits for one observed fill instead.
+//!
+//! Position reports are likewise unimplemented, and only for perps: spot does not serve the path
+//! at all, which is correct rather than missing — spot holds balances and has no positions.
+//!
+//! # The account reads are addressed by the master wallet, and a wrong address does not fail
+//!
+//! They are keyed by the account's wallet address. The API key's own address also answers `200`,
+//! with an empty account — so a misconfigured client would reconcile against "no balance, no open
+//! orders" and the engine would take that for a flat account, with nothing reporting a problem.
+//!
+//! Emptiness cannot be the error, because a new account is legitimately empty. So the client
+//! proves the address instead: at connect it asks the venue which API keys that wallet has
+//! registered **on this engine**, and refuses to start unless the key it signs with is among
+//! them. That check also catches the other documented trap in one go — a key registered on the
+//! other engine, which otherwise surfaces much later as `API key not found` on the first order.
 //!
 //! # One order per request
 //!
@@ -26,7 +38,10 @@ use async_trait::async_trait;
 use nautilus_common::{
     clients::ExecutionClient,
     live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
-    messages::execution::{CancelOrder, SubmitOrder, SubmitOrderList},
+    messages::execution::{
+        CancelOrder, GenerateOrderStatusReport, GenerateOrderStatusReports,
+        GeneratePositionStatusReports, QueryAccount, SubmitOrder, SubmitOrderList,
+    },
 };
 use nautilus_core::{Params, UnixNanos, time::AtomicTime};
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
@@ -34,23 +49,25 @@ use nautilus_model::{
     accounts::AccountAny,
     enums::OmsType,
     identifiers::{AccountId, ClientId, InstrumentId, Venue, VenueOrderId},
+    instruments::Instrument,
     orders::{Order, OrderAny},
-    types::{AccountBalance, MarginBalance},
+    reports::{order::OrderStatusReport, position::PositionStatusReport},
+    types::{AccountBalance, Currency, MarginBalance, Money},
 };
 use nautilus_network::http::Method;
 use tokio_util::sync::CancellationToken;
 
-use super::parse::OrderSpec;
+use super::{parse::OrderSpec, reports::order_status_report};
 use crate::{
     common::Market,
     config::SodexExecClientConfig,
     http::{
-        BatchCost, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
+        BatchCost, account_reads::OrderRecord, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
         align_batch,
         requests::{CancelItem, ClientOrderId as VenueClientOrderId},
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
-    providers::{InstrumentCatalog, load_instruments, spawn_instrument_refresh},
+    providers::{InstrumentCatalog, instrument_id_for, load_instruments, spawn_instrument_refresh},
 };
 
 /// Live execution client for one SoDEX engine.
@@ -64,6 +81,8 @@ pub struct SodexExecutionClient {
     catalog: Arc<InstrumentCatalog>,
     /// Venue account id, resolved once at construction.
     venue_account_id: u64,
+    /// The account's wallet address, which is what the account reads are keyed by.
+    wallet: String,
     tasks: TaskHandles,
     cancellation: CancellationToken,
 }
@@ -93,6 +112,7 @@ impl SodexExecutionClient {
         clock: &'static AtomicTime,
     ) -> anyhow::Result<Self> {
         let venue_account_id = config.resolve_account_id()?;
+        let wallet = config.resolve_wallet_address()?;
         let key_name = config.resolve_api_key_name()?;
         let private_key = config.resolve_api_private_key()?;
 
@@ -125,9 +145,50 @@ impl SodexExecutionClient {
             http: Arc::new(http),
             catalog: Arc::new(InstrumentCatalog::new()),
             venue_account_id,
+            wallet,
             tasks: TaskHandles::default(),
             cancellation: CancellationToken::new(),
         })
+    }
+
+    /// Refuses to continue unless the configured wallet has our signing key registered here.
+    ///
+    /// This is the check that makes the account reads trustworthy. Without it a wrong address
+    /// would read as an empty account rather than an error, and reconciliation would conclude the
+    /// account is flat.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming what the venue does hold, because the two ways this fails want
+    /// different fixes: a wrong address, or a key registered on the other engine.
+    async fn verify_wallet_owns_signing_key(&self) -> anyhow::Result<()> {
+        let registered = self
+            .http
+            .api_keys(&self.wallet)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to list API keys for {}: {e}", self.wallet))?;
+
+        let signer = format!("{:#x}", self.http.signing_address()?);
+        if registered
+            .iter()
+            .any(|entry| entry.public_key.eq_ignore_ascii_case(&signer))
+        {
+            return Ok(());
+        }
+
+        let names: Vec<String> = registered
+            .iter()
+            .map(|entry| format!("{}={}", entry.name, entry.public_key))
+            .collect();
+        anyhow::bail!(
+            "wallet {} has no API key matching this client's signing address {signer} on {:?}. \
+             Registered there: [{}]. Either the wallet address is wrong — in which case the \
+             account reads would have reported an empty account rather than failing — or the key \
+             was registered on the other engine, which keeps a separate key set.",
+            self.wallet,
+            self.config.market,
+            names.join(", ")
+        )
     }
 
     fn symbol_id(&self, instrument_id: &InstrumentId) -> anyhow::Result<u64> {
@@ -388,6 +449,9 @@ impl ExecutionClient for SodexExecutionClient {
         )
         .await?;
 
+        // Before anything else reads the account: prove the address is the right one.
+        self.verify_wallet_owns_signing_key().await?;
+
         if let Some(task) = spawn_instrument_refresh(
             self.config.update_instruments_interval_mins,
             Arc::clone(&self.http),
@@ -414,6 +478,63 @@ impl ExecutionClient for SodexExecutionClient {
         self.tasks.abort_all();
         self.core.set_disconnected();
         Ok(())
+    }
+
+    fn query_account(&self, _cmd: QueryAccount) -> anyhow::Result<()> {
+        // Synchronous trait method over an awaiting read, so the work is handed to the runtime.
+        // The engine consumes the account state as an event, not as this call's return value.
+        let client = self.clone_for_task();
+        get_runtime().spawn(async move {
+            if let Err(e) = client.publish_account_state().await {
+                log::error!("sodex_account_state_failed error={e}");
+            }
+        });
+        Ok(())
+    }
+
+    async fn generate_order_status_reports(
+        &self,
+        _cmd: &GenerateOrderStatusReports,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        self.collect_order_reports().await
+    }
+
+    async fn generate_order_status_report(
+        &self,
+        cmd: &GenerateOrderStatusReport,
+    ) -> anyhow::Result<Option<OrderStatusReport>> {
+        // The venue offers no single-order read, so one order is found within the account's own
+        // two lists. Matching on either identifier because the engine may hold only one of them:
+        // a reconciled external order has no client order id it recognises.
+        let reports = self.collect_order_reports().await?;
+
+        Ok(reports.into_iter().find(|report| {
+            cmd.venue_order_id
+                .is_some_and(|wanted| wanted == report.venue_order_id)
+                || cmd
+                    .client_order_id
+                    .is_some_and(|wanted| Some(wanted) == report.client_order_id)
+        }))
+    }
+
+    async fn generate_position_status_reports(
+        &self,
+        _cmd: &GeneratePositionStatusReports,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        match self.config.market {
+            // Correct rather than missing: spot holds balances and has no positions, and the
+            // venue does not serve the path at all.
+            Market::Spot => Ok(Vec::new()),
+            // The endpoint exists and answers, but its payload shape has never been observed —
+            // reading it needs an open perps position, and typing it from the spot order shape by
+            // analogy is what produced this integration's worst failures. Reporting an empty list
+            // would claim the account is flat, so this says plainly that it does not know.
+            Market::Perps => anyhow::bail!(
+                "SoDEX perps position reports are not implemented: the payload shape of \
+                 /accounts/{{wallet}}/positions has not been observed, and reporting an empty \
+                 list would assert the account is flat when it may not be"
+            ),
+        }
     }
 
     fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
@@ -638,6 +759,156 @@ impl ExecutionClient for SodexExecutionClient {
 
         Ok(())
     }
+}
+
+impl SodexExecutionClient {
+    /// A handle holding only what a spawned read needs.
+    ///
+    /// The client itself is not `Send` — its core holds the engine's cache — so a task cannot
+    /// borrow it. What a read needs is the transport, the wallet and the instrument set, all of
+    /// which are shareable.
+    fn clone_for_task(&self) -> AccountReader {
+        AccountReader {
+            http: Arc::clone(&self.http),
+            wallet: self.wallet.clone(),
+            catalog: Arc::clone(&self.catalog),
+            account_id: self.core.account_id,
+            emitter: self.emitter.clone(),
+            clock: self.clock,
+        }
+    }
+
+    /// Reads every order the account has, open and terminal alike, as reports.
+    ///
+    /// Both endpoints are consulted because an order's state is split across them: `/orders`
+    /// holds only what is still working, and anything terminal has moved to `/orders/history`.
+    /// A reconciliation built on the open list alone would show a cancelled order as absent,
+    /// which the engine cannot tell from an order it was never supposed to know about.
+    ///
+    /// A record that cannot be expressed is skipped with a warning rather than failing the whole
+    /// reconciliation: one unmappable order should not blind the engine to the rest of the book.
+    async fn collect_order_reports(&self) -> anyhow::Result<Vec<OrderStatusReport>> {
+        let open = self
+            .http
+            .open_orders(&self.wallet)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read open orders: {e}"))?;
+        let history = self
+            .http
+            .order_history(&self.wallet)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read order history: {e}"))?;
+
+        let ts_init = self.clock.get_time_ns();
+        let mut reports = Vec::with_capacity(open.orders.len() + history.len());
+
+        for record in open.orders.iter().chain(history.iter()) {
+            match self.report_for(record, ts_init) {
+                Ok(report) => reports.push(report),
+                Err(e) => log::warn!(
+                    "sodex_order_report_skipped order_id={} error={e}",
+                    record.order_id
+                ),
+            }
+        }
+
+        Ok(reports)
+    }
+
+    /// Builds one report, resolving the instrument the record names.
+    fn report_for(
+        &self,
+        record: &OrderRecord,
+        ts_init: UnixNanos,
+    ) -> anyhow::Result<OrderStatusReport> {
+        let instrument_id = instrument_id_for(&record.symbol, self.core.venue);
+        let instrument = self.catalog.find(&instrument_id).ok_or_else(|| {
+            anyhow::anyhow!("{instrument_id} is not in the loaded instrument set")
+        })?;
+
+        Ok(order_status_report(
+            record,
+            self.core.account_id,
+            instrument_id,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            ts_init,
+        )?)
+    }
+
+}
+
+/// What a spawned account read needs, without the engine-bound parts of the client.
+struct AccountReader {
+    http: Arc<SodexHttpClient>,
+    wallet: String,
+    catalog: Arc<InstrumentCatalog>,
+    account_id: AccountId,
+    emitter: ExecutionEventEmitter,
+    clock: &'static AtomicTime,
+}
+
+impl AccountReader {
+    /// Reads the account's balances and emits them as account state.
+    async fn publish_account_state(&self) -> anyhow::Result<()> {
+        let snapshot = self
+            .http
+            .account_balances(&self.wallet)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read balances: {e}"))?;
+
+        let mut balances = Vec::with_capacity(snapshot.balances.len());
+        for balance in &snapshot.balances {
+            match account_balance(balance) {
+                Ok(converted) => balances.push(converted),
+                // Skipping one coin beats reporting no account at all, but it is not harmless:
+                // the engine would under-report buying power. Hence error, not debug.
+                Err(e) => {
+                    log::error!("sodex_balance_skipped coin={} error={e}", balance.coin);
+                }
+            }
+        }
+
+        // Stamped with the venue's own block time rather than local time: the venue reports the
+        // chain height each read was taken at, so two reads at one height describe one state and
+        // local timestamps would make them look like two.
+        self.emitter.emit_account_state(
+            balances,
+            Vec::new(),
+            true,
+            UnixNanos::from(snapshot.block_time_ms * 1_000_000),
+            None,
+        );
+        let _ = (self.catalog.len(), self.account_id, self.clock);
+        Ok(())
+    }
+}
+
+/// Converts one coin balance, deriving the free amount.
+///
+/// The venue reports `total` and `locked`; Nautilus wants total, locked and free, and free is the
+/// difference. Computing it rather than assuming `total` is free is the point: the locked part is
+/// reserved against open orders and cannot be spent twice.
+fn account_balance(
+    balance: &crate::http::account_reads::CoinBalance,
+) -> anyhow::Result<AccountBalance> {
+    let currency = Currency::try_from_str(&balance.coin)
+        .ok_or_else(|| anyhow::anyhow!("unknown currency {}", balance.coin))?;
+
+    let total = money(&balance.total, currency)?;
+    let locked = money(&balance.locked, currency)?;
+    let free = Money::new(
+        (total.as_decimal() - locked.as_decimal()).try_into()?,
+        currency,
+    );
+
+    Ok(AccountBalance::new(total, locked, free))
+}
+
+/// Parses a venue decimal into money at the currency's precision.
+fn money(raw: &str, currency: Currency) -> anyhow::Result<Money> {
+    let normalized = crate::common::decimal::normalize_to(raw, currency.precision)?;
+    Ok(Money::new(normalized.parse()?, currency))
 }
 
 /// Turns one acknowledgement into the engine's view of the order.

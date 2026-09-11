@@ -16,6 +16,7 @@
 //! key in a trading process.
 
 pub mod account;
+pub mod account_reads;
 pub mod client;
 pub mod models;
 pub mod orders;
@@ -24,6 +25,9 @@ pub mod requests;
 pub mod spot;
 
 pub use account::{AccountClient, AddApiKeyRequest, generate_api_key};
+pub use account_reads::{
+    ApiKeyEntry, BalancesSnapshot, CoinBalance, OpenOrders, OrderRecord, Positions,
+};
 pub use client::{ClientError, SignedRequest, SodexHttpClient};
 pub use models::{ApiResponse, EnvelopeError};
 pub use orders::{AlignError, OrderAck, align_batch};

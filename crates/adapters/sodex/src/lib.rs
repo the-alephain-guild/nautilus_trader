@@ -46,26 +46,42 @@
 //! | Instrument reload | Hourly by default, configurable; `None` disables |
 //! | Socket state reporting | Link state surfaced to the engine, reconnect requestable |
 //! | Python bindings | `nautilus_trader.adapters.sodex` |
-//! | Account state | **Not implemented** |
-//! | Order status and fill reports | **Not implemented** |
-//! | Position reports | **Not implemented** |
+//! | Account state | Coin balances, with free derived from total minus locked |
+//! | Order status reports | Open orders and history, reconciled together |
+//! | Fill reports | **Not implemented** — one observed fill away |
+//! | Position reports | **Not implemented** (perps); correctly empty on spot |
 //!
-//! The account, order-status and position gaps share one cause: the venue documentation this
-//! adapter was built from covers the trading endpoints, and the paths for those reads have
-//! not been verified against a live link. Guessing them would produce failures that read
-//! like credential errors rather than missing endpoints — a diagnosis this integration has
-//! already cost time on once.
+//! # How the account reads were found
 //!
-//! The consequence is worth stating rather than leaving to be discovered: **the execution
-//! client cannot reconcile.** Orders it did not place, and fills that occurred while it was
-//! disconnected, remain invisible to the engine. Fills are not reported at all, so a live run
-//! learns that an order was accepted but never that it was filled.
+//! They were not in the documentation this adapter was built from. They were found by asking the
+//! venue which paths it routes, which works because its gateway answers a path it does not route
+//! differently from one it routes but cannot satisfy. Two things made the search converge:
 //!
-//! An `accountUpdate` stream channel does exist — the `probe_channels` example found it, and
-//! the venue's own error text names an `accountID` field on its subscription parameters — but
-//! eighteen candidate parameter shapes were all refused as `invalid params`, so its selector
-//! remains unknown. That channel is the next thing to add, and finding its shape is a
-//! question for the venue rather than for guesswork.
+//! - **The router is per method.** A first sweep sent only `GET`, concluded almost nothing
+//!   existed, and was refuted by its own control: `GET /trade/orders` also answers `404`, and
+//!   orders are certainly placed there. There is no `405`, so a `404` means "not this method".
+//! - **The paths carry the wallet address as a segment.** `/accounts/balances` is not a path;
+//!   `/accounts/{address}/balances` is. One already-working endpoint had that shape documented in
+//!   this crate all along, which is where the lead came from.
+//!
+//! The same technique settled the stream channel question too. `SubscriptionParams` has exactly
+//! seven fields — the venue names each one in its unmarshal errors when sent a wrong type — and
+//! all 127 non-empty subsets of them are refused for `accountUpdate`. That is not an exhausted
+//! guess list but a closed search: its selector needs something outside that struct.
+//!
+//! # What is left, and what it costs
+//!
+//! **Fills.** `/accounts/{wallet}/trades` exists and answers, but an account that has never
+//! traded answers `[]`, so its wire shape cannot be read off it. Typing it by analogy to the
+//! order shape is precisely the move that produced this integration's worst failures, so it waits
+//! for one observed fill — which the `observe_fill` example produces in a single testnet
+//! round-trip. Until then a live run learns that an order was accepted, and learns it was filled
+//! only on the next reconciliation pass, from `executedQty` on the order record.
+//!
+//! **Perps positions.** The endpoint exists; its payload needs an open perps position to observe,
+//! and the testnet account holds no perps balance to open one with. `generate_position_status_reports`
+//! therefore refuses on perps rather than returning an empty list, because an empty list asserts
+//! the account is flat.
 //!
 //! # Reused rather than rebuilt
 //!

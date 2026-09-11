@@ -224,6 +224,22 @@ impl SodexHttpClient {
         self.cancellation.cancel();
     }
 
+    /// The address the venue will recover from this client's signatures.
+    ///
+    /// Not cosmetic: it is what proves a configured wallet address is the account this client
+    /// actually signs for, which the account reads cannot establish on their own — a wrong
+    /// address answers with an empty account rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::CredentialsRequired`] on an unsigned client.
+    pub fn signing_address(&self) -> Result<alloy_primitives::Address, ClientError> {
+        self.credentials
+            .as_ref()
+            .map(|credentials| credentials.signer.address())
+            .ok_or(ClientError::CredentialsRequired)
+    }
+
     /// Whether this client can sign.
     #[must_use]
     pub const fn can_sign(&self) -> bool {

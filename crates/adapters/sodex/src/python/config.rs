@@ -85,7 +85,10 @@ impl SodexExecClientConfig {
     /// traceback that prints its arguments.
     ///
     /// The key this takes is a registered **API key**, never the master wallet: the master key
-    /// can authorize withdrawals and belongs offline.
+    /// can authorize withdrawals and belongs offline. `wallet_address` is the master wallet's
+    /// *address* — public information that signs nothing, and required because the account reads
+    /// are addressed by it. A wrong address there answers with an empty account rather than an
+    /// error, so the client verifies it against the registered key list at startup.
     #[new]
     #[pyo3(signature = (
         network = None,
@@ -93,6 +96,7 @@ impl SodexExecClientConfig {
         account_id = None,
         api_key_name = None,
         api_private_key = None,
+        wallet_address = None,
         update_instruments_interval_mins = None,
         timeout_secs = None,
     ))]
@@ -103,6 +107,7 @@ impl SodexExecClientConfig {
         account_id: Option<u64>,
         api_key_name: Option<String>,
         api_private_key: Option<String>,
+        wallet_address: Option<String>,
         update_instruments_interval_mins: Option<u64>,
         timeout_secs: Option<u64>,
     ) -> Self {
@@ -112,6 +117,7 @@ impl SodexExecClientConfig {
             account_id,
             api_key_name,
             api_private_key: api_private_key.map(SecretString::from),
+            wallet_address,
             update_instruments_interval_mins: update_instruments_interval_mins
                 .map(Some)
                 .unwrap_or_else(default_instrument_refresh_mins),

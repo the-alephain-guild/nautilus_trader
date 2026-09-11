@@ -48,6 +48,9 @@ pub const ENV_API_PRIVATE_KEY: &str = "SODEX_API_PRIVATE_KEY";
 /// Environment variable holding the numeric account id.
 pub const ENV_ACCOUNT_ID: &str = "SODEX_ACCOUNT_ID";
 
+/// Environment variable holding the account's wallet address.
+pub const ENV_WALLET_ADDRESS: &str = "SODEX_WALLET_ADDRESS";
+
 /// The venue for a given engine.
 #[must_use]
 pub fn venue_for(market: Market) -> Venue {
@@ -64,6 +67,12 @@ pub enum ConfigError {
     Missing { what: &'static str, env: &'static str },
     #[error("{env} is not a valid account id: {value:?}")]
     InvalidAccountId { env: &'static str, value: String },
+    #[error(
+        "{env} is not a wallet address: {value:?} — expected 0x followed by 40 hex digits. The \
+         account reads are addressed by the master wallet, and a wrong address answers with an \
+         empty account rather than an error"
+    )]
+    InvalidWalletAddress { env: &'static str, value: String },
 }
 
 /// Configuration for the market-data client.
@@ -147,6 +156,16 @@ pub struct SodexExecClientConfig {
     /// Private key of the registered API key. Falls back to [`ENV_API_PRIVATE_KEY`].
     #[serde(default)]
     pub api_private_key: Option<SecretString>,
+    /// The account's **master wallet** address. Falls back to [`ENV_WALLET_ADDRESS`].
+    ///
+    /// Public information, not a secret — it addresses the account's reads and signs nothing.
+    /// Required all the same, and for an uncomfortable reason: the reads are keyed by this
+    /// address, and pointing them at the API key's address instead does not fail. It answers
+    /// `200` with an empty account, which reconciliation would read as "flat, nothing open".
+    /// The execution client therefore proves at startup that this wallet lists the key it signs
+    /// with, rather than trusting the value.
+    #[serde(default)]
+    pub wallet_address: Option<String>,
     /// How often to reload the venue's instrument listing, in minutes.
     ///
     /// A young venue lists and delists pairs while a session is running, and nothing pushes
@@ -170,6 +189,7 @@ impl SodexExecClientConfig {
             account_id: None,
             api_key_name: None,
             api_private_key: None,
+            wallet_address: None,
             update_instruments_interval_mins: default_instrument_refresh_mins(),
             timeout_secs: default_timeout_secs(),
         }
@@ -232,6 +252,34 @@ impl SodexExecClientConfig {
             })
     }
 
+    /// Resolves the account's wallet address from the config or the environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Missing`] when absent from both, or
+    /// [`ConfigError::InvalidWalletAddress`] when it is not an address. Checking the shape here
+    /// rather than letting the venue answer matters: a malformed address does not produce an
+    /// error from the venue, it produces an empty account.
+    pub fn resolve_wallet_address(&self) -> Result<String, ConfigError> {
+        let raw = self
+            .wallet_address
+            .clone()
+            .or_else(|| env_value(ENV_WALLET_ADDRESS))
+            .ok_or(ConfigError::Missing {
+                what: "wallet address",
+                env: ENV_WALLET_ADDRESS,
+            })?;
+
+        let hex = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X"));
+        match hex {
+            Some(hex) if hex.len() == 40 && hex.chars().all(|c| c.is_ascii_hexdigit()) => Ok(raw),
+            _ => Err(ConfigError::InvalidWalletAddress {
+                env: ENV_WALLET_ADDRESS,
+                value: raw,
+            }),
+        }
+    }
+
     /// Whether every credential can be resolved.
     ///
     /// Useful for failing at startup rather than on the first order.
@@ -240,6 +288,7 @@ impl SodexExecClientConfig {
         self.resolve_account_id().is_ok()
             && self.resolve_api_key_name().is_ok()
             && self.resolve_api_private_key().is_ok()
+            && self.resolve_wallet_address().is_ok()
     }
 }
 
