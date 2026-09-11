@@ -31,9 +31,14 @@ from the configuration or, preferably, from ``SODEX_ACCOUNT_ID``, ``SODEX_API_KE
 prints its arguments. The key is a registered API key, never the master wallet, which can
 authorize withdrawals and belongs offline.
 
-Known limitation: the execution client reports no fills and cannot reconcile. It learns that an
-order was accepted but never that it was filled, and orders it did not place remain invisible.
-See the crate documentation for why, and what is needed to close it.
+Reconciliation works. The execution client reads the account's balances, open orders and order
+history, and the engine infers fills from those reports — so positions, average prices and fees
+reconcile, including for orders this client did not place.
+
+Known limitation: granularity rather than capability. The venue's per-fill endpoint answers an
+empty list on an account that has never traded, so its wire shape is unobserved and goes
+unparsed. Fills therefore arrive at reconciliation cadence rather than per trade, each carrying a
+synthetic trade id instead of the venue's own.
 """
 
 from nautilus_trader._fixup import fixup_module_names
