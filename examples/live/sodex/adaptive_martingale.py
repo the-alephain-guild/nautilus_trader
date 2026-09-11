@@ -426,15 +426,37 @@ class AdaptiveMartingale(Strategy):
         close = float(bar.close)
         gap = self._gap_pct(close)
         self._prev_signal_close = close
+        decision = self._decide(close, gap)
 
+        # One line per signal bar, naming the branch actually taken. Without it, "evaluated and
+        # declined" and "never reached" look identical from outside — and the quiet case is the
+        # common one, since most bars are holds.
+        log_msg = (
+            f"signal_bar decision={decision} state={self._state.value} "
+            f"regime={self._regime.value} close={close:.4f} "
+            f"ema={self._ema_signal.value:.4f} atr_pct={self._atr_signal.value / close:.4f} "
+            f"gap={gap:.4f} layers={len(self._layer_prices)} cooldown={self._cooldown_remaining}"
+        )
+        self.log.info(log_msg)
+
+        if decision == "gap_exit":
+            self._exit("gap_protection")
+        elif decision.startswith("exit_"):
+            self._exit(decision.removeprefix("exit_"))
+        elif decision == "enter":
+            self._enter(0, close)
+        elif decision == "scale":
+            self._enter(len(self._layer_prices), close)
+
+    def _decide(self, close: float, gap: float) -> str:
+        """
+        Name the branch this bar takes, without acting on it.
+
+        Separating the choice from the action is what lets the choice be logged as made rather
+        than inferred from whichever side effect happened to follow.
+        """
         if abs(gap) > self._config.gap_threshold:
-            if self._state == MartingaleState.SCALING:
-                log_msg = (
-                    f"gap_protection_exit gap={gap:.4f} threshold={self._config.gap_threshold}"
-                )
-                self.log.warning(log_msg)
-                self._exit("gap_protection")
-            return
+            return "gap_exit" if self._state == MartingaleState.SCALING else "hold_gap"
 
         if self._cooldown_remaining > 0:
             self._cooldown_remaining -= 1
@@ -442,40 +464,35 @@ class AdaptiveMartingale(Strategy):
         if self._state == MartingaleState.SCALING:
             reason = self._exit_reason(close)
             if reason is not None:
-                self._exit(reason)
-                return
-            if self._should_scale(close):
-                self._enter(len(self._layer_prices), close)
-            return
+                return f"exit_{reason}"
+            return "scale" if self._should_scale(close) else "hold_scaling"
 
         if self._cooldown_remaining > 0:
-            return
-        if self._should_open(close):
-            self._enter(0, close)
+            return "hold_cooldown"
+
+        blocker = self._open_blocker(close)
+        return "enter" if blocker is None else f"hold_{blocker}"
 
     def _gap_pct(self, close: float) -> float:
         if self._prev_signal_close <= 0.0:
             return 0.0
         return (close - self._prev_signal_close) / self._prev_signal_close
 
-    def _should_open(self, close: float) -> bool:
+    def _open_blocker(self, close: float) -> str | None:
+        """
+        Return the first condition blocking a first layer, or `None` if none does.
+        """
         if self._regime not in BULLISH:
-            return False
+            return "regime"
 
         reference = self._ema_signal.value
         if close >= reference * (1.0 - self._config.pullback_threshold):
-            return False
+            return "no_pullback"
 
-        atr_pct = self._atr_signal.value / close
-        if atr_pct > self._config.volatility_threshold:
-            log_msg = (
-                f"entry_blocked_volatility atr_pct={atr_pct:.4f} "
-                f"threshold={self._config.volatility_threshold}"
-            )
-            self.log.info(log_msg)
-            return False
+        if self._atr_signal.value / close > self._config.volatility_threshold:
+            return "volatility"
 
-        return True
+        return None
 
     def _should_scale(self, close: float) -> bool:
         if len(self._layer_prices) >= len(self._config.pyramid_factors):
