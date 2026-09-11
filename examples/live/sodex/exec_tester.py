@@ -36,11 +36,9 @@ trade, each carrying a synthetic trade id instead of the venue's own.
 
 from __future__ import annotations
 
-from decimal import Decimal
-
+from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import Market
 from nautilus_trader.adapters.sodex import Network
-from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import SodexDataClientConfig
 from nautilus_trader.adapters.sodex import SodexDataClientFactory
 from nautilus_trader.adapters.sodex import SodexExecClientConfig

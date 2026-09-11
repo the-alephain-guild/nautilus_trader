@@ -34,9 +34,9 @@ rather than set to False-by-omission: it would never produce data.
 
 from __future__ import annotations
 
+from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import Market
 from nautilus_trader.adapters.sodex import Network
-from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import SodexDataClientConfig
 from nautilus_trader.adapters.sodex import SodexDataClientFactory
 from nautilus_trader.common import Environment
