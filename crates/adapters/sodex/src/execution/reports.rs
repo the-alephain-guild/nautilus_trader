@@ -336,3 +336,78 @@ mod tests {
         assert!(!is_terminal(NautilusStatus::PartiallyFilled));
     }
 }
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+    use crate::http::account_reads::OrderRecord;
+
+    fn record(cl_ord_id: &str, status: OrderStatus) -> OrderRecord {
+        OrderRecord {
+            symbol: "vBTC_vUSDC".to_string(),
+            order_id: 1,
+            cl_ord_id: cl_ord_id.to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            time_in_force: TimeInForce::Gtc,
+            price: "40000".to_string(),
+            orig_qty: "0.001".to_string(),
+            status,
+            executed_qty: "0".to_string(),
+            executed_value: "0".to_string(),
+            margin_frozen: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        }
+    }
+
+    /// Mirrors how an ambiguous submission is resolved: both lists, open first.
+    fn find<'a>(
+        open: &'a [OrderRecord],
+        history: &'a [OrderRecord],
+        wanted: &str,
+    ) -> Option<&'a OrderRecord> {
+        open.iter()
+            .chain(history.iter())
+            .find(|record| record.cl_ord_id == wanted)
+    }
+
+    #[test]
+    fn an_order_that_filled_immediately_is_found_in_history_not_open() {
+        // The case that makes searching only the open list dangerous: an accepted order that
+        // filled at once never appears there, and calling it absent would report a completed
+        // order as rejected.
+        let open: Vec<OrderRecord> = Vec::new();
+        let history = vec![record("O-1", OrderStatus::Filled)];
+
+        let found = find(&open, &history, "O-1").expect("history must be searched too");
+
+        assert_eq!(found.status, OrderStatus::Filled);
+    }
+
+    #[test]
+    fn a_resting_order_is_found_on_the_open_list() {
+        let open = vec![record("O-1", OrderStatus::New)];
+
+        assert!(find(&open, &[], "O-1").is_some());
+    }
+
+    #[test]
+    fn an_order_the_venue_never_saw_is_absent_from_both() {
+        // Only then is a rejection an observation rather than an assumption.
+        let open = vec![record("O-other", OrderStatus::New)];
+        let history = vec![record("O-older", OrderStatus::Canceled)];
+
+        assert!(find(&open, &history, "O-1").is_none());
+    }
+
+    #[test]
+    fn matching_is_exact_rather_than_prefixed() {
+        // Client order ids share prefixes by construction — a timestamped label and its cancel
+        // label differ only at the end — so a prefix match could resolve one order's fate from
+        // another's record.
+        let history = vec![record("O-1-retry", OrderStatus::Filled)];
+
+        assert!(find(&[], &history, "O-1").is_none());
+    }
+}

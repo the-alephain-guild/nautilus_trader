@@ -11,6 +11,22 @@
 //! Position reports are likewise unimplemented, and only for perps: spot does not serve the path
 //! at all, which is correct rather than missing — spot holds balances and has no positions.
 //!
+//! # A submission whose outcome is unknown is not guessed at
+//!
+//! A transport failure on a submit does not say whether the venue received it: it may have been
+//! processed and only the response lost. Reporting a rejection there would let the engine believe
+//! an order is dead while it rests on the book — real money behind a position nothing is managing,
+//! and the single worst divergence this adapter could produce.
+//!
+//! So the venue is asked. The account's order list is the authority, and it is consulted a few
+//! times because the venue settles on-chain and an accepted order takes a moment to appear. Found
+//! means the venue's own state is reported; confidently absent means a rejection that is now an
+//! observation; and a failed lookup emits nothing at all, leaving the order submitted for
+//! reconciliation to settle — guessing there would reintroduce exactly what this avoids.
+//!
+//! This is also why write requests are still not retried. Retrying would create the ambiguity;
+//! resolving it after the fact is strictly better than risking a second order.
+//!
 //! # The account reads are addressed by the master wallet, and a wrong address does not fail
 //!
 //! They are keyed by the account's wallet address. The API key's own address also answers `200`,
@@ -613,6 +629,7 @@ impl ExecutionClient for SodexExecutionClient {
         let http = Arc::clone(&self.http);
         let emitter = self.emitter.clone();
         let clock = self.clock;
+        let wallet = self.wallet.clone();
 
         get_runtime().spawn(async move {
             let submitted = submission.client_order_ids();
@@ -621,17 +638,25 @@ impl ExecutionClient for SodexExecutionClient {
             match submission.send(&http).await {
                 Ok(acks) => match align_batch(&submitted, acks) {
                     Ok(aligned) => report_submission(&emitter, &order, aligned.first(), ts_event),
-                    // The response cannot be attributed to this order. Reporting an outcome
-                    // anyway would be a guess about whether it is live.
-                    Err(e) => emitter.emit_order_rejected(
-                        &order,
-                        &format!("venue response could not be matched to the order: {e}"),
-                        ts_event,
-                        false,
-                    ),
+                    // The response cannot be attributed to this order, so whether it is live is
+                    // exactly as unknown as a lost response — same resolution.
+                    Err(e) => {
+                        resolve_ambiguous_submission(
+                            &http, &wallet, &emitter, &order, clock,
+                            &format!("venue response could not be matched to the order: {e}"),
+                        )
+                        .await;
+                    }
                 },
+                // The request failed without a verdict. It may have been processed and only the
+                // response lost, so reporting a rejection here could leave the engine believing
+                // an order is dead while it rests at the venue — the one divergence that puts
+                // real money behind a position nothing is managing.
                 Err(e) => {
-                    emitter.emit_order_rejected(&order, &e.to_string(), ts_event, false);
+                    resolve_ambiguous_submission(
+                        &http, &wallet, &emitter, &order, clock, &e.to_string(),
+                    )
+                    .await;
                 }
             }
         });
@@ -942,6 +967,108 @@ fn account_balance(
 fn money(raw: &str, currency: Currency) -> anyhow::Result<Money> {
     let normalized = crate::common::decimal::normalize_to(raw, currency.precision)?;
     Ok(Money::new(normalized.parse()?, currency))
+}
+
+/// How many times to look for an order whose submission produced no verdict.
+///
+/// The venue settles on-chain, so an accepted order takes a moment to appear in the account's
+/// list — a single immediate lookup would report "absent" for an order that is merely pending.
+const AMBIGUOUS_LOOKUP_ATTEMPTS: u32 = 3;
+
+/// How long to wait between those looks.
+const AMBIGUOUS_LOOKUP_DELAY_MS: u64 = 1_500;
+
+/// Asks the venue what actually happened to a submission whose outcome is unknown.
+///
+/// This is the difference between an adapter that can be left running and one that cannot. A
+/// transport failure on a submit does not say whether the venue received it; reporting a rejection
+/// would let the engine believe the order is dead while it rests on the book, leaving real money
+/// behind a position nothing is managing. The account's order list is the authority, so it is
+/// consulted rather than guessed at.
+///
+/// Three outcomes, and the third is the important one:
+///
+/// - **found** → the venue's own state is reported, whatever it is;
+/// - **confidently absent** → rejected, which is now a fact rather than an assumption;
+/// - **the lookup itself failed** → nothing is emitted. The order stays in its submitted state and
+///   reconciliation settles it on the next pass. Guessing here would reintroduce exactly the
+///   divergence this function exists to prevent.
+async fn resolve_ambiguous_submission(
+    http: &SodexHttpClient,
+    wallet: &str,
+    emitter: &ExecutionEventEmitter,
+    order: &OrderAny,
+    clock: &'static AtomicTime,
+    cause: &str,
+) {
+    let wanted = order.client_order_id().to_string();
+
+    for attempt in 1..=AMBIGUOUS_LOOKUP_ATTEMPTS {
+        match find_submitted_order(http, wallet, &wanted).await {
+            Ok(Some(record)) => {
+                log::warn!(
+                    "sodex_submit_outcome_recovered cl_ord_id={wanted} venue_status={:?} cause={cause}",
+                    record.status
+                );
+                emitter.emit_order_accepted(
+                    order,
+                    VenueOrderId::new(record.order_id.to_string()),
+                    UnixNanos::from(record.created_at_ms * 1_000_000),
+                );
+                return;
+            }
+            Ok(None) if attempt == AMBIGUOUS_LOOKUP_ATTEMPTS => {
+                // Absent after the venue has had time to settle, so the rejection is observed.
+                emitter.emit_order_rejected(
+                    order,
+                    &format!("{cause} (confirmed absent from the venue's order list)"),
+                    clock.get_time_ns(),
+                    false,
+                );
+                return;
+            }
+            Ok(None) => {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    AMBIGUOUS_LOOKUP_DELAY_MS,
+                ))
+                .await;
+            }
+            Err(e) => {
+                // Emitting either verdict now would be the guess this function exists to avoid.
+                log::error!(
+                    "sodex_submit_outcome_unresolved cl_ord_id={wanted} cause={cause} \
+                     lookup_error={e} — left in its submitted state for reconciliation to settle"
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Looks for one client order id across the account's open and historical orders.
+///
+/// Both lists, because an order that was accepted and immediately filled or cancelled never
+/// appears on the open one — and concluding "absent" from the open list alone would report a
+/// completed order as rejected.
+async fn find_submitted_order(
+    http: &SodexHttpClient,
+    wallet: &str,
+    cl_ord_id: &str,
+) -> Result<Option<OrderRecord>, ClientError> {
+    let open = http.open_orders(wallet).await?;
+    if let Some(found) = open
+        .orders
+        .into_iter()
+        .find(|record| record.cl_ord_id == cl_ord_id)
+    {
+        return Ok(Some(found));
+    }
+
+    Ok(http
+        .order_history(wallet)
+        .await?
+        .into_iter()
+        .find(|record| record.cl_ord_id == cl_ord_id))
 }
 
 /// Turns one acknowledgement into the engine's view of the order.

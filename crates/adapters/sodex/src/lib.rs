@@ -42,6 +42,7 @@
 //! | Trades | `trade` channel, with the aggressing side |
 //! | Order submission | Market and limit, spot and perps |
 //! | Order cancellation | By venue order id, falling back to the client order id |
+//! | Ambiguous submissions | Resolved against the venue's order list, not guessed |
 //! | Order books | **Not implemented** — the venue publishes no book channel |
 //! | Instrument reload | Hourly by default, configurable; `None` disables |
 //! | Socket state reporting | Link state surfaced to the engine, reconnect requestable |
