@@ -21,20 +21,19 @@
 //! [`fetch_bars`] sorts before returning. Observed on the live testnet: a ten-bar response
 //! arrived in descending timestamp order.
 
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{Bar, BarSpecification, BarType},
     enums::AggregationSource,
     identifiers::InstrumentId,
-    types::{Price, Quantity},
 };
 use serde::Deserialize;
 
 use super::parse::{BarMappingError, spec_to_interval};
 use crate::{
-    common::{Market, decimal::normalize as normalize_decimal},
+    common::Market,
     http::SodexHttpClient,
 };
 
@@ -55,6 +54,14 @@ pub const fn max_limit(market: Market) -> u32 {
 pub struct BarRequest {
     pub instrument_id: InstrumentId,
     pub spec: BarSpecification,
+    /// Price precision from the instrument definition.
+    ///
+    /// Carried on the request rather than derived from each kline field, because the engine
+    /// panics on a bar whose prices disagree about scale and the venue writes one tick size
+    /// several ways.
+    pub price_precision: u8,
+    /// Size precision from the instrument definition.
+    pub size_precision: u8,
     /// Inclusive start in milliseconds.
     pub start_ms: Option<u64>,
     /// Inclusive end in milliseconds.
@@ -114,29 +121,17 @@ pub struct RpcKline {
 pub fn parse_kline(
     kline: &RpcKline,
     bar_type: BarType,
+    price_precision: u8,
+    size_precision: u8,
     ts_init: UnixNanos,
 ) -> Result<Bar, BarMappingError> {
-    // Normalise before parsing: klines carry on-chain precision, e.g. a volume of
-    // "0.001390000000000000", which the engine's fixed-point types reject.
-    let price = |raw: &str, field: &'static str| -> Result<Price, BarMappingError> {
-        let invalid = |reason: String| BarMappingError::InvalidValue {
-            field,
-            value: raw.to_string(),
-            reason,
-        };
-        let normalized = normalize_decimal(raw).map_err(|e| invalid(e.to_string()))?;
-        Price::from_str(&normalized).map_err(|e| invalid(e.to_string()))
-    };
-
-    let volume = {
-        let invalid = |reason: String| BarMappingError::InvalidValue {
-            field: "volume",
-            value: kline.volume.clone(),
-            reason,
-        };
-        let normalized = normalize_decimal(&kline.volume).map_err(|e| invalid(e.to_string()))?;
-        Quantity::from_str(&normalized).map_err(|e| invalid(e.to_string()))?
-    };
+    // Normalised to the instrument's declared precision, not to each field's own text. Klines
+    // carry on-chain padding the engine's fixed-point types reject, and their four prices need a
+    // uniform scale or the engine panics — a whole-number close beside a fractional open is
+    // exactly how that surfaced.
+    let price =
+        |raw: &str, field: &'static str| super::parse::price_at(raw, price_precision, field);
+    let volume = super::parse::quantity_at(&kline.volume, size_precision, "volume")?;
 
     Ok(Bar::new(
         bar_type,
@@ -241,7 +236,15 @@ pub async fn fetch_bars(
 
     let mut bars = klines
         .iter()
-        .map(|k| parse_kline(k, bar_type, ts_init))
+        .map(|k| {
+            parse_kline(
+                k,
+                bar_type,
+                request.price_precision,
+                request.size_precision,
+                ts_init,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()
         .map_err(HistoryError::from)?;
 
@@ -292,7 +295,7 @@ mod tests {
         let bar_type = bar_type_for(instrument(), "1m").unwrap();
         times
             .iter()
-            .map(|t| parse_kline(&kline(*t), bar_type, UnixNanos::default()).unwrap())
+            .map(|t| parse_kline(&kline(*t), bar_type, 0, 5, UnixNanos::default()).unwrap())
             .collect()
     }
 
@@ -300,10 +303,33 @@ mod tests {
     fn kline_parses_without_judging_closure() {
         // A historical row carries no closed flag, so parsing must not require one.
         let bar_type = bar_type_for(instrument(), "1m").unwrap();
-        let bar = parse_kline(&kline(1_767_972_900_000), bar_type, UnixNanos::default()).unwrap();
+        let bar =
+            parse_kline(&kline(1_767_972_900_000), bar_type, 0, 5, UnixNanos::default()).unwrap();
 
         assert_eq!(bar.close.to_string(), "91976");
         assert_eq!(bar.volume.to_string(), "4.12298");
+    }
+
+    #[test]
+    fn kline_fields_with_mixed_decimal_places_share_one_precision() {
+        // The failure this guards: a history response for an instrument quoting "2465" beside
+        // "2464.9" built a bar whose fields disagreed about scale, and the engine panicked.
+        let mixed = RpcKline {
+            open: "2465".to_string(),
+            high: "2465.400000000000000000".to_string(),
+            low: "2464.1".to_string(),
+            close: "2464.900000000000000000".to_string(),
+            ..kline(1_767_972_900_000)
+        };
+        let bar_type = bar_type_for(instrument(), "1m").unwrap();
+        let bar = parse_kline(&mixed, bar_type, 1, 5, UnixNanos::default()).unwrap();
+
+        assert_eq!(bar.open.precision, 1);
+        assert_eq!(bar.high.precision, 1);
+        assert_eq!(bar.low.precision, 1);
+        assert_eq!(bar.close.precision, 1);
+        assert_eq!(bar.open.to_string(), "2465.0");
+        assert_eq!(bar.close.to_string(), "2464.9");
     }
 
     #[test]
@@ -380,6 +406,8 @@ mod tests {
         let request = BarRequest {
             instrument_id: instrument(),
             spec: minute_spec(),
+            price_precision: 1,
+            size_precision: 5,
             start_ms: None,
             end_ms: None,
             limit: Some(1200),

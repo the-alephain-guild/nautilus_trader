@@ -44,7 +44,7 @@ use nautilus_model::{
 use crate::{
     common::{
         Market,
-        decimal::{normalize as normalize_decimal, normalize_to},
+        decimal::normalize_to,
         enums::OrderSide,
     },
     websocket::{Candle, Ticker, Trade},
@@ -163,27 +163,6 @@ pub fn bar_type_for(
     ))
 }
 
-/// Parses a venue decimal into a price, normalising on-chain precision first.
-fn price_field(raw: &str, field: &'static str) -> Result<Price, BarMappingError> {
-    let invalid = |reason: String| BarMappingError::InvalidValue {
-        field,
-        value: raw.to_string(),
-        reason,
-    };
-    let normalized = normalize_decimal(raw).map_err(|e| invalid(e.to_string()))?;
-    Price::from_str(&normalized).map_err(|e| invalid(e.to_string()))
-}
-
-fn quantity_field(raw: &str, field: &'static str) -> Result<Quantity, BarMappingError> {
-    let invalid = |reason: String| BarMappingError::InvalidValue {
-        field,
-        value: raw.to_string(),
-        reason,
-    };
-    let normalized = normalize_decimal(raw).map_err(|e| invalid(e.to_string()))?;
-    Quantity::from_str(&normalized).map_err(|e| invalid(e.to_string()))
-}
-
 /// Converts a closed candle into a Nautilus bar.
 ///
 /// # Errors
@@ -193,12 +172,14 @@ fn quantity_field(raw: &str, field: &'static str) -> Result<Quantity, BarMapping
 pub fn parse_bar(
     candle: &Candle,
     bar_type: BarType,
+    price_precision: u8,
+    size_precision: u8,
     ts_init: UnixNanos,
 ) -> Result<Bar, BarMappingError> {
     if !candle.is_final() {
         return Err(BarMappingError::BarNotClosed);
     }
-    parse_completed_bar(candle, bar_type, ts_init)
+    parse_completed_bar(candle, bar_type, price_precision, size_precision, ts_init)
 }
 
 /// Converts a candle the caller has established is complete.
@@ -219,16 +200,23 @@ pub fn parse_bar(
 pub fn parse_completed_bar(
     candle: &Candle,
     bar_type: BarType,
+    price_precision: u8,
+    size_precision: u8,
     ts_init: UnixNanos,
 ) -> Result<Bar, BarMappingError> {
-    let volume = quantity_field(&candle.volume, "volume")?;
+    // The four prices must share one precision: the engine panics on a bar whose fields
+    // disagree, because its Arrow encoding assumes a uniform scale. Deriving each from its own
+    // text satisfies that only by luck — it held on an instrument quoting whole numbers and
+    // failed on the first one quoting `"2465"` beside `"2464.9"`. The instrument's declared
+    // precision is the only source that agrees across fields, as it is for quotes and trades.
+    let volume = quantity_at(&candle.volume, size_precision, "volume")?;
 
     Ok(Bar::new(
         bar_type,
-        price_field(&candle.open, "open")?,
-        price_field(&candle.high, "high")?,
-        price_field(&candle.low, "low")?,
-        price_field(&candle.close, "close")?,
+        price_at(&candle.open, price_precision, "open")?,
+        price_at(&candle.high, price_precision, "high")?,
+        price_at(&candle.low, price_precision, "low")?,
+        price_at(&candle.close, price_precision, "close")?,
         volume,
         // The venue stamps bars in milliseconds; Nautilus works in nanoseconds. The bar's
         // event time is its open, which is what makes a series joinable across sources.
@@ -242,7 +230,7 @@ pub fn parse_completed_bar(
 /// Taken from the instrument rather than from the text, because the venue writes the same
 /// tick size two ways — a bid of `"77378.5"` beside an ask of `"77379"` — and Nautilus
 /// rejects a quote whose two sides disagree about precision.
-fn price_at(raw: &str, precision: u8, field: &'static str) -> Result<Price, BarMappingError> {
+pub(crate) fn price_at(raw: &str, precision: u8, field: &'static str) -> Result<Price, BarMappingError> {
     let invalid = |reason: String| BarMappingError::InvalidValue {
         field,
         value: raw.to_string(),
@@ -252,7 +240,7 @@ fn price_at(raw: &str, precision: u8, field: &'static str) -> Result<Price, BarM
     Price::from_str(&normalized).map_err(|e| invalid(e.to_string()))
 }
 
-fn quantity_at(
+pub(crate) fn quantity_at(
     raw: &str,
     precision: u8,
     field: &'static str,
@@ -427,7 +415,7 @@ mod tests {
         let bar_type = bar_type_for(instrument(SODEX_SPOT), "1m").unwrap();
 
         assert_eq!(
-            parse_bar(&forming, bar_type, UnixNanos::default()),
+            parse_bar(&forming, bar_type, 0, 5, UnixNanos::default()),
             Err(BarMappingError::BarNotClosed)
         );
     }
@@ -435,7 +423,7 @@ mod tests {
     #[test]
     fn closed_candle_becomes_a_bar_with_venue_prices_intact() {
         let bar_type = bar_type_for(instrument(SODEX_SPOT), "1m").unwrap();
-        let bar = parse_bar(&closed_candle(), bar_type, UnixNanos::default()).unwrap();
+        let bar = parse_bar(&closed_candle(), bar_type, 0, 5, UnixNanos::default()).unwrap();
 
         assert_eq!(bar.open.to_string(), "91869");
         assert_eq!(bar.high.to_string(), "91982");
@@ -445,12 +433,37 @@ mod tests {
     }
 
     #[test]
+    fn mixed_decimal_places_across_one_candle_still_share_a_precision() {
+        // The engine panics on a bar whose fields disagree about scale, and this venue writes
+        // one tick size several ways within a single candle. Deriving precision from each
+        // value's own text passed only while an instrument happened to quote whole numbers.
+        let candle = Candle {
+            open: "2465".to_string(),
+            high: "2465.400000000000000000".to_string(),
+            low: "2464.1".to_string(),
+            close: "2464.900000000000000000".to_string(),
+            ..closed_candle()
+        };
+        let bar_type = bar_type_for(instrument(SODEX_SPOT), "1m").unwrap();
+        let bar = parse_bar(&candle, bar_type, 1, 5, UnixNanos::default()).unwrap();
+
+        assert_eq!(bar.open.to_string(), "2465.0");
+        assert_eq!(bar.high.to_string(), "2465.4");
+        assert_eq!(bar.low.to_string(), "2464.1");
+        assert_eq!(bar.close.to_string(), "2464.9");
+        assert_eq!(bar.open.precision, 1);
+        assert_eq!(bar.high.precision, 1);
+        assert_eq!(bar.low.precision, 1);
+        assert_eq!(bar.close.precision, 1);
+    }
+
+    #[test]
     fn bar_event_time_is_the_open_converted_to_nanoseconds() {
         // The venue stamps milliseconds. Using the update time instead of the open would
         // shift every bar forward by up to one interval.
         let candle = closed_candle();
         let bar_type = bar_type_for(instrument(SODEX_SPOT), "1m").unwrap();
-        let bar = parse_bar(&candle, bar_type, UnixNanos::default()).unwrap();
+        let bar = parse_bar(&candle, bar_type, 0, 5, UnixNanos::default()).unwrap();
 
         assert_eq!(bar.ts_event.as_u64(), candle.open_time_ms * 1_000_000);
         assert_ne!(bar.ts_event.as_u64(), candle.update_time_ms * 1_000_000);

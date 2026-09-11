@@ -79,6 +79,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = BarRequest {
         instrument_id,
         spec,
+        // From the instrument, not from each kline's text: the engine rejects a bar whose four
+        // prices disagree about scale, and this venue writes one tick size several ways.
+        price_precision: instrument.price_precision(),
+        size_precision: instrument.size_precision(),
         start_ms: None,
         end_ms: None,
         limit: Some(10),

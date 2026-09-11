@@ -102,9 +102,20 @@ struct TickFeed {
 ///
 /// A push whose symbol is absent from the relevant map is dropped: rebuilding an identity
 /// from the frame's own text would publish data for feeds nobody subscribed to.
+/// What a subscribed candle feed needs before its frames can become bars.
+///
+/// Precisions for the same reason [`TickFeed`] carries them: the engine rejects a bar whose four
+/// prices disagree about scale, and the venue writes one tick size several ways.
+#[derive(Debug, Clone, Copy)]
+struct BarFeed {
+    bar_type: BarType,
+    price_precision: u8,
+    size_precision: u8,
+}
+
 #[derive(Debug, Default)]
 struct Feeds {
-    bars: HashMap<FeedKey, BarType>,
+    bars: HashMap<FeedKey, BarFeed>,
     quotes: HashMap<String, TickFeed>,
     trades: HashMap<String, TickFeed>,
 }
@@ -337,7 +348,7 @@ fn publish_candle(
     clock: &'static AtomicTime,
 ) -> Vec<Data> {
     let key = (candle.symbol.clone(), candle.interval.clone());
-    let Some(bar_type) = feeds.lock().bars.get(&key).copied() else {
+    let Some(feed) = feeds.lock().bars.get(&key).copied() else {
         log::debug!(
             "sodex_candle_unsubscribed symbol={} interval={}",
             candle.symbol,
@@ -346,17 +357,24 @@ fn publish_candle(
         return Vec::new();
     };
 
+    let bar_type = feed.bar_type;
     advance(pending, key, candle)
         .into_iter()
-        .filter_map(
-            |completed| match parse_completed_bar(&completed, bar_type, clock.get_time_ns()) {
+        .filter_map(|completed| {
+            match parse_completed_bar(
+                &completed,
+                bar_type,
+                feed.price_precision,
+                feed.size_precision,
+                clock.get_time_ns(),
+            ) {
                 Ok(bar) => Some(Data::Bar(bar)),
                 Err(e) => {
                     log::error!("sodex_bar_unparsed bar_type={bar_type} error={e}");
                     None
                 }
-            },
-        )
+            }
+        })
         .collect()
 }
 
@@ -526,16 +544,21 @@ impl DataClient for SodexDataClient {
     fn subscribe_bars(&mut self, cmd: SubscribeBars) -> anyhow::Result<()> {
         let bar_type = cmd.bar_type;
         let (symbol, interval) = feed_key(&bar_type, self.market)?;
-        // Resolved before anything is recorded, so a call made while disconnected leaves no
-        // entry claiming a feed that was never requested.
+        // Resolved before anything is recorded, so a call made while disconnected — or for an
+        // instrument that never loaded — leaves no entry claiming a feed that was never requested.
+        let tick = self.tick_feed(&bar_type.instrument_id())?;
         let ws = self.ws_client()?;
 
         // Recorded before the request goes out: the venue can push the first candle before it
         // acknowledges the subscribe, and a push with no entry here would be dropped.
-        self.feeds
-            .lock()
-            .bars
-            .insert((symbol.clone(), interval.clone()), bar_type);
+        self.feeds.lock().bars.insert(
+            (symbol.clone(), interval.clone()),
+            BarFeed {
+                bar_type,
+                price_precision: tick.price_precision,
+                size_precision: tick.size_precision,
+            },
+        );
 
         self.spawn_subscribe(ws, Subscription::candles(symbol, interval), bar_type);
         Ok(())
@@ -613,9 +636,14 @@ impl DataClient for SodexDataClient {
         let params = request.params;
         let request_id = request.request_id;
 
+        // Resolved up front: a history response parsed at a guessed precision is how the engine
+        // ends up panicking on a bar whose fields disagree about scale.
+        let feed = self.tick_feed(&bar_type.instrument_id())?;
         let bar_request = BarRequest {
             instrument_id: bar_type.instrument_id(),
             spec: bar_type.spec(),
+            price_precision: feed.price_precision,
+            size_precision: feed.size_precision,
             start_ms: start_nanos.map(unix_nanos_to_millis),
             end_ms: end_nanos.map(unix_nanos_to_millis),
             limit: request.limit.map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX)),
@@ -731,9 +759,14 @@ mod tests {
 
     fn feeds_with(entry: BarType) -> Arc<Mutex<Feeds>> {
         let mut feeds = Feeds::default();
-        feeds
-            .bars
-            .insert(("vBTC_vUSDC".to_string(), "1m".to_string()), entry);
+        feeds.bars.insert(
+            ("vBTC_vUSDC".to_string(), "1m".to_string()),
+            BarFeed {
+                bar_type: entry,
+                price_precision: 0,
+                size_precision: 5,
+            },
+        );
         Arc::new(Mutex::new(feeds))
     }
 
