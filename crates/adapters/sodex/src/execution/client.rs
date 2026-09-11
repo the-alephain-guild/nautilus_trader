@@ -8,8 +8,13 @@
 //! shape cannot be read off it. Typing it by analogy to the order shape is exactly the move that
 //! produced this integration's worst failures, so it waits for one observed fill instead.
 //!
-//! Position reports are likewise unimplemented, and only for perps: spot does not serve the path
-//! at all, which is correct rather than missing — spot holds balances and has no positions.
+//! Position reports are served on both engines, but only partly on perps. Spot does not route the
+//! path at all, which is correct rather than missing — spot holds balances and has no positions, so
+//! an empty report is the truth. On perps the endpoint is read and decoded: an **empty** list is
+//! reported as empty, because the venue saying the account holds nothing is an answer, not a gap.
+//! A **non-empty** payload fails loudly with its own contents attached, because that shape has
+//! never been observed and an empty list in its place would assert the account is flat while the
+//! venue just said otherwise — reconciliation would then close positions that exist.
 //!
 //! # A submission whose outcome is unknown is not guessed at
 //!
@@ -628,20 +633,35 @@ impl ExecutionClient for SodexExecutionClient {
         &self,
         _cmd: &GeneratePositionStatusReports,
     ) -> anyhow::Result<Vec<PositionStatusReport>> {
-        match self.config.market {
-            // Correct rather than missing: spot holds balances and has no positions, and the
-            // venue does not serve the path at all.
-            Market::Spot => Ok(Vec::new()),
-            // The endpoint exists and answers, but its payload shape has never been observed —
-            // reading it needs an open perps position, and typing it from the spot order shape by
-            // analogy is what produced this integration's worst failures. Reporting an empty list
-            // would claim the account is flat, so this says plainly that it does not know.
-            Market::Perps => anyhow::bail!(
-                "SoDEX perps position reports are not implemented: the payload shape of \
-                 /accounts/{{wallet}}/positions has not been observed, and reporting an empty \
-                 list would assert the account is flat when it may not be"
-            ),
+        if self.config.market == Market::Spot {
+            // Correct rather than missing: spot holds balances and has no positions, and the venue
+            // does not serve the path at all.
+            return Ok(Vec::new());
         }
+
+        let positions = self
+            .http
+            .account_positions(&self.wallet)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read positions: {e}"))?;
+
+        if positions.positions.is_empty() {
+            // An empty list is not a guess. The venue says the account holds nothing, and
+            // reporting that is exactly right — it is a *non-empty* payload this cannot yet map.
+            return Ok(Vec::new());
+        }
+
+        // Failing here rather than returning an empty list is the whole point: an empty list would
+        // assert the account is flat while the venue just said it is not, and reconciliation would
+        // close positions that exist. The payload is included because it is the one thing needed
+        // to finish this — reading it requires a real perps position, which the testnet account
+        // could not open for lack of a perps balance.
+        anyhow::bail!(
+            "SoDEX perps reports {} open position(s) but this adapter cannot map the payload yet. \
+             Raw: {}",
+            positions.positions.len(),
+            serde_json::to_string(&positions.positions).unwrap_or_else(|e| format!("<{e}>"))
+        )
     }
 
     fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
