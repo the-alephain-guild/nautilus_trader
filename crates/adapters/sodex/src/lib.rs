@@ -49,7 +49,7 @@
 //! | Python bindings | `nautilus_trader.adapters.sodex` |
 //! | Account state | Coin balances, with free derived from total minus locked |
 //! | Order status reports | Open orders and history, reconciled together |
-//! | Fill accounting | Inferred from order reports; per-fill reports **not implemented** |
+//! | Fill reports | Per fill, with the venue's trade id, fee asset and liquidity side |
 //! | Commission | Computed from the venue's maker/taker rates |
 //! | Position reports | **Not implemented** (perps); correctly empty on spot |
 //!
@@ -71,29 +71,28 @@
 //! all 127 non-empty subsets of them are refused for `accountUpdate`. That is not an exhausted
 //! guess list but a closed search: its selector needs something outside that struct.
 //!
-//! # What is left, and what it costs
+//! # A buy credits less than it ordered
 //!
-//! **Per-fill reports, not fill accounting.** An earlier version of this note said the client
-//! could not reconcile. That was wrong, and the distinction matters because it decides whether a
-//! deployment turns reconciliation on. Nautilus infers a fill from an order status report when
-//! the venue's `filled_qty` exceeds what the engine knows
-//! (`nautilus_execution::reconciliation::orders::create_inferred_fill`), using the report's
-//! average price and a commission this client supplies. Order reports are implemented, so
-//! **positions, average prices and fees do reconcile.**
+//! The venue charges a fee in the asset you **receive**, so a buy pays in the base asset and it
+//! comes out of what arrives: ordering `0.001` vBTC credited `0.00099935`, short by exactly the
+//! reported fee. Anything that sells back what it bought has to sell what was *received*, rounded
+//! down to the step size — a flattening sell sized from the order is rejected for insufficient
+//! balance, which is how this was found.
 //!
-//! What is missing is granularity. `/accounts/{wallet}/trades` exists and answers, but an account
-//! that has never traded answers `[]`, so its wire shape is unobserved — and typing it by analogy
-//! to the order shape is precisely the move that produced this integration's worst failures. So
-//! until one fill has been seen (the `observe_fill` example produces one in a single testnet
-//! round-trip), a live run learns fills at reconciliation cadence rather than per trade, with one
-//! synthetic trade id per inferred fill instead of the venue's own, and a liquidity side that is
-//! known only for market and post-only orders.
+//! Fill reports therefore carry the fee in the venue's own asset rather than converting it.
+//! [`execution::calculate_commission`]-style estimation for an *inferred* fill still reports the
+//! quote-denominated equivalent, which is exact at the fill price — `fee_in_base × price` and
+//! `notional × rate` agree to the last digit on the observed trade.
 //!
-//! Commission is why that degradation is tolerable rather than quietly wrong. The trait's default
-//! supplies none, which would have left reconciled P&L with no fees at all; this client computes
-//! it from the instrument's own maker and taker rates, and charges the larger of the two when an
-//! inferred fill leaves the liquidity side unknown — understating fees is the error that compounds
-//! into a position larger than the risk model intended.
+//! # What is left
+//!
+//! **Perps positions.** The endpoint exists; its payload needs an open perps position to observe,
+//! and the testnet account holds no perps balance to open one with.
+//! `generate_position_status_reports` therefore refuses on perps rather than returning an empty
+//! list, because an empty list asserts the account is flat.
+//!
+//! Spot is complete: balances, open orders, history and fills all map, and each was verified
+//! against a real response from the live testnet rather than from the documentation.
 //!
 //! **Perps positions.** The endpoint exists; its payload needs an open perps position to observe,
 //! and the testnet account holds no perps balance to open one with. `generate_position_status_reports`

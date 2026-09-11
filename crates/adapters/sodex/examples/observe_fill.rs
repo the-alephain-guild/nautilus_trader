@@ -13,6 +13,17 @@
 //! sell runs even when the read fails — leaving an unintended position behind is the one outcome
 //! this program must not produce.
 //!
+//! # The sell cannot be the same size as the buy
+//!
+//! A first version sold the quantity it had ordered and was rejected for insufficient balance. The
+//! venue charges a buy's fee in the **base** asset, deducted from what arrives: ordering `0.001`
+//! vBTC credits `0.00099935`. So the flattening sell reads the balance and sells what is actually
+//! held, rounded down to the venue's step size — selling a hair more is the difference between
+//! flattening and leaving a position behind.
+//!
+//! Set `SODEX_FLATTEN_ONLY=1` to skip the buy and only sell what the account already holds, which
+//! is how a leftover from an earlier run gets cleaned up.
+//!
 //! ```text
 //! export SODEX_API_KEY_NAME=api-key-01
 //! export SODEX_API_PRIVATE_KEY=<registered key>
@@ -24,6 +35,7 @@
 use std::{env, time::Duration};
 
 use nautilus_network::http::Method;
+use rust_decimal::Decimal;
 use nautilus_sodex::{
     common::{
         Market,
@@ -55,6 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "1".into())
         .parse()?;
     let quantity = env::var("SODEX_QUANTITY").unwrap_or_else(|_| "0.001".into());
+    let base_coin = env::var("SODEX_BASE_COIN").unwrap_or_else(|_| "vBTC".to_string());
+    // The venue rejects a size off its step grid, so the held amount is rounded down to it.
+    let step_size = env::var("SODEX_STEP_SIZE").unwrap_or_else(|_| "0.00001".to_string());
 
     let key = ApiPrivateKey::parse(&key_hex)?;
     let name = ApiKeyName::parse(&key_name)?;
@@ -68,26 +83,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
 
-    let bought = place_market(&client, account_id, symbol_id, OrderSide::Buy, &quantity, stamp)
-        .await;
+    let flatten_only = env::var("SODEX_FLATTEN_ONLY").is_ok();
 
-    // Always attempt the flattening sell, whatever the buy reported: an unintended position is
-    // the one outcome this program must not leave behind.
-    let sold = if bought.is_ok() {
-        // The venue settles on-chain, so the balance needs a moment to reflect the buy.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+    let bought = if flatten_only {
+        println!("SODEX_FLATTEN_ONLY set — skipping the buy");
+        Ok(())
+    } else {
         place_market(
             &client,
             account_id,
             symbol_id,
-            OrderSide::Sell,
+            OrderSide::Buy,
             &quantity,
-            stamp + 1,
+            stamp,
         )
         .await
-    } else {
-        println!("buy did not fill, so nothing to flatten");
-        Ok(())
+    };
+
+    // Always attempt the flattening sell, whatever the buy reported: an unintended position is
+    // the one outcome this program must not leave behind.
+    //
+    // And sell what is *held*, not what was ordered. A buy's fee comes out of the base asset it
+    // credits, so the two differ and selling the ordered amount is rejected outright.
+    let sold = {
+        // The venue settles on-chain, so the balance needs a moment to reflect the buy.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        match held_base(&client, &wallet, &base_coin, &step_size).await {
+            Ok(Some(sellable)) => {
+                println!("holding {sellable} {base_coin} — selling that, not the ordered size");
+                place_market(
+                    &client,
+                    account_id,
+                    symbol_id,
+                    OrderSide::Sell,
+                    &sellable,
+                    stamp + 1,
+                )
+                .await
+            }
+            Ok(None) => {
+                println!("no sellable {base_coin} balance — nothing to flatten");
+                Ok(())
+            }
+            Err(e) => {
+                println!("!! could not read the balance to flatten: {e}");
+                println!("!! CHECK FOR A LEFTOVER {base_coin} POSITION");
+                Err(e)
+            }
+        }
     };
 
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -143,4 +187,37 @@ async fn place_market(
         }
         None => Err("venue returned no acknowledgement".into()),
     }
+}
+
+/// The sellable balance of one coin, rounded **down** to the venue's step size.
+///
+/// Down, not nearest: rounding up asks to sell more than is held, which the venue rejects for
+/// insufficient balance — the exact failure this function exists to avoid.
+async fn held_base(
+    client: &SodexHttpClient,
+    wallet: &str,
+    coin: &str,
+    step_size: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let snapshot = client.account_balances(wallet).await?;
+    let Some(balance) = snapshot.balances.iter().find(|entry| entry.coin == coin) else {
+        return Ok(None);
+    };
+
+    let total: Decimal = balance.total.parse()?;
+    let locked: Decimal = balance.locked.parse()?;
+    let step: Decimal = step_size.parse()?;
+    let free = total - locked;
+
+    if step.is_zero() || free <= Decimal::ZERO {
+        return Ok(None);
+    }
+
+    let steps = (free / step).floor();
+    let sellable = steps * step;
+
+    if sellable <= Decimal::ZERO {
+        return Ok(None);
+    }
+    Ok(Some(sellable.normalize().to_string()))
 }

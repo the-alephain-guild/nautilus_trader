@@ -15,7 +15,7 @@ use nautilus_core::UnixNanos;
 use nautilus_model::{identifiers::AccountId, instruments::Instrument};
 use nautilus_sodex::{
     common::Market,
-    execution::order_status_report,
+    execution::{fill_report, order_status_report},
     http::{Network, SodexHttpClient},
     providers::{SodexInstrumentProvider, instrument_id_for},
 };
@@ -102,13 +102,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     let trades = client.account_trades(&wallet).await?;
     println!("fills: {} records", trades.len());
-    if trades.is_empty() {
-        println!(
-            "  empty, so the fill wire shape is still unobserved — the one thing left before this\n  \
-             adapter can run unattended. `observe_fill` produces one."
-        );
-    } else {
-        println!("{}", serde_json::to_string_pretty(&trades)?);
+    for trade in &trades {
+        let Some(instrument) = provider
+            .store()
+            .find(&instrument_id_for(&trade.symbol, provider.venue()))
+        else {
+            println!("  trade {} names an unloaded instrument", trade.trade_id);
+            continue;
+        };
+
+        match fill_report(
+            trade,
+            account_id,
+            instrument.id(),
+            instrument.price_precision(),
+            instrument.size_precision(),
+            UnixNanos::default(),
+        ) {
+            // The liquidity side and the fee currency are the venue's own here, not inferred —
+            // and the fee coin is the base asset on a buy, which is why it is printed.
+            Ok(report) => println!(
+                "  trade {:<10} {:?} {:?} qty={} px={} fee={} liquidity={:?}",
+                report.trade_id,
+                report.order_side,
+                report.client_order_id.map(|id| id.to_string()),
+                report.last_qty,
+                report.last_px,
+                report.commission,
+                report.liquidity_side,
+            ),
+            Err(e) => println!("  trade {} could not be reported: {e}", trade.trade_id),
+        }
     }
 
     println!();

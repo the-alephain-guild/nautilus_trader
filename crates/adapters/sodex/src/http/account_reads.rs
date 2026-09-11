@@ -122,6 +122,46 @@ pub struct Positions {
     pub positions: Vec<serde_json::Value>,
 }
 
+/// One fill, as the venue reports it.
+///
+/// # The fee is charged in the asset you receive
+///
+/// `fee_coin` is not the quote currency: a buy pays its fee in the **base** asset, deducted from
+/// what arrives. Observed on testnet — a market buy of `0.001` vBTC credited `0.00099935`, and the
+/// difference is exactly the reported `0.00000065` fee. A sell is expected to pay in the quote
+/// asset by the same rule, but that has not been observed, so `fee_coin` is read from the response
+/// rather than derived from the side.
+///
+/// This matters beyond bookkeeping: **the proceeds of a buy are smaller than the quantity
+/// ordered**, so selling back the amount you asked for is rejected for insufficient balance. Any
+/// flattening logic has to sell what was received.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TradeRecord {
+    #[serde(rename = "tradeID")]
+    pub trade_id: u64,
+    #[serde(rename = "orderID")]
+    pub order_id: u64,
+    #[serde(rename = "clOrdID")]
+    pub cl_ord_id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub price: String,
+    pub quantity: String,
+    /// Fee amount, denominated in [`Self::fee_coin`] rather than in the quote asset.
+    pub fee: String,
+    /// Which asset the fee was taken from.
+    #[serde(rename = "feeCoin")]
+    pub fee_coin: String,
+    /// Whether this side provided liquidity.
+    ///
+    /// Reported, which is why a fill report carries a real liquidity side while a fill *inferred*
+    /// from an order record cannot.
+    #[serde(rename = "isMaker")]
+    pub is_maker: bool,
+    /// Fill time, milliseconds.
+    pub time: u64,
+}
+
 /// One registered API key, as the venue lists it.
 ///
 /// Used to prove a configured wallet address is the account the client actually signs for: if
@@ -179,7 +219,7 @@ impl SodexHttpClient {
     /// # Errors
     ///
     /// Returns [`ClientError`] on transport, status or decoding failure.
-    pub async fn account_trades(&self, wallet: &str) -> Result<Vec<serde_json::Value>, ClientError> {
+    pub async fn account_trades(&self, wallet: &str) -> Result<Vec<TradeRecord>, ClientError> {
         self.get_public(&format!("/accounts/{wallet}/trades"), None)
             .await
     }

@@ -113,17 +113,37 @@ pub struct PerpsSymbol {
 /// that matters for trading: this precision describes the currency's own denomination, while
 /// order prices and sizes take their precision from the symbol's `tickSize` and `stepSize`,
 /// which are far coarser and are carried separately.
+/// Looks a venue coin up, defining and **registering** it when the engine does not know it.
+///
+/// Registering is not optional housekeeping. An unregistered currency still works as a value on
+/// the instrument, so everything looked fine until the first consumer tried to resolve one *by
+/// code* — the fill report, whose fee arrives as `{"fee": "...", "feeCoin": "vBTC"}` and has
+/// nothing but the code to go on. Without registration that lookup fails and the fill is dropped.
+///
+/// `overwrite: false` so a currency the engine already defines keeps its own definition rather
+/// than being replaced by this venue's view of it. The venue's coins are distinctly named —
+/// `vBTC`, `vUSDC` — so a clash is unlikely, but a precision quietly changed under another
+/// adapter would be very hard to trace back to here.
 fn resolve_currency(code: &str, precision: u8) -> Currency {
     if let Some(existing) = CURRENCY_MAP.lock().get(code) {
         return *existing;
     }
-    Currency::new(
+
+    let currency = Currency::new(
         code,
         precision.min(FIXED_PRECISION),
         0,
         code,
         CurrencyType::Crypto,
-    )
+    );
+
+    if let Err(e) = Currency::register(currency, false) {
+        // Not fatal: the instrument can still be built from the value. But a later lookup by code
+        // will fail, so it must not pass silently.
+        log::warn!("sodex_currency_not_registered code={code} error={e}");
+    }
+
+    currency
 }
 
 /// Parses a decimal string into a `Decimal`, defaulting to zero.

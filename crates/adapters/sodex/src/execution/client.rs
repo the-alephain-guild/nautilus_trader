@@ -55,7 +55,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
     messages::execution::{
-        CancelOrder, GenerateOrderStatusReport, GenerateOrderStatusReports,
+        CancelOrder, GenerateFillReports, GenerateOrderStatusReport, GenerateOrderStatusReports,
         GeneratePositionStatusReports, QueryAccount, SubmitOrder, SubmitOrderList,
     },
 };
@@ -67,13 +67,16 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, InstrumentId, Venue, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
-    reports::{order::OrderStatusReport, position::PositionStatusReport},
+    reports::{fill::FillReport, order::OrderStatusReport, position::PositionStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
 use nautilus_network::http::Method;
 use tokio_util::sync::CancellationToken;
 
-use super::{parse::OrderSpec, reports::order_status_report};
+use super::{
+    parse::OrderSpec,
+    reports::{fill_report, order_status_report},
+};
 use crate::{
     common::Market,
     config::SodexExecClientConfig,
@@ -564,6 +567,61 @@ impl ExecutionClient for SodexExecutionClient {
                     .client_order_id
                     .is_some_and(|wanted| Some(wanted) == report.client_order_id)
         }))
+    }
+
+    async fn generate_fill_reports(
+        &self,
+        cmd: GenerateFillReports,
+    ) -> anyhow::Result<Vec<FillReport>> {
+        let trades = self
+            .http
+            .account_trades(&self.wallet)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read fills: {e}"))?;
+
+        let ts_init = self.clock.get_time_ns();
+        let mut reports = Vec::with_capacity(trades.len());
+
+        for trade in &trades {
+            // The venue returns the whole account, so a request scoped to one instrument or a
+            // time window has to be narrowed here rather than at the venue.
+            let instrument_id = instrument_id_for(&trade.symbol, self.core.venue);
+            if cmd.instrument_id.is_some_and(|wanted| wanted != instrument_id) {
+                continue;
+            }
+            let ts_event = UnixNanos::from(trade.time * 1_000_000);
+            if cmd.start.is_some_and(|start| ts_event < start)
+                || cmd.end.is_some_and(|end| ts_event > end)
+            {
+                continue;
+            }
+
+            let Some(instrument) = self.catalog.find(&instrument_id) else {
+                log::warn!(
+                    "sodex_fill_report_skipped trade_id={} reason=instrument_not_loaded",
+                    trade.trade_id
+                );
+                continue;
+            };
+
+            match fill_report(
+                trade,
+                self.core.account_id,
+                instrument_id,
+                instrument.price_precision(),
+                instrument.size_precision(),
+                ts_init,
+            ) {
+                Ok(report) => reports.push(report),
+                // One unconvertible fill must not blind the engine to the rest of them.
+                Err(e) => log::warn!(
+                    "sodex_fill_report_skipped trade_id={} error={e}",
+                    trade.trade_id
+                ),
+            }
+        }
+
+        Ok(reports)
     }
 
     async fn generate_position_status_reports(

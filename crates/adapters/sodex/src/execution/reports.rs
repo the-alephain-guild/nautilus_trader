@@ -11,6 +11,16 @@
 //! cancelled order as simply absent — which the engine cannot distinguish from an order it should
 //! never have known about.
 //!
+//! # A reported fill beats an inferred one, and says why
+//!
+//! With `/accounts/{wallet}/trades` typed, fills come from the venue rather than being inferred
+//! from an order record. Three things are authoritative only on this path:
+//!
+//! - the venue's own `tradeID`, instead of a synthetic one;
+//! - `isMaker`, so the liquidity side is known rather than assumed;
+//! - `fee` together with `feeCoin`, which is the asset the fee was actually taken from — the
+//!   **base** asset on a buy, deducted from what arrives.
+//!
 //! # Average fill price is derived, not reported
 //!
 //! The venue gives `executedQty` and `executedValue` (the quote-asset total), not an average
@@ -20,10 +30,10 @@
 
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{OrderStatus as NautilusStatus, TimeInForce as NautilusTif},
-    identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
-    reports::order::OrderStatusReport,
-    types::{Price, Quantity},
+    enums::{LiquiditySide, OrderStatus as NautilusStatus, TimeInForce as NautilusTif},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
+    reports::{fill::FillReport, order::OrderStatusReport},
+    types::{Currency, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
@@ -33,7 +43,7 @@ use crate::{
         decimal::normalize_to,
         enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
     },
-    http::account_reads::OrderRecord,
+    http::account_reads::{OrderRecord, TradeRecord},
 };
 
 /// Why a venue order record cannot become a report.
@@ -41,6 +51,8 @@ use crate::{
 pub enum ReportError {
     #[error("order {order_id} reports status {status:?}, which has no Nautilus equivalent")]
     UnmappableStatus { order_id: u64, status: OrderStatus },
+    #[error("order {order_id} reports a fee in {coin:?}, which is not a currency the engine knows")]
+    UnknownFeeCurrency { order_id: u64, coin: String },
     #[error("order {order_id} has an unparseable {field}: {value:?} ({reason})")]
     InvalidValue {
         order_id: u64,
@@ -181,6 +193,76 @@ fn price_at(raw: &str, precision: u8) -> Result<Price, String> {
 fn quantity_at(raw: &str, precision: u8) -> Result<Quantity, String> {
     let normalized = normalize_to(raw, precision).map_err(|e| e.to_string())?;
     Quantity::from_str(&normalized).map_err(|e| e.to_string())
+}
+
+/// Builds a fill report from one venue trade.
+///
+/// Everything here is the venue's own: the trade id, the liquidity side, and the fee in the asset
+/// it was actually charged in. That last point is why the fee currency is read from the response
+/// rather than assumed to be the quote asset — a buy pays in the base asset, and recording it as
+/// quote would misstate which balance moved.
+///
+/// # Errors
+///
+/// Returns [`ReportError::InvalidValue`] if a price, quantity or fee cannot be parsed, or
+/// [`ReportError::UnknownFeeCurrency`] for a fee asset the engine does not know.
+pub fn fill_report(
+    trade: &TradeRecord,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    price_precision: u8,
+    size_precision: u8,
+    ts_init: UnixNanos,
+) -> Result<FillReport, ReportError> {
+    let invalid = |field: &'static str, value: &str, reason: String| ReportError::InvalidValue {
+        order_id: trade.order_id,
+        field,
+        value: value.to_string(),
+        reason,
+    };
+
+    let fee_currency = Currency::try_from_str(&trade.fee_coin).ok_or_else(|| {
+        ReportError::UnknownFeeCurrency {
+            order_id: trade.order_id,
+            coin: trade.fee_coin.clone(),
+        }
+    })?;
+    // Parsed as a `Decimal` first, not a float: the fee is fractions of a basis point on an
+    // 18-decimal asset, and a float hop here is a rounding policy nobody chose.
+    let normalized = normalize_to(&trade.fee, fee_currency.precision)
+        .map_err(|e| invalid("fee", &trade.fee, e.to_string()))?;
+    let commission = Decimal::from_str(&normalized)
+        .map_err(|e| invalid("fee", &trade.fee, e.to_string()))?;
+
+    Ok(FillReport::new(
+        account_id,
+        instrument_id,
+        VenueOrderId::new(trade.order_id.to_string()),
+        TradeId::new(trade.trade_id.to_string().as_str()),
+        map_side(trade.side),
+        quantity_at(&trade.quantity, size_precision)
+            .map_err(|e| invalid("quantity", &trade.quantity, e))?,
+        price_at(&trade.price, price_precision)
+            .map_err(|e| invalid("price", &trade.price, e))?,
+        Money::new(
+            commission
+                .try_into()
+                .map_err(|e: rust_decimal::Error| invalid("fee", &trade.fee, e.to_string()))?,
+            fee_currency,
+        ),
+        if trade.is_maker {
+            LiquiditySide::Maker
+        } else {
+            LiquiditySide::Taker
+        },
+        Some(ClientOrderId::new(trade.cl_ord_id.as_str())),
+        // The venue reports no position id. Spot has no positions, and on perps the engine's own
+        // netting is the authority rather than a field that does not exist.
+        None,
+        UnixNanos::from(trade.time * 1_000_000),
+        ts_init,
+        None,
+    ))
 }
 
 /// Whether a reported status means the order is no longer working.
@@ -409,5 +491,111 @@ mod lookup_tests {
         let history = vec![record("O-1-retry", OrderStatus::Filled)];
 
         assert!(find(&[], &history, "O-1").is_none());
+    }
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use nautilus_model::identifiers::{Symbol, Venue};
+
+    use super::*;
+    use crate::{config::SODEX_SPOT, http::account_reads::TradeRecord};
+
+    /// The venue's own response for a real testnet fill, verbatim from
+    /// `/accounts/{wallet}/trades`.
+    fn trade() -> TradeRecord {
+        TradeRecord {
+            trade_id: 9_458_096,
+            order_id: 1_290_012_932,
+            cl_ord_id: "fillprobe-1789108466447".to_string(),
+            symbol: "vBTC_vUSDC".to_string(),
+            side: OrderSide::Buy,
+            price: "77184".to_string(),
+            quantity: "0.001".to_string(),
+            fee: "0.00000065".to_string(),
+            fee_coin: "vBTC".to_string(),
+            is_maker: false,
+            time: 1_789_108_467_221,
+        }
+    }
+
+    fn registered_fee_coin() -> Currency {
+        let currency = Currency::new("vBTC", 8, 0, "vBTC", nautilus_model::enums::CurrencyType::Crypto);
+        let _ = Currency::register(currency, false);
+        currency
+    }
+
+    fn report(trade: &TradeRecord) -> FillReport {
+        registered_fee_coin();
+        fill_report(
+            trade,
+            AccountId::from("SODEX_SPOT-60366"),
+            InstrumentId::new(Symbol::from("vBTC_vUSDC"), Venue::from(SODEX_SPOT)),
+            2,
+            5,
+            UnixNanos::default(),
+        )
+        .expect("the venue's own fill must convert")
+    }
+
+    #[test]
+    fn the_fee_keeps_the_asset_the_venue_charged_it_in() {
+        // A buy's fee comes out of the **base** asset, not the quote: ordering 0.001 vBTC credits
+        // 0.00099935, and the difference is this fee. Recording it as quote would misstate which
+        // balance moved.
+        let report = report(&trade());
+
+        assert_eq!(report.commission.currency.code.as_str(), "vBTC");
+        assert_eq!(report.commission.as_decimal(), Decimal::new(65, 8));
+    }
+
+    #[test]
+    fn the_liquidity_side_is_the_venue_s_rather_than_a_guess() {
+        // This is the whole advantage of a reported fill over an inferred one: `isMaker` is
+        // stated, so nothing has to assume the conservative side.
+        assert_eq!(report(&trade()).liquidity_side, LiquiditySide::Taker);
+
+        let mut maker = trade();
+        maker.is_maker = true;
+        assert_eq!(report(&maker).liquidity_side, LiquiditySide::Maker);
+    }
+
+    #[test]
+    fn the_venue_s_own_trade_id_is_carried() {
+        // An inferred fill has to synthesize one. A reported fill must not, or two runs would
+        // disagree about which trade they were talking about.
+        let report = report(&trade());
+
+        assert_eq!(report.trade_id.to_string(), "9458096");
+        assert_eq!(report.venue_order_id.to_string(), "1290012932");
+        assert_eq!(
+            report.client_order_id.map(|id| id.to_string()),
+            Some("fillprobe-1789108466447".to_string())
+        );
+    }
+
+    #[test]
+    fn the_fill_is_stamped_with_its_own_time() {
+        assert_eq!(report(&trade()).ts_event.as_u64(), 1_789_108_467_221 * 1_000_000);
+    }
+
+    #[test]
+    fn a_fee_in_an_unknown_asset_is_refused_rather_than_silently_dropped() {
+        // The venue can list a coin this engine has never registered. Defaulting the currency
+        // would book the fee against the wrong balance, so the fill is refused and named.
+        let mut odd = trade();
+        odd.fee_coin = "vNOTACOIN".to_string();
+
+        let error = fill_report(
+            &odd,
+            AccountId::from("SODEX_SPOT-60366"),
+            InstrumentId::new(Symbol::from("vBTC_vUSDC"), Venue::from(SODEX_SPOT)),
+            2,
+            5,
+            UnixNanos::default(),
+        )
+        .expect_err("an unknown fee currency must not become a report");
+
+        assert!(matches!(error, ReportError::UnknownFeeCurrency { .. }));
     }
 }
