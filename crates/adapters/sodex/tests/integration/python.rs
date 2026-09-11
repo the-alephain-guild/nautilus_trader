@@ -47,6 +47,9 @@ use rstest::rstest;
 /// A throwaway key, never registered at the venue. Enough to construct a signer.
 const TEST_API_KEY: &str = "0x2ae8be44db8a590d20bffbe3b6872df9b569147d3bf6801a35a28281a4816bbd";
 const TEST_ACCOUNT_ID: u64 = 60366;
+/// A syntactically valid address. Never contacted: construction validates the shape only, and
+/// the wallet is proven against the venue at connect, which this test does not reach.
+const TEST_WALLET: &str = "0x0000000000000000000000000000000000000001";
 
 fn register_sodex_python_module(py: Python<'_>) {
     let module = PyModule::new(py, "sodex").expect("SoDEX module should be created");
@@ -136,6 +139,7 @@ fn assert_exec_factory_extracts_from_python_object(py: Python<'_>) {
             account_id: Some(TEST_ACCOUNT_ID),
             api_key_name: Some("api-key-01".to_string()),
             api_private_key: Some(TEST_API_KEY.into()),
+            wallet_address: Some(TEST_WALLET.to_string()),
             update_instruments_interval_mins: None,
             timeout_secs: 11,
         },
@@ -168,6 +172,12 @@ fn assert_exec_factory_extracts_from_python_object(py: Python<'_>) {
     assert_eq!(extracted_factory.config_type(), "SodexExecClientConfig");
     assert_eq!(sodex_config.market, Market::Perps);
     assert_eq!(sodex_config.timeout_secs, 11);
+    // Validated for shape at construction, because a malformed address does not make the venue
+    // fail — it makes the account reads answer with an empty account.
+    assert_eq!(
+        sodex_config.resolve_wallet_address().as_deref(),
+        Ok(TEST_WALLET)
+    );
     assert_eq!(client.client_id(), ClientId::from("SODEX-EXEC-EXTRACTED"));
     assert_eq!(client.venue().to_string(), SODEX_PERPS);
     // The account id carries the venue's own numeric id, so an account event can be traced
