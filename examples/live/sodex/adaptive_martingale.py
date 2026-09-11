@@ -308,10 +308,11 @@ class AdaptiveMartingale(Strategy):
         """
         self.instrument = self.cache.instrument(self._config.instrument_id)
         if self.instrument is None:
-            log_msg = f"Could not find instrument for {self._config.instrument_id}"
-            self.log.error(log_msg)
-            self.stop()
-            return
+            # Raising rather than calling `self.stop()`: stopping from inside `on_start` re-enters
+            # the actor while it is still mutably borrowed, and the real error is then buried under
+            # a `RuntimeError: Already borrowed` from the failed stop. A strategy with no
+            # instrument can do nothing useful, so failing the start is also the honest outcome.
+            raise RuntimeError(f"Could not find instrument for {self._config.instrument_id}")
 
         regime_bar_type = self._config.regime_bar_type
         signal_bar_type = self._config.signal_bar_type
