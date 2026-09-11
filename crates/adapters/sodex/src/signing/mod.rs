@@ -6,15 +6,15 @@
 //! `keccak256(compact_json({type, params}))`, and the gateway verifies by parsing the
 //! request body into its own Go structs and re-marshaling with `json.Marshal`, which
 //! emits fields in struct-definition order. A payload whose keys are ordered differently
-//! hashes differently and the signature is rejected — with no diagnostic beyond a
+//! hashes differently and the signature is rejected - with no diagnostic beyond a
 //! verification failure.
 //!
-//! `serde` serializes struct fields in declaration order, which matches Go's behaviour, so
+//! `serde` serializes struct fields in declaration order, which matches Go's behavior, so
 //! the contract holds as long as payloads are modeled as concrete structs whose field order
 //! mirrors the Go SDK. It does **not** hold for [`serde_json::Value`], and the reason is worse
 //! than a fixed ordering: `Value`'s object representation is chosen by a Cargo feature. With
 //! `serde_json/preserve_order` it is an insertion-ordered map; without it, a `BTreeMap` that
-//! sorts keys alphabetically. That feature is not this crate's to set — building with the
+//! sorts keys alphabetically. That feature is not this crate's to set - building with the
 //! `python` feature turns it on transitively, and a plain Rust build leaves it off.
 //!
 //! So a payload routed through `Value` would hash one way in one build of this crate and

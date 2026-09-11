@@ -10,7 +10,7 @@
 //! Spot and perps keep **separate key sets** even though they share an account id. A key
 //! registered through the perps gateway is not visible to spot, which rejects requests
 //! signed by it with "API key not found". Registering the same public key on both engines
-//! is what lets one private key sign for both — that is a deliberate second registration,
+//! is what lets one private key sign for both - that is a deliberate second registration,
 //! not something the first one implies.
 //!
 //! `GET /{engine}/accounts/{address}/api-keys` lists what a given engine actually holds,
@@ -51,7 +51,7 @@ pub const NO_EXPIRY: u64 = 0;
 /// Body of the add-API-key request.
 ///
 /// Field order mirrors the venue's schema table. Note `type` here versus `keyType` in the
-/// signed struct — the venue documents that difference as deliberate.
+/// signed struct - the venue documents that difference as deliberate.
 #[derive(Debug, Clone, Serialize)]
 pub struct AddApiKeyRequest {
     #[serde(rename = "accountID")]
@@ -338,6 +338,8 @@ impl AccountClient {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn client() -> AccountClient {
@@ -349,7 +351,7 @@ mod tests {
         ApiKeyName::parse("api-key-01").unwrap()
     }
 
-    #[test]
+    #[rstest]
     fn generated_keys_are_distinct_and_usable() {
         let a = generate_api_key().unwrap();
         let b = generate_api_key().unwrap();
@@ -359,7 +361,7 @@ mod tests {
         assert_eq!(a.private_key.as_hex().len(), 64);
     }
 
-    #[test]
+    #[rstest]
     fn generated_private_key_derives_the_reported_address() {
         // If these disagreed, the venue would register an address whose key we do not hold,
         // and every subsequent signature would fail authentication.
@@ -376,7 +378,7 @@ mod tests {
         assert_eq!(signer.address(), generated.public_key);
     }
 
-    #[test]
+    #[rstest]
     fn add_request_carries_the_chain_header_matching_the_signing_domain() {
         // The venue rejects the signature when X-API-Chain and domain.chainId disagree.
         let client = client();
@@ -390,7 +392,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn add_request_signature_uses_the_universal_prefix() {
         let request = client()
             .build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, None)
@@ -399,7 +401,7 @@ mod tests {
         assert!(request.headers[HEADER_API_SIGN].starts_with("0x02"));
     }
 
-    #[test]
+    #[rstest]
     fn add_request_body_uses_type_not_key_type() {
         // The signed struct calls this keyType; the body must call it type.
         let request = client()
@@ -411,7 +413,7 @@ mod tests {
         assert!(!body.contains("keyType"), "{body}");
     }
 
-    #[test]
+    #[rstest]
     fn permissions_are_omitted_unless_requested() {
         let plain = client()
             .build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, None)
@@ -430,7 +432,7 @@ mod tests {
         assert!(restricted.body_str().contains(r#""permissions":13"#));
     }
 
-    #[test]
+    #[rstest]
     fn permissioned_key_leaving_trade_and_cancel_enabled_is_refused() {
         // The venue does not support this combination; failing here saves a round trip and
         // gives a reason instead of a gateway error code.
@@ -448,7 +450,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
+    #[rstest]
     fn requests_target_the_documented_path() {
         let request = client()
             .build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, None)
@@ -460,7 +462,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn revoke_uses_delete_and_names_the_key() {
         let request = client().build_revoke_api_key(60366, &name()).unwrap();
 
@@ -468,7 +470,7 @@ mod tests {
         assert!(request.body_str().contains(r#""name":"api-key-01""#));
     }
 
-    #[test]
+    #[rstest]
     fn revoke_signs_under_the_exchange_domain_not_the_universal_one() {
         // revokeAPIKey is a trading-domain action signed by the master key, so it carries
         // the 0x01 prefix and no X-API-Chain. Signing it like addAPIKey would be rejected.
@@ -482,7 +484,7 @@ mod tests {
         assert!(!request.headers.contains_key(HEADER_API_CHAIN));
     }
 
-    #[test]
+    #[rstest]
     fn add_and_revoke_use_different_signature_families() {
         let client = client();
         let add = client
@@ -494,7 +496,7 @@ mod tests {
         assert!(revoke.headers[HEADER_API_SIGN].starts_with("0x01"));
     }
 
-    #[test]
+    #[rstest]
     fn each_account_action_draws_a_fresh_nonce() {
         let client = client();
 

@@ -23,7 +23,7 @@ crate-type = ["rlib"]
 # The venue settles on-chain and quotes token amounts at 18 decimals, so the
 # wider fixed-point width is the right default here rather than an opt-in. Left
 # undeclared, this crate would clamp decimals at 9 places when built alone and at
-# 16 when feature unification turned it on for the Python extension — the same
+# 16 when feature unification turned it on for the Python extension - the same
 # venue string normalised two different ways depending on who built the crate.
 default = ["high-precision"]
 high-precision = ["nautilus-model/high-precision"]
@@ -49,21 +49,21 @@ python = [
 [dependencies]
 nautilus-common = { workspace = true, features = ["live"] }
 nautilus-core = { workspace = true }
-nautilus-execution = { workspace = true }
 nautilus-live = { workspace = true }
 nautilus-model = { workspace = true }
 nautilus-network = { workspace = true }
 nautilus-system = { workspace = true, optional = true }
-alloy = { workspace = true, features = ["sol-types", "signer-local"] }
+
+alloy = { workspace = true, features = ["signer-local", "sol-types"] }
 alloy-primitives = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 log = { workspace = true }
 parking_lot = { workspace = true }
 rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true }

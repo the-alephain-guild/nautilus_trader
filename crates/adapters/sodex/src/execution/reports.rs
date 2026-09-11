@@ -8,7 +8,7 @@
 //!
 //! `/orders` lists only what is still open; anything terminal has moved to `/orders/history`.
 //! Reconciling therefore means reading both, and a report built from only the first would show a
-//! cancelled order as simply absent — which the engine cannot distinguish from an order it should
+//! cancelled order as simply absent - which the engine cannot distinguish from an order it should
 //! never have known about.
 //!
 //! # A reported fill beats an inferred one, and says why
@@ -18,25 +18,29 @@
 //!
 //! - the venue's own `tradeID`, instead of a synthetic one;
 //! - `isMaker`, so the liquidity side is known rather than assumed;
-//! - `fee` together with `feeCoin`, which is the asset the fee was actually taken from — the
+//! - `fee` together with `feeCoin`, which is the asset the fee was actually taken from - the
 //!   **base** asset on a buy, deducted from what arrives.
 //!
 //! # Average fill price is derived, not reported
 //!
 //! The venue gives `executedQty` and `executedValue` (the quote-asset total), not an average
-//! price. Dividing is the only way to get one, and it is only defined once something has filled —
+//! price. Dividing is the only way to get one, and it is only defined once something has filled -
 //! so an unfilled order reports no average rather than a zero, which would read as "filled at
 //! zero".
 
+use std::str::FromStr;
+
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{LiquiditySide, OrderStatus as NautilusStatus, TimeInForce as NautilusTif},
+    enums::{
+        LiquiditySide, OrderSide as NautilusSide, OrderStatus as NautilusStatus,
+        OrderType as NautilusType, TimeInForce as NautilusTif,
+    },
     identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
     reports::{fill::FillReport, order::OrderStatusReport},
     types::{Currency, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
-use std::str::FromStr;
 
 use crate::{
     common::{
@@ -53,7 +57,7 @@ pub enum ReportError {
     UnmappableStatus { order_id: u64, status: OrderStatus },
     #[error("order {order_id} reports a fee in {coin:?}, which is not a currency the engine knows")]
     UnknownFeeCurrency { order_id: u64, coin: String },
-    #[error("order {order_id} has an unparseable {field}: {value:?} ({reason})")]
+    #[error("order {order_id} has an unparsable {field}: {value:?} ({reason})")]
     InvalidValue {
         order_id: u64,
         field: &'static str,
@@ -64,26 +68,26 @@ pub enum ReportError {
 
 /// Maps the venue's side onto Nautilus's.
 #[must_use]
-pub const fn map_side(side: OrderSide) -> nautilus_model::enums::OrderSide {
+pub const fn map_side(side: OrderSide) -> NautilusSide {
     match side {
-        OrderSide::Buy => nautilus_model::enums::OrderSide::Buy,
-        OrderSide::Sell => nautilus_model::enums::OrderSide::Sell,
+        OrderSide::Buy => NautilusSide::Buy,
+        OrderSide::Sell => NautilusSide::Sell,
     }
 }
 
 /// Maps the venue's order type onto Nautilus's.
 #[must_use]
-pub const fn map_order_type(order_type: OrderType) -> nautilus_model::enums::OrderType {
+pub const fn map_order_type(order_type: OrderType) -> NautilusType {
     match order_type {
-        OrderType::Market => nautilus_model::enums::OrderType::Market,
-        OrderType::Limit => nautilus_model::enums::OrderType::Limit,
+        OrderType::Market => NautilusType::Market,
+        OrderType::Limit => NautilusType::Limit,
     }
 }
 
 /// Maps the venue's time-in-force onto Nautilus's, resolving `GTX` to post-only.
 ///
-/// `GTX` has no Nautilus time-in-force of its own — Nautilus carries post-only as a flag on the
-/// order rather than as a time-in-force — so it reports as `GTC`, which is what it is once the
+/// `GTX` has no Nautilus time-in-force of its own - Nautilus carries post-only as a flag on the
+/// order rather than as a time-in-force - so it reports as `GTC`, which is what it is once the
 /// post-only constraint has been applied at placement. The flag itself is not recoverable from a
 /// report, and pretending otherwise would be worse than this.
 ///
@@ -166,7 +170,7 @@ pub fn order_status_report(
 /// The average price actually achieved, or `None` when nothing has filled.
 ///
 /// Derived from `executedValue / executedQty` because the venue reports no average, and kept as a
-/// `Decimal` rather than hopping through a float — this is money.
+/// `Decimal` rather than hopping through a float - this is money.
 ///
 /// `None` rather than `0` for an unfilled order: a zero here would be read as a fill at zero,
 /// which is the one misreading that could make a strategy think it had been given free inventory.
@@ -180,26 +184,24 @@ fn average_fill_price(
     }
     let value = Decimal::from_str(&record.executed_value).map_err(|e| e.to_string())?;
 
-    Ok(Some(
-        (value / filled).round_dp(u32::from(price_precision)),
-    ))
+    Ok(Some((value / filled).round_dp(u32::from(price_precision))))
 }
 
 fn price_at(raw: &str, precision: u8) -> Result<Price, String> {
     let normalized = normalize_to(raw, precision).map_err(|e| e.to_string())?;
-    Price::from_str(&normalized).map_err(|e| e.to_string())
+    Price::from_str(&normalized)
 }
 
 fn quantity_at(raw: &str, precision: u8) -> Result<Quantity, String> {
     let normalized = normalize_to(raw, precision).map_err(|e| e.to_string())?;
-    Quantity::from_str(&normalized).map_err(|e| e.to_string())
+    Quantity::from_str(&normalized)
 }
 
 /// Builds a fill report from one venue trade.
 ///
 /// Everything here is the venue's own: the trade id, the liquidity side, and the fee in the asset
 /// it was actually charged in. That last point is why the fee currency is read from the response
-/// rather than assumed to be the quote asset — a buy pays in the base asset, and recording it as
+/// rather than assumed to be the quote asset - a buy pays in the base asset, and recording it as
 /// quote would misstate which balance moved.
 ///
 /// # Errors
@@ -221,18 +223,17 @@ pub fn fill_report(
         reason,
     };
 
-    let fee_currency = Currency::try_from_str(&trade.fee_coin).ok_or_else(|| {
-        ReportError::UnknownFeeCurrency {
+    let fee_currency =
+        Currency::try_from_str(&trade.fee_coin).ok_or_else(|| ReportError::UnknownFeeCurrency {
             order_id: trade.order_id,
             coin: trade.fee_coin.clone(),
-        }
-    })?;
+        })?;
     // Parsed as a `Decimal` first, not a float: the fee is fractions of a basis point on an
     // 18-decimal asset, and a float hop here is a rounding policy nobody chose.
     let normalized = normalize_to(&trade.fee, fee_currency.precision)
         .map_err(|e| invalid("fee", &trade.fee, e.to_string()))?;
-    let commission = Decimal::from_str(&normalized)
-        .map_err(|e| invalid("fee", &trade.fee, e.to_string()))?;
+    let commission =
+        Decimal::from_str(&normalized).map_err(|e| invalid("fee", &trade.fee, e.to_string()))?;
 
     Ok(FillReport::new(
         account_id,
@@ -242,8 +243,7 @@ pub fn fill_report(
         map_side(trade.side),
         quantity_at(&trade.quantity, size_precision)
             .map_err(|e| invalid("quantity", &trade.quantity, e))?,
-        price_at(&trade.price, price_precision)
-            .map_err(|e| invalid("price", &trade.price, e))?,
+        price_at(&trade.price, price_precision).map_err(|e| invalid("price", &trade.price, e))?,
         Money::new(
             commission
                 .try_into()
@@ -283,6 +283,7 @@ pub const fn is_terminal(status: NautilusStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use nautilus_model::identifiers::{Symbol, Venue};
+    use rstest::rstest;
 
     use super::*;
     use crate::config::SODEX_SPOT;
@@ -320,7 +321,7 @@ mod tests {
         .expect("the venue's own record must convert")
     }
 
-    #[test]
+    #[rstest]
     fn an_unfilled_order_reports_no_average_price() {
         // Not zero. A zero average reads as "filled at zero", which is the one misreading that
         // could make a strategy believe it was handed free inventory.
@@ -330,9 +331,9 @@ mod tests {
         assert_eq!(report.filled_qty.to_string(), "0.00000");
     }
 
-    #[test]
+    #[rstest]
     fn a_partial_fill_reports_the_average_the_venue_implies() {
-        // The venue reports no average, only quantity and quote value, so it is derived — and
+        // The venue reports no average, only quantity and quote value, so it is derived - and
         // derived in Decimal rather than through a float, because this is money.
         let mut filled = record();
         filled.status = OrderStatus::PartiallyFilled;
@@ -346,7 +347,7 @@ mod tests {
         assert_eq!(report.order_status, NautilusStatus::PartiallyFilled);
     }
 
-    #[test]
+    #[rstest]
     fn a_market_order_carries_no_limit_price() {
         // The venue reports "0" as the price of a market order. Passing that through would
         // describe an order priced at zero rather than an order with no limit.
@@ -361,10 +362,10 @@ mod tests {
         assert_eq!(report.time_in_force, NautilusTif::Ioc);
     }
 
-    #[test]
+    #[rstest]
     fn post_only_reports_as_gtc_because_nautilus_carries_it_as_a_flag() {
-        // `GTX` is the venue's post-only. Nautilus has no such time-in-force — it carries
-        // post-only as a flag on the order — so the resting behaviour is what survives into a
+        // `GTX` is the venue's post-only. Nautilus has no such time-in-force - it carries
+        // post-only as a flag on the order - so the resting behavior is what survives into a
         // report. The flag itself is not recoverable, and inventing one would be worse.
         let mut post_only = record();
         post_only.time_in_force = TimeInForce::Gtx;
@@ -372,7 +373,7 @@ mod tests {
         assert_eq!(report(&post_only).time_in_force, NautilusTif::Gtc);
     }
 
-    #[test]
+    #[rstest]
     fn identifiers_and_timestamps_come_from_the_venue() {
         let report = report(&record());
 
@@ -387,7 +388,7 @@ mod tests {
         assert_eq!(report.ts_last.as_u64(), 1_789_040_199_772 * 1_000_000);
     }
 
-    #[test]
+    #[rstest]
     fn a_status_nautilus_cannot_express_is_refused_rather_than_guessed() {
         // `TRIGGERED` is a perps stop state with no Nautilus equivalent. Mapping it to something
         // plausible would hand the engine a false picture of an order it is about to act on.
@@ -407,8 +408,8 @@ mod tests {
         assert!(matches!(error, ReportError::UnmappableStatus { .. }));
     }
 
-    #[test]
-    fn a_terminal_status_is_recognised_as_settled() {
+    #[rstest]
+    fn a_terminal_status_is_recognized_as_settled() {
         // Used to decide whether the venue has reached a verdict on a write whose outcome was
         // unknown, so the open states must not be mistaken for settled ones.
         assert!(is_terminal(NautilusStatus::Filled));
@@ -421,6 +422,8 @@ mod tests {
 
 #[cfg(test)]
 mod lookup_tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::http::account_reads::OrderRecord;
 
@@ -454,7 +457,7 @@ mod lookup_tests {
             .find(|record| record.cl_ord_id == wanted)
     }
 
-    #[test]
+    #[rstest]
     fn an_order_that_filled_immediately_is_found_in_history_not_open() {
         // The case that makes searching only the open list dangerous: an accepted order that
         // filled at once never appears there, and calling it absent would report a completed
@@ -467,14 +470,14 @@ mod lookup_tests {
         assert_eq!(found.status, OrderStatus::Filled);
     }
 
-    #[test]
+    #[rstest]
     fn a_resting_order_is_found_on_the_open_list() {
         let open = vec![record("O-1", OrderStatus::New)];
 
         assert!(find(&open, &[], "O-1").is_some());
     }
 
-    #[test]
+    #[rstest]
     fn an_order_the_venue_never_saw_is_absent_from_both() {
         // Only then is a rejection an observation rather than an assumption.
         let open = vec![record("O-other", OrderStatus::New)];
@@ -483,10 +486,10 @@ mod lookup_tests {
         assert!(find(&open, &history, "O-1").is_none());
     }
 
-    #[test]
+    #[rstest]
     fn matching_is_exact_rather_than_prefixed() {
-        // Client order ids share prefixes by construction — a timestamped label and its cancel
-        // label differ only at the end — so a prefix match could resolve one order's fate from
+        // Client order ids share prefixes by construction - a timestamped label and its cancel
+        // label differ only at the end - so a prefix match could resolve one order's fate from
         // another's record.
         let history = vec![record("O-1-retry", OrderStatus::Filled)];
 
@@ -496,7 +499,12 @@ mod lookup_tests {
 
 #[cfg(test)]
 mod fill_tests {
-    use nautilus_model::identifiers::{Symbol, Venue};
+    use nautilus_model::{
+        enums::CurrencyType,
+        identifiers::{Symbol, Venue},
+        types::fixed::FIXED_PRECISION,
+    };
+    use rstest::rstest;
 
     use super::*;
     use crate::{config::SODEX_SPOT, http::account_reads::TradeRecord};
@@ -522,13 +530,7 @@ mod fill_tests {
     /// Registers a venue coin the way the provider does: at the engine's full width, not at the
     /// precision the symbol listing reports for it.
     fn registered_coin(code: &str) -> Currency {
-        let currency = Currency::new(
-            code,
-            nautilus_model::types::fixed::FIXED_PRECISION,
-            0,
-            code,
-            nautilus_model::enums::CurrencyType::Crypto,
-        );
+        let currency = Currency::new(code, FIXED_PRECISION, 0, code, CurrencyType::Crypto);
         let _ = Currency::register(currency, false);
         currency
     }
@@ -564,7 +566,7 @@ mod fill_tests {
         .expect("the venue's own fill must convert")
     }
 
-    #[test]
+    #[rstest]
     fn the_fee_keeps_the_asset_the_venue_charged_it_in() {
         // A buy's fee comes out of the **base** asset, not the quote: ordering 0.001 vBTC credits
         // 0.00099935, and the difference is this fee. Recording it as quote would misstate which
@@ -575,7 +577,7 @@ mod fill_tests {
         assert_eq!(report.commission.as_decimal(), Decimal::new(65, 8));
     }
 
-    #[test]
+    #[rstest]
     fn the_liquidity_side_is_the_venue_s_rather_than_a_guess() {
         // This is the whole advantage of a reported fill over an inferred one: `isMaker` is
         // stated, so nothing has to assume the conservative side.
@@ -586,7 +588,7 @@ mod fill_tests {
         assert_eq!(report(&maker).liquidity_side, LiquiditySide::Maker);
     }
 
-    #[test]
+    #[rstest]
     fn the_venue_s_own_trade_id_is_carried() {
         // An inferred fill has to synthesize one. A reported fill must not, or two runs would
         // disagree about which trade they were talking about.
@@ -600,25 +602,28 @@ mod fill_tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn the_fill_is_stamped_with_its_own_time() {
-        assert_eq!(report(&trade()).ts_event.as_u64(), 1_789_108_467_221 * 1_000_000);
+        assert_eq!(
+            report(&trade()).ts_event.as_u64(),
+            1_789_108_467_221 * 1_000_000
+        );
     }
 
-    #[test]
+    #[rstest]
     fn a_sell_pays_its_fee_in_the_quote_asset() {
         // The other half of the rule, and observed rather than assumed from symmetry: the fee is
         // charged in the asset received, so a sell pays in quote where a buy pays in base.
         let report = report(&sell_trade());
 
         assert_eq!(report.commission.currency.code.as_str(), "vUSDC");
-        assert_eq!(report.order_side, nautilus_model::enums::OrderSide::Sell);
+        assert_eq!(report.order_side, NautilusSide::Sell);
     }
 
-    #[test]
+    #[rstest]
     fn the_fee_is_carried_at_full_precision_not_the_listed_coin_precision() {
         // This rounded before. The symbol listing reports `quoteCoinPrecision: 6` for vUSDC, but
-        // the venue's ledger carries ten places — fee `0.0498075435`, balance `999.3931824565`.
+        // the venue's ledger carries ten places - fee `0.0498075435`, balance `999.3931824565`.
         // Registering the coin at six turned that fee into `0.049808`, overstating it and leaving
         // the recorded commission unable to reconcile against the balance it came out of.
         let report = report(&sell_trade());
@@ -630,7 +635,7 @@ mod fill_tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn the_fee_equals_notional_times_the_rate_on_both_sides() {
         // Why the quote-denominated estimate used for *inferred* fills is exact: a sell's fee is
         // `notional * rate` outright, and a buy's base-denominated fee converted at the fill price
@@ -638,12 +643,9 @@ mod fill_tests {
         let rate = Decimal::from_str("0.00065").unwrap();
 
         let sell = sell_trade();
-        let sell_notional = Decimal::from_str(&sell.quantity).unwrap()
-            * Decimal::from_str(&sell.price).unwrap();
-        assert_eq!(
-            sell_notional * rate,
-            Decimal::from_str(&sell.fee).unwrap()
-        );
+        let sell_notional =
+            Decimal::from_str(&sell.quantity).unwrap() * Decimal::from_str(&sell.price).unwrap();
+        assert_eq!(sell_notional * rate, Decimal::from_str(&sell.fee).unwrap());
 
         let buy = trade();
         let buy_fee_in_quote =
@@ -653,7 +655,7 @@ mod fill_tests {
         assert_eq!(buy_notional * rate, buy_fee_in_quote);
     }
 
-    #[test]
+    #[rstest]
     fn a_fee_in_an_unknown_asset_is_refused_rather_than_silently_dropped() {
         // The venue can list a coin this engine has never registered. Defaulting the currency
         // would book the fee against the wrong balance, so the fill is refused and named.

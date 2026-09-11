@@ -18,7 +18,7 @@ use crate::{
 impl SodexDataClientConfig {
     /// Configuration for the SoDEX live data client.
     ///
-    /// Takes no credentials, because the venue serves market data unsigned — a data-only
+    /// Takes no credentials, because the venue serves market data unsigned - a data-only
     /// deployment holds no secret at all.
     #[new]
     #[pyo3(signature = (
@@ -42,8 +42,7 @@ impl SodexDataClientConfig {
             // An explicit `0` disables the reload; omitting the argument keeps the default
             // rather than disabling it, because silence should not turn a protection off.
             update_instruments_interval_mins: update_instruments_interval_mins
-                .map(Some)
-                .unwrap_or_else(default_instrument_refresh_mins),
+                .map_or_else(default_instrument_refresh_mins, Some),
             timeout_secs: timeout_secs.unwrap_or_else(default_timeout_secs),
         }
     }
@@ -79,14 +78,14 @@ impl SodexDataClientConfig {
 impl SodexExecClientConfig {
     /// Configuration for the SoDEX live execution client.
     ///
-    /// Every credential may be left unset, in which case it resolves from the environment —
+    /// Every credential may be left unset, in which case it resolves from the environment -
     /// `SODEX_ACCOUNT_ID`, `SODEX_API_KEY_NAME`, `SODEX_API_PRIVATE_KEY`. Preferring that to
     /// passing `api_private_key` here keeps the key out of config files and out of any Python
     /// traceback that prints its arguments.
     ///
     /// The key this takes is a registered **API key**, never the master wallet: the master key
     /// can authorize withdrawals and belongs offline. `wallet_address` is the master wallet's
-    /// *address* — public information that signs nothing, and required because the account reads
+    /// *address* - public information that signs nothing, and required because the account reads
     /// are addressed by it. A wrong address there answers with an empty account rather than an
     /// error, so the client verifies it against the registered key list at startup.
     #[new]
@@ -119,8 +118,7 @@ impl SodexExecClientConfig {
             api_private_key: api_private_key.map(SecretString::from),
             wallet_address,
             update_instruments_interval_mins: update_instruments_interval_mins
-                .map(Some)
-                .unwrap_or_else(default_instrument_refresh_mins),
+                .map_or_else(default_instrument_refresh_mins, Some),
             timeout_secs: timeout_secs.unwrap_or_else(default_timeout_secs),
         }
     }

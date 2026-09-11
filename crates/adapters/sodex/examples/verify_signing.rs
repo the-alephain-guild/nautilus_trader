@@ -67,29 +67,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("key name:  {key_name}");
     println!("url:       {}", request.url);
     println!("body:      {}", request.body_str());
-    println!(
-        "signature: {}...",
-        &request.headers["X-API-Sign"][..12]
-    );
+    println!("signature: {}...", &request.headers["X-API-Sign"][..12]);
     println!();
 
     // scheduleCancel documents no endpoint-specific payload, so an accepted request returns
     // an empty data field. Treating that as an error would report a working signature as a
-    // failure — which is exactly what happened on the first run of this probe.
+    // failure - which is exactly what happened on the first run of this probe.
     match client.send_optional::<serde_json::Value>(request).await {
         Ok(data) => {
-            println!("ACCEPTED — trading-domain signing verified end to end");
+            println!("ACCEPTED - trading-domain signing verified end to end");
             println!("response data: {data:?}");
         }
-        Err(error) => {
+        Err(e) => {
             // A rejection here is still informative: a signature error means the signing
             // path is wrong, while a business error means the signature was accepted and
             // the request merely had nothing to do.
-            println!("REJECTED: {error}");
+            println!("REJECTED: {e}");
             println!();
             println!("If the message mentions a signature, signer or recovery id, the signing");
             println!("path is at fault. Anything else means the signature was accepted.");
-            return Err(error.into());
+            return Err(e.into());
         }
     }
 

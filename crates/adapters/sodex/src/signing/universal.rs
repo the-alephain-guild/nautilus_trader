@@ -120,12 +120,15 @@ impl UniversalSigner {
 
     /// Signs an `addAPIKey` action, returning the value for `X-API-Sign`.
     ///
-    /// `public_key` is the EVM address of the key being registered — the address whose
+    /// `public_key` is the EVM address of the key being registered - the address whose
     /// private key will then sign trading actions.
     ///
     /// # Errors
     ///
     /// Returns [`SigningError::Sign`] if the digest cannot be signed.
+    // One parameter per field of `UserSignedAddAPIKeyAction`. A wrapper struct would just
+    // restate that type while putting a layer between the call and what gets signed.
+    #[allow(clippy::too_many_arguments)]
     pub fn sign_add_api_key(
         &self,
         network_chain_id: u64,
@@ -199,6 +202,8 @@ impl UniversalSigner {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::common::{CHAIN_ID_MAINNET, CHAIN_ID_TESTNET, enums::DisabledPermissions};
 
@@ -225,7 +230,7 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
+    #[rstest]
     fn signature_carries_the_universal_prefix() {
         // 0x02, not the 0x01 used for trading actions. The venue rejects the wrong prefix.
         let signature = sign_with(&signer(CHAIN_ID_TESTNET), CHAIN_ID_TESTNET);
@@ -234,7 +239,7 @@ mod tests {
         assert_eq!(signature.len(), 66);
     }
 
-    #[test]
+    #[rstest]
     fn domain_chain_id_is_reported_for_the_header() {
         // X-API-Chain must equal domain.chainId or verification fails, so the value the
         // signer actually used is exposed rather than reconstructed by the caller.
@@ -243,7 +248,7 @@ mod tests {
         assert_eq!(signer.api_chain(), 42);
     }
 
-    #[test]
+    #[rstest]
     fn domain_chain_id_and_network_chain_id_are_independent() {
         // The domain value identifies the signature domain; the message value selects the
         // network. Changing either alone must change the signature.
@@ -258,7 +263,7 @@ mod tests {
         assert_ne!(a, c, "message chain id must affect the signature");
     }
 
-    #[test]
+    #[rstest]
     fn for_network_mirrors_the_network_chain_id_into_the_domain() {
         let key = MasterPrivateKey::parse(&"3".repeat(64)).unwrap();
         let signer = UniversalSigner::for_network(&key, CHAIN_ID_TESTNET).unwrap();
@@ -266,7 +271,7 @@ mod tests {
         assert_eq!(signer.api_chain(), CHAIN_ID_TESTNET);
     }
 
-    #[test]
+    #[rstest]
     fn permissioned_and_plain_actions_are_different_structs() {
         // Different EIP-712 type hashes, so the same inputs must not collide.
         let signer = signer(CHAIN_ID_TESTNET);
@@ -289,7 +294,7 @@ mod tests {
         assert_eq!(permissioned[0], 0x02);
     }
 
-    #[test]
+    #[rstest]
     fn permission_mask_changes_the_signature() {
         let signer = signer(CHAIN_ID_TESTNET);
 
@@ -314,7 +319,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn recovery_id_is_raw_zero_or_one_not_eip155_v() {
         // Same gateway constraint as the exchange signer; registration failed on this first.
         let signer = signer(CHAIN_ID_TESTNET);
@@ -337,12 +342,18 @@ mod tests {
             .collect();
 
         for recovery_id in &seen {
-            assert!(*recovery_id <= 1, "recovery id {recovery_id} must be 0 or 1");
+            assert!(
+                *recovery_id <= 1,
+                "recovery id {recovery_id} must be 0 or 1"
+            );
         }
-        assert!(seen.contains(&0) && seen.contains(&1), "both parities exercised");
+        assert!(
+            seen.contains(&0) && seen.contains(&1),
+            "both parities exercised"
+        );
     }
 
-    #[test]
+    #[rstest]
     fn master_address_is_derived_from_the_key() {
         // The venue recovers this address from the signature; if it does not match the
         // account's owner the action is rejected.

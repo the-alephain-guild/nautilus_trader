@@ -23,13 +23,27 @@
 //!
 //! Every signature carries a leading type byte, and the two families differ:
 //!
-//! - trading actions sign [`ExchangeAction`] under the `spot`/`futures` domain, prefix `0x01`
+//! - trading actions sign an `ExchangeAction` under the `spot`/`futures` domain, prefix `0x01`
 //! - account-level actions sign under the `universal` domain, prefix `0x02`
 //!
-//! The payload hash bound into [`ExchangeAction`] is `keccak256` over the *compact* JSON
+//! The payload hash bound into `ExchangeAction` is `keccak256` over the *compact* JSON
 //! encoding of `{type, params}`. The gateway verifies by parsing the request body into its
-//! own Go structs and re-marshaling, so field order is part of the contract — see
+//! own Go structs and re-marshaling, so field order is part of the contract - see
 //! [`signing`] for how that is preserved on this side.
+
+//! # Feature Flags
+//!
+//! This crate provides feature flags to control source code inclusion during compilation,
+//! depending on the intended use case, i.e. whether to provide Python bindings
+//! for the [nautilus_trader](https://pypi.org/project/nautilus_trader) Python package,
+//! or as part of a Rust only build.
+//!
+//! - `extension-module`: Builds as a Python extension module.
+//! - `high-precision` (default): Enables
+//!   [high-precision mode](https://nautilustrader.io/docs/nightly/getting_started/installation/#precision-mode)
+//!   to use 128-bit value types. Default here rather than opt-in because the venue settles
+//!   on-chain and quotes token amounts at 18 decimals.
+//! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
 
 //! # What is implemented
 //!
@@ -38,12 +52,12 @@
 //! | Instruments | Loaded from the venue listing for both engines |
 //! | Historical bars | REST klines, with the still-forming tail removed |
 //! | Streaming bars | `candle` channel, completed bars only |
-//! | Quotes | `ticker` channel — a periodic sample of top of book, not every change |
+//! | Quotes | `ticker` channel - a periodic sample of top of book, not every change |
 //! | Trades | `trade` channel, with the aggressing side |
 //! | Order submission | Market and limit, spot and perps |
 //! | Order cancellation | By venue order id, falling back to the client order id |
 //! | Ambiguous submissions | Resolved against the venue's order list, not guessed |
-//! | Order books | **Not implemented** — the venue publishes no book channel |
+//! | Order books | **Not implemented** - the venue publishes no book channel |
 //! | Instrument reload | Hourly by default, configurable; `None` disables |
 //! | Socket state reporting | Link state surfaced to the engine, reconnect requestable |
 //! | Python bindings | `nautilus_trader.adapters.sodex` |
@@ -67,15 +81,15 @@
 //!   this crate all along, which is where the lead came from.
 //!
 //! The same technique settled the stream channel question too. `SubscriptionParams` has exactly
-//! seven fields — the venue names each one in its unmarshal errors when sent a wrong type — and
+//! seven fields - the venue names each one in its unmarshal errors when sent a wrong type - and
 //! all 127 non-empty subsets of them are refused for `accountUpdate`. That is not an exhausted
 //! guess list but a closed search: its selector needs something outside that struct.
 //!
 //! # The fee is charged in the asset you receive
 //!
 //! Observed on both sides of a round trip, not inferred from one: a buy pays in the **base** asset
-//! and a sell in the **quote** one. The buy's comes out of what arrives — ordering `0.001` vBTC
-//! credited `0.00099935`, short by exactly the reported `0.00000065` — and the sell's comes out of
+//! and a sell in the **quote** one. The buy's comes out of what arrives - ordering `0.001` vBTC
+//! credited `0.00099935`, short by exactly the reported `0.00000065` - and the sell's comes out of
 //! the proceeds, `notional × rate` to the last digit.
 //!
 //! Two consequences, both of which cost something to learn:
@@ -92,13 +106,13 @@
 //! # A coin's listed precision is not its ledger precision
 //!
 //! The symbol listing reports `quoteCoinPrecision: 6` for vUSDC. The venue's ledger carries ten
-//! places — a fee of `0.0498075435`, a balance of `999.3931824565`. Registering the currency at the
+//! places - a fee of `0.0498075435`, a balance of `999.3931824565`. Registering the currency at the
 //! listed precision rounded that fee to `0.049808`, overstating it and leaving the recorded
 //! commission unable to reconcile against the balance it came out of.
 //!
-//! So venue coins are registered at the engine's full width. The listed precision governs *orders*
-//! — what price and size the venue accepts — and is carried separately on each instrument as
-//! `price_precision` and `size_precision`, where it belongs.
+//! So venue coins are registered at the engine's full width. The listed precision governs
+//! *orders* (what price and size the venue accepts) and is carried separately on each instrument
+//! as `price_precision` and `size_precision`, where it belongs.
 //!
 //! # What is left
 //!
@@ -117,8 +131,8 @@
 //!
 //! # Reused rather than rebuilt
 //!
-//! The parts below come from the engine's own crates, and are listed because the alternative —
-//! a hand-rolled equivalent — is easy to write by accident and hard to notice afterwards. One
+//! The parts below come from the engine's own crates, and are listed because the alternative -
+//! a hand-rolled equivalent - is easy to write by accident and hard to notice afterwards. One
 //! already happened here: a keepalive state machine was written before checking that
 //! `WebSocketConfig` covered it.
 //!
@@ -132,8 +146,8 @@
 //! | Instrument set snapshots | `nautilus_core::AtomicMap` |
 //! | Socket state and reconnect control | `nautilus_live::SocketControlFactory` |
 //!
-//! One thing is deliberately *not* reused. The venue meters request **weight** — endpoints cost
-//! between 1 and 20 against one shared per-minute budget — and the library's limiter consumes
+//! One thing is deliberately *not* reused. The venue meters request **weight** - endpoints cost
+//! between 1 and 20 against one shared per-minute budget - and the library's limiter consumes
 //! exactly one cell per call with no weighted form, so [`http::WeightBudget`] is hand-rolled.
 //! That is recorded here so the next reader does not spend time looking for the library
 //! facility it duplicates.
@@ -142,7 +156,7 @@
 //!
 //! Historical bars come back through the same conversion the stream uses, so a backtest and
 //! a live run see bars built by identical code. The one asymmetry that would otherwise
-//! remain — the venue marks streamed bars closed but leaves historical ones unmarked — is
+//! remain - the venue marks streamed bars closed but leaves historical ones unmarked - is
 //! removed on both paths: the stream filters on the venue's flag, and history drops its
 //! trailing bar by comparing the bar's open plus its interval against the clock.
 

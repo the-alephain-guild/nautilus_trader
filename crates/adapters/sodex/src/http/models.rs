@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Both signals are checked, and either one alone is enough to fail the request. An `error`
 /// with a zero code, or a non-zero code with no message, are both shapes that should not
-/// reach a caller as success — treating one signal as authoritative and ignoring the other
+/// reach a caller as success - treating one signal as authoritative and ignoring the other
 /// is how a rejection gets read as an empty result.
 ///
 /// The code is compared leniently against `0` and `"0"` because the envelope carries it as
@@ -88,6 +88,8 @@ pub enum EnvelopeError {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,7 +97,7 @@ mod tests {
         aid: u64,
     }
 
-    #[test]
+    #[rstest]
     fn success_envelope_yields_payload() {
         let raw = r#"{"code":0,"timestamp":1760373925000,"data":{"aid":12345}}"#;
         let parsed: ApiResponse<Payload> = serde_json::from_str(raw).unwrap();
@@ -104,7 +106,7 @@ mod tests {
         assert_eq!(parsed.into_result().unwrap(), Payload { aid: 12345 });
     }
 
-    #[test]
+    #[rstest]
     fn error_envelope_surfaces_message_and_code() {
         let raw = r#"{"code":21104,"timestamp":1760373925000,"error":"invalid nonce"}"#;
         let parsed: ApiResponse<Payload> = serde_json::from_str(raw).unwrap();
@@ -115,7 +117,7 @@ mod tests {
         assert!(err.to_string().contains("21104"), "{err}");
     }
 
-    #[test]
+    #[rstest]
     fn error_takes_precedence_even_when_data_is_present() {
         // Defensive: if the venue ever returns both, the failure must win rather than a
         // partially-populated payload being handed to a caller as success.
@@ -128,17 +130,20 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn success_without_payload_is_distinguishable_from_venue_error() {
         // Some endpoints document "no endpoint-specific data"; callers expecting a payload
         // should see a distinct error rather than a confusing venue message.
         let raw = r#"{"code":0,"timestamp":1760373925000}"#;
         let parsed: ApiResponse<Payload> = serde_json::from_str(raw).unwrap();
 
-        assert_eq!(parsed.into_result().unwrap_err(), EnvelopeError::MissingData);
+        assert_eq!(
+            parsed.into_result().unwrap_err(),
+            EnvelopeError::MissingData
+        );
     }
 
-    #[test]
+    #[rstest]
     fn nonzero_code_fails_even_without_an_error_message() {
         // Keying only off `error` would hand this to the caller as MissingData, hiding a
         // rejection behind what looks like an empty result.
@@ -150,7 +155,7 @@ mod tests {
         assert!(err.to_string().contains("21104"), "{err}");
     }
 
-    #[test]
+    #[rstest]
     fn numeric_string_code_is_still_success() {
         let raw = r#"{"code":"0","timestamp":1,"data":{"aid":9}}"#;
         let parsed: ApiResponse<Payload> = serde_json::from_str(raw).unwrap();
@@ -158,7 +163,7 @@ mod tests {
         assert_eq!(parsed.into_result().unwrap(), Payload { aid: 9 });
     }
 
-    #[test]
+    #[rstest]
     fn absent_code_does_not_by_itself_fail_the_response() {
         // Not every endpoint documents a code; absence must not be read as failure.
         let raw = r#"{"timestamp":1,"data":{"aid":3}}"#;
@@ -167,7 +172,7 @@ mod tests {
         assert_eq!(parsed.into_result().unwrap(), Payload { aid: 3 });
     }
 
-    #[test]
+    #[rstest]
     fn unknown_envelope_fields_do_not_break_parsing() {
         // The venue can add fields; a strict decoder would turn that into an outage.
         let raw = r#"{"code":0,"timestamp":1,"data":{"aid":7},"newField":"ignored"}"#;

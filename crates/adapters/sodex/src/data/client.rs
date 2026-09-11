@@ -10,10 +10,10 @@
 //! frames describe a bar whose high, low and close can still move. Only completed bars are
 //! published. A strategy that acted on a forming bar would be deciding from values that were
 //! not knowable at that timestamp, and its live results would not be comparable with any
-//! backtest — the same look-ahead the historical path removes with `drop_forming_tail`.
+//! backtest - the same look-ahead the historical path removes with `drop_forming_tail`.
 //!
 //! Completion cannot be read off the venue's `closed` flag alone. Observed on the live
-//! testnet across two full bar periods: the flag was never set, and the bar simply rolled —
+//! testnet across two full bar periods: the flag was never set, and the bar simply rolled -
 //! each push carried an open time one interval later than the last. A client that waited for
 //! the flag would publish nothing at all while its connection looked healthy, which is the
 //! worst failure available here, because it is indistinguishable from a market with no
@@ -22,7 +22,7 @@
 //! authoritative when present; the successor is the fallback evidence.
 //!
 //! The cost is one bar of latency: a bar is published when the next one starts rather than
-//! the instant it closes. That is inherent to the venue's behaviour, not a choice — there is
+//! the instant it closes. That is inherent to the venue's behavior, not a choice - there is
 //! no earlier moment at which completion is observable.
 //!
 //! # Pushes are matched to the subscription that asked for them
@@ -34,6 +34,7 @@
 
 use std::{
     collections::HashMap,
+    fmt::{Debug, Display},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -48,17 +49,17 @@ use nautilus_common::{
         DataEvent,
         data::{
             BarsResponse, DataResponse, InstrumentResponse, InstrumentsResponse, RequestBars,
-            RequestInstrument, RequestInstruments, SubscribeBars, SubscribeQuotes,
-            SubscribeTrades, UnsubscribeBars, UnsubscribeQuotes, UnsubscribeTrades,
+            RequestInstrument, RequestInstruments, SubscribeBars, SubscribeQuotes, SubscribeTrades,
+            UnsubscribeBars, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
 };
-use nautilus_live::SocketControlFactory;
 use nautilus_core::{
     UnixNanos,
     datetime::datetime_to_unix_nanos,
     time::{AtomicTime, get_atomic_clock_realtime},
 };
+use nautilus_live::SocketControlFactory;
 use nautilus_model::{
     data::{BarType, Data},
     identifiers::{ClientId, InstrumentId, Venue},
@@ -75,7 +76,7 @@ use crate::{
     common::Market,
     config::SodexDataClientConfig,
     http::SodexHttpClient,
-    providers::{InstrumentCatalog, load_instruments, spawn_instrument_refresh},
+    providers::{InstrumentCatalog, InstrumentReload, load_instruments, spawn_instrument_refresh},
     websocket::{Candle, SodexWebSocketClient, SodexWsEvent, Subscription},
 };
 
@@ -88,8 +89,8 @@ type Pending = HashMap<FeedKey, Candle>;
 /// What a subscribed symbol needs before its frames can become ticks.
 ///
 /// The precisions come from the instrument definition rather than from the text of each
-/// value. The venue writes one tick size several ways — `"77379"` and `"77378.5"` are both
-/// this instrument's prices — and Nautilus rejects a quote whose two sides disagree about
+/// value. The venue writes one tick size several ways - `"77379"` and `"77378.5"` are both
+/// this instrument's prices - and Nautilus rejects a quote whose two sides disagree about
 /// precision, so the declared precision is the only consistent source.
 #[derive(Debug, Clone, Copy)]
 struct TickFeed {
@@ -141,9 +142,9 @@ pub struct SodexDataClient {
     clock: &'static AtomicTime,
 }
 
-impl std::fmt::Debug for SodexDataClient {
+impl Debug for SodexDataClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SodexDataClient")
+        f.debug_struct(stringify!(SodexDataClient))
             .field("client_id", &self.client_id)
             .field("venue", &self.venue)
             .field("connected", &self.is_connected.load(Ordering::Relaxed))
@@ -216,7 +217,7 @@ impl SodexDataClient {
         &self,
         ws: Arc<SodexWebSocketClient>,
         subscription: Subscription,
-        subject: impl std::fmt::Display + Send + 'static,
+        subject: impl Display + Send + 'static,
     ) {
         get_runtime().spawn(async move {
             if let Err(e) = ws.subscribe(subscription).await {
@@ -229,7 +230,7 @@ impl SodexDataClient {
         &self,
         ws: Arc<SodexWebSocketClient>,
         subscription: Subscription,
-        subject: impl std::fmt::Display + Send + 'static,
+        subject: impl Display + Send + 'static,
     ) {
         get_runtime().spawn(async move {
             if let Err(e) = ws.unsubscribe(&subscription).await {
@@ -255,7 +256,10 @@ fn feed_key(bar_type: &BarType, market: Market) -> anyhow::Result<FeedKey> {
     let spec = bar_type.spec();
     let interval = spec_to_interval(&spec, market)
         .map_err(|e| anyhow::anyhow!("unsupported bar specification {spec}: {e}"))?;
-    Ok((bar_type.instrument_id().symbol.to_string(), interval.to_string()))
+    Ok((
+        bar_type.instrument_id().symbol.to_string(),
+        interval.to_string(),
+    ))
 }
 
 /// Publishes completed bars, quotes and trades from the stream, and reports what the venue
@@ -382,7 +386,7 @@ fn publish_candle(
 ///
 /// Completion has two sources, and this is where they are reconciled: the venue's own flag,
 /// and the arrival of a push for a later bar. A push for an *earlier* bar than the one held
-/// is discarded — the venue republishes the forming bar constantly, so an out-of-order frame
+/// is discarded - the venue republishes the forming bar constantly, so an out-of-order frame
 /// would otherwise rewrite a bar that has already been published.
 fn advance(pending: &mut Pending, key: FeedKey, candle: Candle) -> Vec<Candle> {
     if candle.is_final() {
@@ -507,15 +511,18 @@ impl DataClient for SodexDataClient {
             self.data_sender.clone(),
             self.clock,
         )));
+
         if let Some(task) = spawn_instrument_refresh(
             self.config.update_instruments_interval_mins,
-            Arc::clone(&self.http),
-            self.market,
-            self.venue,
-            Arc::clone(&self.catalog),
-            self.cancellation.clone(),
-            self.client_id,
-            Some(self.data_sender.clone()),
+            InstrumentReload {
+                client: Arc::clone(&self.http),
+                market: self.market,
+                venue: self.venue,
+                catalog: Arc::clone(&self.catalog),
+                cancellation: self.cancellation.clone(),
+                client_id: self.client_id,
+                data_sender: Some(self.data_sender.clone()),
+            },
         ) {
             self.tasks.push(task);
         }
@@ -544,8 +551,8 @@ impl DataClient for SodexDataClient {
     fn subscribe_bars(&mut self, cmd: SubscribeBars) -> anyhow::Result<()> {
         let bar_type = cmd.bar_type;
         let (symbol, interval) = feed_key(&bar_type, self.market)?;
-        // Resolved before anything is recorded, so a call made while disconnected — or for an
-        // instrument that never loaded — leaves no entry claiming a feed that was never requested.
+        // Resolved before anything is recorded, so a call made while disconnected - or for an
+        // instrument that never loaded - leaves no entry claiming a feed that was never requested.
         let tick = self.tick_feed(&bar_type.instrument_id())?;
         let ws = self.ws_client()?;
 
@@ -646,7 +653,9 @@ impl DataClient for SodexDataClient {
             size_precision: feed.size_precision,
             start_ms: start_nanos.map(unix_nanos_to_millis),
             end_ms: end_nanos.map(unix_nanos_to_millis),
-            limit: request.limit.map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX)),
+            limit: request
+                .limit
+                .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX)),
         };
 
         get_runtime().spawn(async move {
@@ -718,9 +727,10 @@ const fn unix_nanos_to_millis(ts: UnixNanos) -> u64 {
 mod tests {
     use nautilus_model::{
         data::BarSpecification,
-        enums::{AggregationSource, BarAggregation, PriceType},
+        enums::{AggregationSource, AggressorSide, BarAggregation, PriceType},
         identifiers::{InstrumentId, Symbol},
     };
+    use rstest::rstest;
 
     use super::*;
     use crate::{
@@ -772,10 +782,7 @@ mod tests {
 
     fn tick_feeds() -> Arc<Mutex<Feeds>> {
         let feed = TickFeed {
-            instrument_id: InstrumentId::new(
-                Symbol::from("vBTC_vUSDC"),
-                Venue::from(SODEX_PERPS),
-            ),
+            instrument_id: InstrumentId::new(Symbol::from("vBTC_vUSDC"), Venue::from(SODEX_PERPS)),
             price_precision: 1,
             size_precision: 5,
         };
@@ -786,10 +793,7 @@ mod tests {
     }
 
     /// Drives the stream task over one batch of events and collects what it published.
-    async fn publish(
-        events: Vec<SodexWsEvent>,
-        feeds: Arc<Mutex<Feeds>>,
-    ) -> Vec<DataEvent> {
+    async fn publish(events: Vec<SodexWsEvent>, feeds: Arc<Mutex<Feeds>>) -> Vec<DataEvent> {
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         for event in events {
             events_tx.send(event).unwrap();
@@ -806,14 +810,14 @@ mod tests {
         published
     }
 
-    #[test]
+    #[rstest]
     fn a_bar_type_maps_to_the_symbol_and_interval_the_venue_echoes() {
         let key = feed_key(&bar_type(1, BarAggregation::Minute), Market::Perps).unwrap();
 
         assert_eq!(key, ("vBTC_vUSDC".to_string(), "1m".to_string()));
     }
 
-    #[test]
+    #[rstest]
     fn a_bar_specification_this_engine_cannot_serve_is_refused_at_subscribe_time() {
         // Accepting it would register a feed key the venue never pushes, leaving the strategy
         // waiting on a subscription that was never going to arrive.
@@ -1011,11 +1015,7 @@ mod tests {
     async fn a_ticker_becomes_a_quote_with_both_sides_at_one_precision() {
         // The venue writes the same tick size two ways. Parsing each side's precision from
         // its own text would make this pair look inconsistent and the engine would reject it.
-        let published = publish(
-            vec![SodexWsEvent::Ticker(Box::new(ticker()))],
-            tick_feeds(),
-        )
-        .await;
+        let published = publish(vec![SodexWsEvent::Ticker(Box::new(ticker()))], tick_feeds()).await;
 
         assert_eq!(published.len(), 1);
         let DataEvent::Data(Data::Quote(quote)) = &published[0] else {
@@ -1042,7 +1042,7 @@ mod tests {
         let DataEvent::Data(Data::Trade(tick)) = &published[0] else {
             panic!("expected a trade");
         };
-        assert_eq!(tick.aggressor_side, nautilus_model::enums::AggressorSide::Buy);
+        assert_eq!(tick.aggressor_side, AggressorSide::Buy);
         assert_eq!(tick.trade_id.to_string(), "3110013");
         assert_eq!(tick.ts_event.as_u64(), 1_789_051_802_606 * 1_000_000);
     }
@@ -1060,10 +1060,7 @@ mod tests {
         let DataEvent::Data(Data::Trade(tick)) = &published[0] else {
             panic!("expected a trade");
         };
-        assert_eq!(
-            tick.aggressor_side,
-            nautilus_model::enums::AggressorSide::Sell
-        );
+        assert_eq!(tick.aggressor_side, AggressorSide::Sell);
     }
 
     #[tokio::test]

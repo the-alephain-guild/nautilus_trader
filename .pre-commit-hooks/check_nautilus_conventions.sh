@@ -394,6 +394,7 @@ polymarket nautilus_polymarket::python::polymarket
 portfolio nautilus_portfolio::python::portfolio
 risk nautilus_risk::python::risk
 sandbox nautilus_sandbox::python::sandbox
+sodex nautilus_sodex::python::sodex
 serialization nautilus_serialization::python::serialization
 tardis nautilus_tardis::python::tardis
 testkit nautilus_testkit::python::testkit

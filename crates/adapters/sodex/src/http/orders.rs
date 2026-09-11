@@ -9,7 +9,7 @@
 //! > to the callback function, as the whole batch was rejected for this same reason.
 //!
 //! Indexing the response positionally would therefore mislabel every order after the first
-//! whenever a batch is rejected wholesale — orders 2..n would silently inherit no status at
+//! whenever a batch is rejected wholesale - orders 2..n would silently inherit no status at
 //! all. [`align_batch`] performs the documented fan-out so callers always get exactly one
 //! outcome per submitted order.
 
@@ -105,6 +105,8 @@ pub fn align_batch(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn ok(cl_ord_id: &str, order_id: u64) -> OrderAck {
@@ -129,7 +131,7 @@ mod tests {
         values.iter().map(|s| (*s).to_string()).collect()
     }
 
-    #[test]
+    #[rstest]
     fn per_order_response_passes_through_unchanged() {
         let submitted = ids(&["a", "b"]);
         let acks = vec![ok("a", 1), rejected("b", "insufficient margin")];
@@ -139,7 +141,7 @@ mod tests {
         assert_eq!(aligned, acks);
     }
 
-    #[test]
+    #[rstest]
     fn whole_batch_rejection_fans_out_to_every_order() {
         // The documented case: three orders submitted, one pre-validation error returned.
         let submitted = ids(&["a", "b", "c"]);
@@ -156,7 +158,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn fanned_out_acks_keep_their_own_client_order_ids() {
         // Copying the rejection verbatim would stamp every entry with the first order's id,
         // making results impossible to key back to what was submitted.
@@ -169,7 +171,7 @@ mod tests {
         assert_eq!(recovered, vec!["alpha", "beta", "gamma"]);
     }
 
-    #[test]
+    #[rstest]
     fn single_ack_for_single_order_is_not_treated_as_a_fan_out() {
         let submitted = ids(&["solo"]);
         let acks = vec![ok("solo", 42)];
@@ -180,7 +182,7 @@ mod tests {
         assert_eq!(aligned[0].order_id, Some(42));
     }
 
-    #[test]
+    #[rstest]
     fn lone_success_for_a_multi_order_batch_is_refused() {
         // Fanning a success out would fabricate order ids for orders the venue never
         // acknowledged. Better to surface the anomaly than to invent state.
@@ -196,7 +198,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn partial_response_is_an_error_not_a_guess() {
         let submitted = ids(&["a", "b", "c"]);
         let acks = vec![ok("a", 1), ok("b", 2)];
@@ -210,7 +212,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn empty_response_is_distinguishable_from_a_mismatch() {
         let submitted = ids(&["a"]);
 
@@ -220,7 +222,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn empty_request_is_rejected() {
         assert_eq!(
             align_batch(&[], vec![]).unwrap_err(),
@@ -228,7 +230,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn ack_parses_both_success_and_failure_shapes() {
         let success: OrderAck =
             serde_json::from_str(r#"{"code":0,"clOrdID":"my-order-1","orderID":1234}"#).unwrap();

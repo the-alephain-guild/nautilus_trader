@@ -1,7 +1,7 @@
 //! Builds reconciliation reports from the live account, needing no credentials.
 //!
-//! The account reads are unsigned, so this verifies the whole reconciliation path — read, decode,
-//! map, precision — against real venue responses without holding a key. What it cannot verify is
+//! The account reads are unsigned, so this verifies the whole reconciliation path - read, decode,
+//! map, precision - against real venue responses without holding a key. What it cannot verify is
 //! fills: an account that has never traded answers `[]`, and that is the one remaining gap.
 //!
 //! ```text
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for record in open.orders.iter().chain(history.iter()) {
         let instrument_id = instrument_id_for(&record.symbol, provider.venue());
         let Some(instrument) = provider.store().find(&instrument_id) else {
-            println!("  {instrument_id} is not in the loaded set — skipped");
+            println!("  {instrument_id} is not in the loaded set - skipped");
             continue;
         };
 
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             instrument.size_precision(),
             UnixNanos::default(),
         ) {
-            // The liquidity side and the fee currency are the venue's own here, not inferred —
+            // The liquidity side and the fee currency are the venue's own here, not inferred -
             // and the fee coin is the base asset on a buy, which is why it is printed.
             Ok(report) => println!(
                 "  trade {:<10} {:?} {:?} qty={} px={} fee={} liquidity={:?}",

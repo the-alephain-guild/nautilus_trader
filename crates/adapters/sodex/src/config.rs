@@ -10,13 +10,13 @@
 //! Modeling them as one venue would put a "which engine is this" branch at the head of
 //! nearly every method in the execution client, with the branch condition carrying all seven
 //! differences at once. They are therefore [`SODEX_SPOT`] and [`SODEX_PERPS`], and a client
-//! binds to one engine at construction — the same discipline the HTTP client already
+//! binds to one engine at construction - the same discipline the HTTP client already
 //! follows, which has already prevented signing a perps action under the spot domain.
 //!
 //! # Credentials
 //!
 //! Market data needs none: the venue serves it unsigned. Only the execution client takes
-//! credentials, and only ever an API key — never the master wallet, which can authorize
+//! credentials, and only ever an API key - never the master wallet, which can authorize
 //! withdrawals and belongs offline. Values fall back to the environment so a deployment can
 //! keep secrets out of config files.
 
@@ -64,11 +64,14 @@ pub fn venue_for(market: Market) -> Venue {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
     #[error("missing {what}: set it in the config or the {env} environment variable")]
-    Missing { what: &'static str, env: &'static str },
+    Missing {
+        what: &'static str,
+        env: &'static str,
+    },
     #[error("{env} is not a valid account id: {value:?}")]
     InvalidAccountId { env: &'static str, value: String },
     #[error(
-        "{env} is not a wallet address: {value:?} — expected 0x followed by 40 hex digits. The \
+        "{env} is not a wallet address: {value:?} - expected 0x followed by 40 hex digits. The \
          account reads are addressed by the master wallet, and a wrong address answers with an \
          empty account rather than an error"
     )]
@@ -100,7 +103,7 @@ pub struct SodexDataClientConfig {
     ///
     /// A young venue lists and delists pairs while a session is running, and nothing pushes
     /// that: without a reload, a long-running process keeps trading against the listing it saw
-    /// at startup and never learns of a new pair — or that one it holds a symbol id for has
+    /// at startup and never learns of a new pair - or that one it holds a symbol id for has
     /// gone. `None` or `0` disables the reload, which is only appropriate for a short run.
     #[serde(default = "default_instrument_refresh_mins")]
     pub update_instruments_interval_mins: Option<u64>,
@@ -149,7 +152,7 @@ pub struct SodexExecClientConfig {
     pub account_id: Option<u64>,
     /// Name of the registered API key. Falls back to [`ENV_API_KEY_NAME`].
     ///
-    /// This is the key's *name*, not its address — the venue documents that confusion as the
+    /// This is the key's *name*, not its address - the venue documents that confusion as the
     /// most common integration error.
     #[serde(default)]
     pub api_key_name: Option<String>,
@@ -158,7 +161,7 @@ pub struct SodexExecClientConfig {
     pub api_private_key: Option<SecretString>,
     /// The account's **master wallet** address. Falls back to [`ENV_WALLET_ADDRESS`].
     ///
-    /// Public information, not a secret — it addresses the account's reads and signs nothing.
+    /// Public information, not a secret - it addresses the account's reads and signs nothing.
     /// Required all the same, and for an uncomfortable reason: the reads are keyed by this
     /// address, and pointing them at the API key's address instead does not fail. It answers
     /// `200` with an empty account, which reconciliation would read as "flat, nothing open".
@@ -170,7 +173,7 @@ pub struct SodexExecClientConfig {
     ///
     /// A young venue lists and delists pairs while a session is running, and nothing pushes
     /// that: without a reload, a long-running process keeps trading against the listing it saw
-    /// at startup and never learns of a new pair — or that one it holds a symbol id for has
+    /// at startup and never learns of a new pair - or that one it holds a symbol id for has
     /// gone. `None` or `0` disables the reload, which is only appropriate for a short run.
     #[serde(default = "default_instrument_refresh_mins")]
     pub update_instruments_interval_mins: Option<u64>,
@@ -205,7 +208,7 @@ impl SodexExecClientConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] when absent from both, or unparseable.
+    /// Returns [`ConfigError`] when absent from both, or unparsable.
     pub fn resolve_account_id(&self) -> Result<u64, ConfigError> {
         if let Some(id) = self.account_id {
             return Ok(id);
@@ -298,6 +301,10 @@ pub(crate) const fn default_timeout_secs() -> u64 {
 
 /// Hourly: frequent enough that a new listing becomes tradable within the session, rare enough
 /// that it costs nothing against the request budget.
+///
+/// The wrap is not redundant: this is a serde default for an `Option<u64>` field, where `None`
+/// means "no reload", so the default has to be expressible in the field's own type.
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) const fn default_instrument_refresh_mins() -> Option<u64> {
     Some(60)
 }
@@ -315,9 +322,11 @@ fn env_value(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn each_engine_gets_its_own_venue() {
         // The whole point of the split: an instrument on one engine is not the same
         // instrument on the other, even when the symbols look alike.
@@ -326,7 +335,7 @@ mod tests {
         assert_ne!(venue_for(Market::Spot), venue_for(Market::Perps));
     }
 
-    #[test]
+    #[rstest]
     fn data_config_carries_no_credential_fields() {
         // Market data is served unsigned, so a data-only deployment should hold no secret.
         // This is a structural assertion: the serialized form must not grow a key field.
@@ -337,7 +346,7 @@ mod tests {
         assert!(!json.contains("secret"), "{json}");
     }
 
-    #[test]
+    #[rstest]
     fn explicit_config_wins_over_the_environment() {
         let config = SodexExecClientConfig {
             account_id: Some(4242),
@@ -349,7 +358,7 @@ mod tests {
         assert_eq!(config.resolve_api_key_name().unwrap(), "explicit");
     }
 
-    #[test]
+    #[rstest]
     fn missing_credentials_name_the_variable_to_set() {
         // The error has to say which variable, or the operator is left guessing.
         let config = SodexExecClientConfig {
@@ -371,7 +380,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn blank_environment_values_count_as_absent() {
         // `export SODEX_ACCOUNT_ID=` is a mistake, not an intentional empty value. Letting
         // it through would surface as a parse or signing failure far from the cause.
@@ -385,7 +394,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn config_round_trips_through_serde() {
         let config = SodexExecClientConfig {
             account_id: Some(60366),

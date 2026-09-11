@@ -10,13 +10,13 @@
 //! API key's address. The other two do not fail; they are worse than that:
 //!
 //! - the numeric id answers `invalid parameter: userAddress`, which at least is an error;
-//! - **the API key's own address answers `200` with an empty account** —
+//! - **the API key's own address answers `200` with an empty account** -
 //!   `{"blockTime":0,"blockHeight":0,"balances":[]}`.
 //!
 //! That second case is the dangerous one. A client pointed at the wrong address would read
 //! "no balance, no open orders, no positions" and reconciliation would take that as a flat
 //! account, with nothing anywhere reporting a problem. A new account is legitimately empty too,
-//! so emptiness cannot be treated as the error — which is why the execution client instead
+//! so emptiness cannot be treated as the error - which is why the execution client instead
 //! proves the configured wallet is the right one by checking that it lists the key the client
 //! signs with. See [`ApiKeyEntry`].
 //!
@@ -24,7 +24,7 @@
 //!
 //! All four are plain `GET`s with no signature. The venue's own documentation draws the line at
 //! actions: address limits "apply to actions only (never to queries)". So a data-only or
-//! read-only deployment needs no credential to reconcile — only the wallet address, which is
+//! read-only deployment needs no credential to reconcile - only the wallet address, which is
 //! public information.
 
 use serde::Deserialize;
@@ -116,7 +116,7 @@ pub struct Positions {
     ///
     /// The shape has not been observed: reading it requires an open perps position, and the
     /// testnet account holds no perps balance to open one with. Typing it from the spot order
-    /// shape by analogy is exactly the move that has already cost this integration a day — see
+    /// shape by analogy is exactly the move that has already cost this integration a day - see
     /// the adapter's record of contract details that only a live link revealed. Callers get the
     /// raw value and the knowledge that it is unverified.
     pub positions: Vec<serde_json::Value>,
@@ -127,7 +127,7 @@ pub struct Positions {
 /// # The fee is charged in the asset you receive
 ///
 /// `fee_coin` is not the quote currency: a buy pays its fee in the **base** asset, deducted from
-/// what arrives. Observed on testnet — a market buy of `0.001` vBTC credited `0.00099935`, and the
+/// what arrives. Observed on testnet - a market buy of `0.001` vBTC credited `0.00099935`, and the
 /// difference is exactly the reported `0.00000065` fee. A sell is expected to pay in the quote
 /// asset by the same rule, but that has not been observed, so `fee_coin` is read from the response
 /// rather than derived from the side.
@@ -165,7 +165,7 @@ pub struct TradeRecord {
 /// One registered API key, as the venue lists it.
 ///
 /// Used to prove a configured wallet address is the account the client actually signs for: if
-/// the list does not contain the signer's address, the client is pointed at the wrong account —
+/// the list does not contain the signer's address, the client is pointed at the wrong account -
 /// or the key was registered on the other engine, which is its own documented trap.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ApiKeyEntry {

@@ -5,8 +5,8 @@
 //! Every subscription this client has been asked for lives in one list, and every outbound
 //! subscribe is bound to the connection epoch it was composed for. A send that loses the race
 //! against a reconnect is therefore not an error: the replacement connection replays the whole
-//! desired set anyway, so the lost message would have been a duplicate. The alternative —
-//! letting the transport buffer and replay the send — would produce exactly that duplicate,
+//! desired set anyway, so the lost message would have been a duplicate. The alternative -
+//! letting the transport buffer and replay the send - would produce exactly that duplicate,
 //! because the replay and the reconnect handler would both deliver it.
 //!
 //! The same list is what makes a reconnect survivable at all. The venue keeps no subscription
@@ -15,15 +15,14 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use nautilus_common::live::get_runtime;
 use nautilus_live::SocketControl;
 use nautilus_network::{
     RECONNECTED,
     error::SendError,
-    websocket::{WebSocketClient, WebSocketConfig, channel_epoch_message_handler},
-};
-use tokio::sync::{
-    Mutex,
-    mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    websocket::{
+        TransportBackend, WebSocketClient, WebSocketConfig, channel_epoch_message_handler,
+    },
 };
 use tokio_tungstenite::tungstenite::Message;
 
@@ -55,8 +54,8 @@ pub enum WsError {
 
 /// One feed this client can subscribe to.
 ///
-/// The channels do not share a selector shape — `candle` takes a single symbol plus an
-/// interval, while `trade` and `ticker` take an array of symbols — so the selector travels
+/// The channels do not share a selector shape - `candle` takes a single symbol plus an
+/// interval, while `trade` and `ticker` take an array of symbols - so the selector travels
 /// with the channel it belongs to rather than being flattened into a common struct that
 /// would have to leave fields empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +152,7 @@ enum Inbound {
     /// nothing useful is gained by insisting the reply match a request shape. What matters is
     /// the id, which names the request that produced it.
     Ack(Box<WsAck<serde_json::Value>>),
-    /// Well-formed JSON this adapter has no handling for — a channel it never subscribed to,
+    /// Well-formed JSON this adapter has no handling for - a channel it never subscribed to,
     /// or a field the venue added. Ignored rather than treated as a protocol failure.
     Unrecognized,
 }
@@ -226,7 +225,7 @@ pub struct SodexWebSocketClient {
     url: String,
     probe_interval_secs: u64,
     connection: parking_lot::Mutex<Option<Connection>>,
-    state: Arc<Mutex<State>>,
+    state: Arc<tokio::sync::Mutex<State>>,
     /// Reports link state to the engine and accepts reconnect requests from it.
     ///
     /// Without it the transport reconnects on its own but nothing outside this client can see
@@ -243,7 +242,7 @@ impl SodexWebSocketClient {
             url: stream_url(network, market),
             probe_interval_secs: DEFAULT_IDLE_PROBE_SECS,
             connection: parking_lot::Mutex::new(None),
-            state: Arc::new(Mutex::new(State::default())),
+            state: Arc::new(tokio::sync::Mutex::new(State::default())),
             socket_control: None,
         }
     }
@@ -294,7 +293,7 @@ impl SodexWebSocketClient {
             // refreshes this timer exactly as real data would, so it could not distinguish a
             // stalled feed from a healthy one here.
             idle_timeout_ms: None,
-            backend: nautilus_network::websocket::TransportBackend::default(),
+            backend: TransportBackend::default(),
             proxy_url: None,
         }
     }
@@ -304,7 +303,9 @@ impl SodexWebSocketClient {
     /// # Errors
     ///
     /// Returns [`WsError::Transport`] if the connection cannot be established.
-    pub async fn connect(&self) -> Result<UnboundedReceiver<SodexWsEvent>, WsError> {
+    pub async fn connect(
+        &self,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<SodexWsEvent>, WsError> {
         let (message_handler, raw_rx) = channel_epoch_message_handler();
 
         let client = WebSocketClient::epoch_builder()
@@ -313,10 +314,10 @@ impl SodexWebSocketClient {
             .maybe_state_sink(self.socket_control.as_ref().map(SocketControl::sink))
             .connect()
             .await
-            .map_err(|error| WsError::Transport(error.to_string()))?;
+            .map_err(|e| WsError::Transport(e.to_string()))?;
 
         if let Some(control) = &self.socket_control {
-            // Lets the engine drive a reconnect — on a deliberate restart, say — rather than
+            // Lets the engine drive a reconnect - on a deliberate restart, say - rather than
             // only reacting to one the transport decided on.
             let handle = client.reconnect_handle();
             control.register(move || handle.request_reconnect());
@@ -324,15 +325,20 @@ impl SodexWebSocketClient {
 
         let client = Arc::new(client);
 
-        let (events_tx, events_rx) = unbounded_channel();
-        let reader = tokio::spawn(read_stream(
+        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let reader = get_runtime().spawn(read_stream(
             raw_rx,
             events_tx,
             Arc::clone(&client),
             Arc::clone(&self.state),
         ));
 
-        if let Some(previous) = self.connection.lock().replace(Connection { client, reader }) {
+        if let Some(previous) = self
+            .connection
+            .lock()
+            .replace(Connection { client, reader })
+        {
             previous.reader.abort();
         }
 
@@ -426,13 +432,7 @@ async fn send_request(
     let epoch = client.connection_epoch();
     let id = state.take_id();
     let text = subscription.to_request(op, id)?;
-    state.pending.insert(
-        id,
-        Pending {
-            op,
-            subscription,
-        },
-    );
+    state.pending.insert(id, Pending { op, subscription });
 
     match client.send_text_on_connection(text, None, epoch).await {
         Ok(()) => Ok(()),
@@ -443,19 +443,19 @@ async fn send_request(
             state.pending.remove(&id);
             Ok(())
         }
-        Err(error) => {
+        Err(e) => {
             state.pending.remove(&id);
-            Err(WsError::Transport(error.to_string()))
+            Err(WsError::Transport(e.to_string()))
         }
     }
 }
 
 /// Consumes the raw stream until it ends or the consumer goes away.
 async fn read_stream(
-    mut raw_rx: UnboundedReceiver<(u64, Message)>,
-    events_tx: UnboundedSender<SodexWsEvent>,
+    mut raw_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, Message)>,
+    events_tx: tokio::sync::mpsc::UnboundedSender<SodexWsEvent>,
     client: Arc<WebSocketClient>,
-    state: Arc<Mutex<State>>,
+    state: Arc<tokio::sync::Mutex<State>>,
 ) {
     while let Some((epoch, message)) = raw_rx.recv().await {
         let Message::Text(text) = message else {
@@ -469,10 +469,12 @@ async fn read_stream(
                 replay_subscriptions(&client, &state, epoch).await;
                 Some(SodexWsEvent::Reconnected)
             }
-            Ok(Inbound::Heartbeat) | Ok(Inbound::Unrecognized) => None,
+            Ok(Inbound::Heartbeat | Inbound::Unrecognized) => None,
             Ok(Inbound::Candle(candle)) => Some(SodexWsEvent::Candle(candle)),
             Ok(Inbound::Trades(trades)) => {
-                if forward(&events_tx, trades, |trade| SodexWsEvent::Trade(Box::new(trade))) {
+                if forward(&events_tx, trades, |trade| {
+                    SodexWsEvent::Trade(Box::new(trade))
+                }) {
                     None
                 } else {
                     break;
@@ -505,7 +507,7 @@ async fn read_stream(
 
 /// Sends every element of a batched frame, reporting whether the consumer is still there.
 fn forward<T>(
-    events_tx: &UnboundedSender<SodexWsEvent>,
+    events_tx: &tokio::sync::mpsc::UnboundedSender<SodexWsEvent>,
     items: Vec<T>,
     wrap: impl Fn(T) -> SodexWsEvent,
 ) -> bool {
@@ -522,7 +524,11 @@ fn forward<T>(
 ///
 /// The venue keeps no subscription state across connections, so without this a reconnect
 /// leaves a live socket carrying nothing.
-async fn replay_subscriptions(client: &WebSocketClient, state: &Arc<Mutex<State>>, epoch: u64) {
+async fn replay_subscriptions(
+    client: &WebSocketClient,
+    state: &Arc<tokio::sync::Mutex<State>>,
+    epoch: u64,
+) {
     let mut state = state.lock().await;
 
     // Acknowledgements owed by the previous connection will never arrive. Leaving them would
@@ -534,8 +540,8 @@ async fn replay_subscriptions(client: &WebSocketClient, state: &Arc<Mutex<State>
         let id = state.take_id();
         let text = match subscription.to_request(Op::Subscribe, id) {
             Ok(text) => text,
-            Err(error) => {
-                log::error!("sodex_ws_resubscribe_unserializable error={error}");
+            Err(e) => {
+                log::error!("sodex_ws_resubscribe_unserializable error={e}");
                 continue;
             }
         };
@@ -558,8 +564,8 @@ async fn replay_subscriptions(client: &WebSocketClient, state: &Arc<Mutex<State>
             // The selector stays in the desired list, so the next reconnect retries it. Until
             // then this feed is silent, which is why this is logged at error level rather than
             // being left to look like a quiet market.
-            Err(error) => {
-                log::error!("sodex_ws_resubscribe_failed epoch={epoch} error={error}");
+            Err(e) => {
+                log::error!("sodex_ws_resubscribe_failed epoch={epoch} error={e}");
                 state.pending.remove(&id);
             }
         }
@@ -568,7 +574,7 @@ async fn replay_subscriptions(client: &WebSocketClient, state: &Arc<Mutex<State>
 
 /// Matches an acknowledgement to the request that produced it.
 async fn resolve_ack(
-    state: &Arc<Mutex<State>>,
+    state: &Arc<tokio::sync::Mutex<State>>,
     ack: WsAck<serde_json::Value>,
 ) -> Option<SodexWsEvent> {
     let pending = match ack.id {
@@ -597,8 +603,7 @@ fn classify(text: &str) -> Result<Inbound, String> {
         return Ok(Inbound::Reconnected);
     }
 
-    let value: serde_json::Value =
-        serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
 
     // Acknowledgements carry `op`; channel pushes carry `channel` and `type`.
     if let Some(op) = value.get("op").and_then(serde_json::Value::as_str) {
@@ -606,7 +611,7 @@ fn classify(text: &str) -> Result<Inbound, String> {
             "ping" | "pong" => Ok(Inbound::Heartbeat),
             "subscribe" | "unsubscribe" => serde_json::from_value(value)
                 .map(|ack| Inbound::Ack(Box::new(ack)))
-                .map_err(|error| error.to_string()),
+                .map_err(|e| e.to_string()),
             _ => Ok(Inbound::Unrecognized),
         };
     }
@@ -614,21 +619,23 @@ fn classify(text: &str) -> Result<Inbound, String> {
     match value.get("channel").and_then(serde_json::Value::as_str) {
         Some(CandleParams::CHANNEL) => serde_json::from_value::<WsUpdate<Candle>>(value)
             .map(|update| Inbound::Candle(Box::new(update.data)))
-            .map_err(|error| error.to_string()),
+            .map_err(|e| e.to_string()),
         // Both of these deliver an array even when it holds one element, so the frame is
         // flattened here rather than leaving every consumer to unwrap it.
         Some(SymbolsParams::TRADE) => serde_json::from_value::<WsUpdate<Vec<Trade>>>(value)
             .map(|update| Inbound::Trades(update.data))
-            .map_err(|error| error.to_string()),
+            .map_err(|e| e.to_string()),
         Some(SymbolsParams::TICKER) => serde_json::from_value::<WsUpdate<Vec<Ticker>>>(value)
             .map(|update| Inbound::Tickers(update.data))
-            .map_err(|error| error.to_string()),
+            .map_err(|e| e.to_string()),
         _ => Ok(Inbound::Unrecognized),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::{super::SERVER_IDLE_DISCONNECT_SECS, *};
 
     fn candles() -> Subscription {
@@ -639,16 +646,19 @@ mod tests {
         SodexWebSocketClient::new(Network::Testnet, Market::Perps)
     }
 
-    #[test]
+    #[rstest]
     fn the_keepalive_is_a_text_frame_not_a_control_ping() {
         // An empty Ping control frame does not count as activity on this venue, so leaving the
         // payload unset would keep the transport happy while the venue hung up on schedule.
         let config = client().config();
 
-        assert_eq!(config.heartbeat_payload.as_deref(), Some(r#"{"op":"ping"}"#));
+        assert_eq!(
+            config.heartbeat_payload.as_deref(),
+            Some(r#"{"op":"ping"}"#)
+        );
     }
 
-    #[test]
+    #[rstest]
     fn the_dead_link_verdict_lands_before_the_venue_hangs_up() {
         let config = client().config();
 
@@ -659,21 +669,21 @@ mod tests {
         assert!(verdict < SERVER_IDLE_DISCONNECT_SECS);
     }
 
-    #[test]
+    #[rstest]
     fn the_idle_timer_is_left_off_because_the_venue_answers_in_text() {
         // The venue's reply to the keepalive is a text frame, which refreshes the idle timer
         // exactly as a bar would. Setting it here would produce a check that can never fire.
         assert!(client().config().idle_timeout_ms.is_none());
     }
 
-    #[test]
+    #[rstest]
     fn a_probe_interval_that_cannot_detect_failure_in_time_is_refused() {
         let error = client().with_probe_interval_secs(30).unwrap_err();
 
         assert!(matches!(error, WsError::ProbeIntervalTooLong(30)));
     }
 
-    #[test]
+    #[rstest]
     fn a_sound_probe_interval_reaches_the_transport_configuration() {
         let config = client().with_probe_interval_secs(5).unwrap().config();
 
@@ -681,7 +691,7 @@ mod tests {
         assert_eq!(config.heartbeat_timeout_secs, Some(10));
     }
 
-    #[test]
+    #[rstest]
     fn wanting_the_same_selector_twice_sends_only_once() {
         let mut state = State::default();
 
@@ -690,7 +700,7 @@ mod tests {
         assert_eq!(state.desired, vec![candles()]);
     }
 
-    #[test]
+    #[rstest]
     fn unwanting_an_absent_selector_reports_nothing_to_do() {
         let mut state = State::default();
 
@@ -701,7 +711,7 @@ mod tests {
         assert!(state.desired.is_empty());
     }
 
-    #[test]
+    #[rstest]
     fn request_ids_are_never_reused() {
         let mut state = State::default();
 
@@ -711,20 +721,26 @@ mod tests {
         assert_ne!(first, second);
     }
 
-    #[test]
-    fn the_reconnect_sentinel_is_recognised_before_any_parsing() {
+    #[rstest]
+    fn the_reconnect_sentinel_is_recognized_before_any_parsing() {
         // It is not JSON, so a classifier that parsed first would report it as a malformed
         // frame and the subscriptions would never be replayed.
         assert!(matches!(classify(RECONNECTED), Ok(Inbound::Reconnected)));
     }
 
-    #[test]
+    #[rstest]
     fn keepalive_replies_are_classified_as_heartbeats() {
-        assert!(matches!(classify(r#"{"op":"pong"}"#), Ok(Inbound::Heartbeat)));
-        assert!(matches!(classify(r#"{"op":"ping"}"#), Ok(Inbound::Heartbeat)));
+        assert!(matches!(
+            classify(r#"{"op":"pong"}"#),
+            Ok(Inbound::Heartbeat)
+        ));
+        assert!(matches!(
+            classify(r#"{"op":"ping"}"#),
+            Ok(Inbound::Heartbeat)
+        ));
     }
 
-    #[test]
+    #[rstest]
     fn a_candle_push_is_classified_as_an_update() {
         let raw = r#"{"channel":"candle","type":"update","data":{
             "t":1767972900000,"T":1767972938724,"s":"BTC-USD","i":"1m",
@@ -737,9 +753,10 @@ mod tests {
         assert_eq!(candle.symbol, "BTC-USD");
     }
 
-    #[test]
+    #[rstest]
     fn an_acknowledgement_is_told_apart_from_a_push_by_its_op_field() {
-        let raw = r#"{"op":"subscribe","id":4,"result":null,"success":true,"time_in":1,"time_out":2}"#;
+        let raw =
+            r#"{"op":"subscribe","id":4,"result":null,"success":true,"time_in":1,"time_out":2}"#;
 
         let Ok(Inbound::Ack(ack)) = classify(raw) else {
             panic!("expected an acknowledgement");
@@ -747,7 +764,7 @@ mod tests {
         assert_eq!(ack.id, Some(4));
     }
 
-    #[test]
+    #[rstest]
     fn an_unknown_channel_or_op_is_ignored_rather_than_failing_the_stream() {
         // The venue may add channels this adapter never subscribed to. Treating those as
         // protocol errors would turn a harmless addition into a flood of warnings.
@@ -761,7 +778,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn a_candle_push_missing_a_field_is_reported_not_swallowed() {
         // Announcing the candle channel and then not matching its shape is a real mismatch
         // between this adapter and the venue, and must not look like an unknown channel.
@@ -774,7 +791,7 @@ mod tests {
     async fn a_rejection_names_the_selector_that_was_refused() {
         // The venue echoes the selector only on success, so the id recorded when the request
         // went out is the only thing that can name what was refused.
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(tokio::sync::Mutex::new(State::default()));
         state.lock().await.pending.insert(
             9,
             Pending {
@@ -803,7 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_successful_acknowledgement_produces_no_event() {
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(tokio::sync::Mutex::new(State::default()));
         state.lock().await.pending.insert(
             1,
             Pending {
@@ -825,7 +842,7 @@ mod tests {
     async fn a_rejection_with_no_id_still_surfaces() {
         // Losing the selector is bad; losing the rejection entirely would be worse, because
         // the missing feed would then be indistinguishable from a quiet market.
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(tokio::sync::Mutex::new(State::default()));
 
         let ack: WsAck<serde_json::Value> = serde_json::from_str(
             r#"{"op":"subscribe","result":null,"success":false,"error":"rate limited","time_in":1,"time_out":2}"#,
@@ -836,7 +853,10 @@ mod tests {
 
         assert!(matches!(
             event,
-            SodexWsEvent::RequestRejected { subscription: None, .. }
+            SodexWsEvent::RequestRejected {
+                subscription: None,
+                ..
+            }
         ));
     }
 }

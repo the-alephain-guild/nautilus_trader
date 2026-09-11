@@ -1,6 +1,6 @@
 //! Streams live market data and reports what each frame is worth to a strategy.
 //!
-//! Needs no credentials — the venue serves market data unsigned. Subscribes to all three
+//! Needs no credentials - the venue serves market data unsigned. Subscribes to all three
 //! channels this adapter implements and prints every push, marking which candles are safe to
 //! trade on and which are still forming.
 //!
@@ -18,7 +18,7 @@
 //! default spot), `SODEX_SYMBOL` (default `vBTC_vUSDC`), `SODEX_INTERVAL` (default `1m`),
 //! `SODEX_SECONDS` (how long to listen, default 90).
 //!
-//! Trades are sparse on testnet. To see them, point it at mainnet — still a public read:
+//! Trades are sparse on testnet. To see them, point it at mainnet - still a public read:
 //!
 //! ```text
 //! SODEX_NETWORK=mainnet cargo run -p nautilus-sodex --example stream_market_data
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         forming += 1;
                         println!(
-                            "forming {} {} open={} c={} (bar still open — not tradable)",
+                            "forming {} {} open={} c={} (bar still open - not tradable)",
                             candle.symbol, candle.interval, candle.open_time_ms, candle.close,
                         );
                     }
@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     if closed == 0 {
         println!(
-            "No bar carried the venue's closed flag. That is expected — across two full bar \
+            "No bar carried the venue's closed flag. That is expected - across two full bar \
              periods on both engines it was never set, which is why the data client releases a \
              bar when its successor starts instead of waiting for the flag."
         );

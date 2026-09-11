@@ -19,7 +19,7 @@ SoDEX is an on-chain orderbook DEX on ValueChain. Orders are authenticated with 
 EIP-712 signature over plain REST rather than by broadcasting transactions, so the integration
 behaves more like a centralized venue than an AMM.
 
-Spot and perps are modelled as two venues, ``SODEX_SPOT`` and ``SODEX_PERPS``, because they
+Spot and perps are modeled as two venues, ``SODEX_SPOT`` and ``SODEX_PERPS``, because they
 differ in ways no parameter papers over: the signing domain, the batch endpoint, the action
 names hashed into signatures, the API key set, the order item shape, the balances, and the
 reference price used for limit bounds. A client binds to one engine through its configuration's
@@ -27,18 +27,19 @@ reference price used for limit bounds. A client binds to one engine through its 
 
 Market data needs no credentials; the venue serves it unsigned. Execution credentials resolve
 from the configuration or, preferably, from ``SODEX_ACCOUNT_ID``, ``SODEX_API_KEY_NAME`` and
-``SODEX_API_PRIVATE_KEY`` — keeping the key out of config files and out of any traceback that
+``SODEX_API_PRIVATE_KEY`` - keeping the key out of config files and out of any traceback that
 prints its arguments. The key is a registered API key, never the master wallet, which can
 authorize withdrawals and belongs offline.
 
 Reconciliation works. The execution client reads the account's balances, open orders and order
-history, and the engine infers fills from those reports — so positions, average prices and fees
+history, and the engine infers fills from those reports - so positions, average prices and fees
 reconcile, including for orders this client did not place.
 
 Known limitation: granularity rather than capability. The venue's per-fill endpoint answers an
 empty list on an account that has never traded, so its wire shape is unobserved and goes
 unparsed. Fills therefore arrive at reconciliation cadence rather than per trade, each carrying a
 synthetic trade id instead of the venue's own.
+
 """
 
 from nautilus_trader._fixup import fixup_module_names
@@ -46,13 +47,13 @@ from nautilus_trader._libnautilus.sodex import *  # noqa: F403 (undefined-local-
 
 
 __all__ = [
-    "Market",
-    "Network",
     "SODEX",
     "SODEX_PERPS",
     "SODEX_PERPS_VENUE",
     "SODEX_SPOT",
     "SODEX_SPOT_VENUE",
+    "Market",
+    "Network",
     "SodexDataClientConfig",
     "SodexDataClientFactory",
     "SodexExecClientConfig",

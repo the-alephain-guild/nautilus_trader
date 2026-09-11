@@ -3,10 +3,10 @@
 //! SoDEX limits traffic along three axes that are counted separately, and a client that
 //! models only the first will still get rejected by the other two:
 //!
-//! 1. **IP weight** — 1200 per rolling minute, per IP, across every REST endpoint.
-//! 2. **Order placement** — 600 orders/minute and 20 orders/second per account for API-key
+//! 1. **IP weight** - 1200 per rolling minute, per IP, across every REST endpoint.
+//! 2. **Order placement** - 600 orders/minute and 20 orders/second per account for API-key
 //!    clients. Counted in orders, not requests.
-//! 3. **Address limits** — per user address, applying to actions only (never to queries).
+//! 3. **Address limits** - per user address, applying to actions only (never to queries).
 //!    The allowance accrues at one request per 1 USDC traded cumulatively since the address
 //!    was created, starting from a buffer of 10,000 requests. Cancels get a higher ceiling
 //!    (`min(limit + 100_000, limit * 2)`) so open orders can always be wound down.
@@ -21,11 +21,11 @@
 //!
 //! # Each axis gets the mechanism that fits it
 //!
-//! The two modelled axes are not the same shape, so they are not enforced the same way:
+//! The two modeled axes are not the same shape, so they are not enforced the same way:
 //!
 //! - **Axis 2 (order count)** is a pure count, which is exactly what a GCRA rate limiter
 //!   expresses. It uses [`order_rate_limiter`] from `nautilus-network`, one cell per order,
-//!   and [`await_order_quota`] *paces* rather than rejects — a caller that would exceed the
+//!   and [`await_order_quota`] *paces* rather than rejects - a caller that would exceed the
 //!   rate waits for capacity instead of getting an error it has to handle.
 //! - **Axis 1 (request weight)** cannot be expressed that way. Endpoints cost between 1 and
 //!   20 against one shared 1200-per-minute budget, and the library's limiter consumes exactly
@@ -39,7 +39,7 @@
 //! reject it. The execution client submits one order per request, so the pacing below is the
 //! operative limit in practice.
 
-use std::{collections::VecDeque, num::NonZeroU32, sync::Arc};
+use std::{collections::VecDeque, fmt::Display, num::NonZeroU32, sync::Arc};
 
 use nautilus_network::ratelimiter::{RateLimiter, clock::MonotonicClock, quota::Quota};
 use ustr::Ustr;
@@ -73,11 +73,11 @@ pub type OrderRateLimiter = RateLimiter<Ustr, MonotonicClock>;
 /// **The venue counts orders per account; this limiter counts them per client.** One execution
 /// client on an account therefore paces correctly, which is the deployment this adapter
 /// supports. Two execution clients on the same account would each pace against their own
-/// allowance and could together exceed the rate neither of them broke alone — the venue would
+/// allowance and could together exceed the rate neither of them broke alone - the venue would
 /// reject the excess rather than anything worse, but the pacing would stop doing its job.
 ///
 /// Not solved here rather than solved badly: the natural fix is one limiter per account id, and
-/// the signing client does not know the account id — it holds an API key, and the venue's own
+/// the signing client does not know the account id - it holds an API key, and the venue's own
 /// guidance is that each trading process registers its own key. Closing it properly means
 /// threading the account id into the transport, which is worth doing when a second execution
 /// client on one account is actually a thing someone runs, and not before.
@@ -106,7 +106,11 @@ pub fn order_rate_limiter() -> Arc<OrderRateLimiter> {
 /// sleeps on another account's behalf. A zero count returns immediately rather than consuming
 /// a cell, which matters because a cancel-only request places no orders.
 pub async fn await_order_quota(limiter: &OrderRateLimiter, orders: u32) {
-    let keys = [Ustr::from(ORDER_BUCKET_SECOND), Ustr::from(ORDER_BUCKET_MINUTE)];
+    let keys = [
+        Ustr::from(ORDER_BUCKET_SECOND),
+        Ustr::from(ORDER_BUCKET_MINUTE),
+    ];
+
     for _ in 0..orders {
         limiter.await_keys_ready(Some(&keys)).await;
     }
@@ -131,7 +135,7 @@ pub enum Axis {
     OrdersPerSecond,
 }
 
-impl std::fmt::Display for Axis {
+impl Display for Axis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             Self::IpWeight => "IP weight budget",
@@ -144,7 +148,7 @@ impl std::fmt::Display for Axis {
 
 /// What one batched request costs, split by axis.
 ///
-/// The two fields are deliberately different units — weight versus order count — because
+/// The two fields are deliberately different units - weight versus order count - because
 /// the venue counts them that way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchCost {
@@ -185,7 +189,7 @@ pub const fn orderbook_weight(depth: u32) -> u32 {
 /// `floor(items / 20)`.
 ///
 /// This lands after the fact, so it is recorded with [`WeightBudget::record`] rather than
-/// reserved up front — the count is not knowable before the response arrives.
+/// reserved up front - the count is not knowable before the response arrives.
 #[must_use]
 pub const fn history_extra_weight(items_returned: u32) -> u32 {
     items_returned / 20
@@ -255,7 +259,7 @@ impl WeightBudget {
 
     /// Books weight unconditionally.
     ///
-    /// For charges the venue applies after the fact — history and kline extras — where
+    /// For charges the venue applies after the fact - history and kline extras - where
     /// refusing is not an option because the request already happened.
     pub fn record(&mut self, weight: u32, now_ms: u64) {
         self.expire(now_ms);
@@ -295,9 +299,11 @@ impl Default for WeightBudget {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn batch_weight_matches_the_documented_table() {
         // The venue publishes these three brackets explicitly.
         assert_eq!(batch_weight(1), 1);
@@ -308,7 +314,7 @@ mod tests {
         assert_eq!(batch_weight(119), 3);
     }
 
-    #[test]
+    #[rstest]
     fn orderbook_weight_follows_depth_brackets() {
         assert_eq!(orderbook_weight(1), 5);
         assert_eq!(orderbook_weight(100), 5);
@@ -317,7 +323,7 @@ mod tests {
         assert_eq!(orderbook_weight(501), 20);
     }
 
-    #[test]
+    #[rstest]
     fn history_extra_can_be_zero_but_kline_extra_cannot() {
         // The two formulas differ in exactly this way, and conflating them would
         // under-count kline traffic.
@@ -330,7 +336,7 @@ mod tests {
         assert_eq!(kline_extra_weight(50), 2);
     }
 
-    #[test]
+    #[rstest]
     fn batch_cost_keeps_the_two_axes_separate() {
         // 100 orders in one request: cheap against the IP budget, expensive against the
         // address limit. Collapsing these into one number is the mistake this type prevents.
@@ -340,7 +346,7 @@ mod tests {
         assert_eq!(cost.order_count, 100);
     }
 
-    #[test]
+    #[rstest]
     fn budget_refuses_once_the_window_is_full() {
         let mut budget = WeightBudget::with_limit(100, 60_000);
 
@@ -352,19 +358,22 @@ mod tests {
         assert_eq!(err.available, 0);
     }
 
-    #[test]
+    #[rstest]
     fn budget_recovers_as_the_window_slides() {
         let mut budget = WeightBudget::with_limit(100, 60_000);
 
         budget.try_consume(100, 1_000).unwrap();
-        assert!(budget.try_consume(1, 30_000).is_err(), "still inside window");
+        assert!(
+            budget.try_consume(1, 30_000).is_err(),
+            "still inside window"
+        );
 
         // The entry at t=1000 leaves the window once now - 60_000 reaches it.
         assert_eq!(budget.available(61_001), 100);
         budget.try_consume(100, 61_001).unwrap();
     }
 
-    #[test]
+    #[rstest]
     fn rejection_reports_a_usable_retry_delay() {
         let mut budget = WeightBudget::with_limit(100, 60_000);
         budget.try_consume(100, 5_000).unwrap();
@@ -375,7 +384,7 @@ mod tests {
         assert_eq!(err.retry_after_ms, 45_000);
     }
 
-    #[test]
+    #[rstest]
     fn after_the_fact_charges_are_booked_even_past_the_limit() {
         // A history response can push the window over its cap; the request already
         // happened, so the charge is recorded rather than refused.
@@ -393,12 +402,14 @@ mod tests {
 mod order_quota_tests {
     use std::time::{Duration, Instant};
 
+    use rstest::rstest;
+
     use super::*;
 
     #[tokio::test]
     async fn a_zero_order_request_consumes_no_allowance() {
         // A cancel places no orders. Charging it would make winding a book down compete with
-        // opening one, which is backwards — the venue deliberately gives cancels more room.
+        // opening one, which is backwards - the venue deliberately gives cancels more room.
         let limiter = order_rate_limiter();
 
         await_order_quota(&limiter, 0).await;
@@ -435,7 +446,7 @@ mod order_quota_tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn a_batch_costs_one_request_of_weight_but_every_order_of_allowance() {
         // The axes disagree here, and collapsing them into one number is what this type exists
         // to prevent: ten orders in one request are one request to the IP budget.

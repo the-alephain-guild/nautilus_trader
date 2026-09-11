@@ -13,14 +13,14 @@
 //!   has no venue interval, and rounding it to 1m or 3m would return a different series
 //!   than was asked for.
 //!
-//! Nautilus applies its own constraint upstream — minute steps must divide 60 evenly — so
+//! Nautilus applies its own constraint upstream - minute steps must divide 60 evenly - so
 //! this layer only has to reject what Nautilus accepts but the venue does not serve.
 //!
 //! # The ticker is the only top of book available
 //!
 //! The venue publishes no dedicated quote channel. Its `ticker` frame carries best bid and
-//! ask alongside 24-hour statistics, on its own cadence — the subscription acknowledgement
-//! reports that as `pushInterval`, observed at 1000ms — rather than on every book change. A
+//! ask alongside 24-hour statistics, on its own cadence - the subscription acknowledgement
+//! reports that as `pushInterval`, observed at 1000ms - rather than on every book change. A
 //! quote built from it is therefore a periodic sample of the top of book, not a stream of
 //! every change, and a strategy that assumes it sees every touch of the spread will be wrong.
 //!
@@ -42,11 +42,7 @@ use nautilus_model::{
 };
 
 use crate::{
-    common::{
-        Market,
-        decimal::normalize_to,
-        enums::OrderSide,
-    },
+    common::{Market, decimal::normalize_to, enums::OrderSide},
     websocket::{Candle, Ticker, Trade},
 };
 
@@ -62,19 +58,84 @@ struct IntervalMapping {
 }
 
 const INTERVALS: &[IntervalMapping] = &[
-    IntervalMapping { venue: "1m", step: 1, aggregation: BarAggregation::Minute, spot_only: false },
-    IntervalMapping { venue: "3m", step: 3, aggregation: BarAggregation::Minute, spot_only: true },
-    IntervalMapping { venue: "5m", step: 5, aggregation: BarAggregation::Minute, spot_only: false },
-    IntervalMapping { venue: "15m", step: 15, aggregation: BarAggregation::Minute, spot_only: false },
-    IntervalMapping { venue: "30m", step: 30, aggregation: BarAggregation::Minute, spot_only: false },
-    IntervalMapping { venue: "1h", step: 1, aggregation: BarAggregation::Hour, spot_only: false },
-    IntervalMapping { venue: "4h", step: 4, aggregation: BarAggregation::Hour, spot_only: false },
-    IntervalMapping { venue: "6h", step: 6, aggregation: BarAggregation::Hour, spot_only: true },
-    IntervalMapping { venue: "8h", step: 8, aggregation: BarAggregation::Hour, spot_only: true },
-    IntervalMapping { venue: "12h", step: 12, aggregation: BarAggregation::Hour, spot_only: true },
-    IntervalMapping { venue: "1d", step: 1, aggregation: BarAggregation::Day, spot_only: false },
-    IntervalMapping { venue: "3d", step: 3, aggregation: BarAggregation::Day, spot_only: true },
-    IntervalMapping { venue: "1w", step: 1, aggregation: BarAggregation::Week, spot_only: false },
+    IntervalMapping {
+        venue: "1m",
+        step: 1,
+        aggregation: BarAggregation::Minute,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "3m",
+        step: 3,
+        aggregation: BarAggregation::Minute,
+        spot_only: true,
+    },
+    IntervalMapping {
+        venue: "5m",
+        step: 5,
+        aggregation: BarAggregation::Minute,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "15m",
+        step: 15,
+        aggregation: BarAggregation::Minute,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "30m",
+        step: 30,
+        aggregation: BarAggregation::Minute,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "1h",
+        step: 1,
+        aggregation: BarAggregation::Hour,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "4h",
+        step: 4,
+        aggregation: BarAggregation::Hour,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "6h",
+        step: 6,
+        aggregation: BarAggregation::Hour,
+        spot_only: true,
+    },
+    IntervalMapping {
+        venue: "8h",
+        step: 8,
+        aggregation: BarAggregation::Hour,
+        spot_only: true,
+    },
+    IntervalMapping {
+        venue: "12h",
+        step: 12,
+        aggregation: BarAggregation::Hour,
+        spot_only: true,
+    },
+    IntervalMapping {
+        venue: "1d",
+        step: 1,
+        aggregation: BarAggregation::Day,
+        spot_only: false,
+    },
+    IntervalMapping {
+        venue: "3d",
+        step: 3,
+        aggregation: BarAggregation::Day,
+        spot_only: true,
+    },
+    IntervalMapping {
+        venue: "1w",
+        step: 1,
+        aggregation: BarAggregation::Week,
+        spot_only: false,
+    },
     // `1M` is deliberately absent: Nautilus has no monthly aggregation to map it onto.
 ];
 
@@ -185,13 +246,13 @@ pub fn parse_bar(
 /// Converts a candle the caller has established is complete.
 ///
 /// Observed on the live testnet: the venue republishes the forming bar on every block and
-/// then simply starts the next one — over two full bar periods, no push ever carried
+/// then simply starts the next one - over two full bar periods, no push ever carried
 /// `closed`. A consumer that waited for that flag would receive nothing at all while its
 /// connection looked perfectly healthy.
 ///
 /// The flag is still authoritative when it is set. When it is not, a bar whose successor has
 /// begun is complete by construction, and that is evidence the caller holds and this function
-/// does not — hence the split. Use [`parse_bar`] wherever the flag is the only evidence
+/// does not - hence the split. Use [`parse_bar`] wherever the flag is the only evidence
 /// available.
 ///
 /// # Errors
@@ -206,7 +267,7 @@ pub fn parse_completed_bar(
 ) -> Result<Bar, BarMappingError> {
     // The four prices must share one precision: the engine panics on a bar whose fields
     // disagree, because its Arrow encoding assumes a uniform scale. Deriving each from its own
-    // text satisfies that only by luck — it held on an instrument quoting whole numbers and
+    // text satisfies that only by luck - it held on an instrument quoting whole numbers and
     // failed on the first one quoting `"2465"` beside `"2464.9"`. The instrument's declared
     // precision is the only source that agrees across fields, as it is for quotes and trades.
     let volume = quantity_at(&candle.volume, size_precision, "volume")?;
@@ -228,16 +289,20 @@ pub fn parse_completed_bar(
 /// The precision a value must carry to sit beside its counterpart in one tick.
 ///
 /// Taken from the instrument rather than from the text, because the venue writes the same
-/// tick size two ways — a bid of `"77378.5"` beside an ask of `"77379"` — and Nautilus
+/// tick size two ways - a bid of `"77378.5"` beside an ask of `"77379"` - and Nautilus
 /// rejects a quote whose two sides disagree about precision.
-pub(crate) fn price_at(raw: &str, precision: u8, field: &'static str) -> Result<Price, BarMappingError> {
+pub(crate) fn price_at(
+    raw: &str,
+    precision: u8,
+    field: &'static str,
+) -> Result<Price, BarMappingError> {
     let invalid = |reason: String| BarMappingError::InvalidValue {
         field,
         value: raw.to_string(),
         reason,
     };
     let normalized = normalize_to(raw, precision).map_err(|e| invalid(e.to_string()))?;
-    Price::from_str(&normalized).map_err(|e| invalid(e.to_string()))
+    Price::from_str(&normalized).map_err(invalid)
 }
 
 pub(crate) fn quantity_at(
@@ -251,7 +316,7 @@ pub(crate) fn quantity_at(
         reason,
     };
     let normalized = normalize_to(raw, precision).map_err(|e| invalid(e.to_string()))?;
-    Quantity::from_str(&normalized).map_err(|e| invalid(e.to_string()))
+    Quantity::from_str(&normalized).map_err(invalid)
 }
 
 /// Which side crossed the spread.
@@ -320,9 +385,11 @@ pub fn parse_quote(
 
 #[cfg(test)]
 mod tests {
+    use nautilus_model::identifiers::{Symbol, Venue};
+    use rstest::rstest;
+
     use super::*;
     use crate::config::{SODEX_PERPS, SODEX_SPOT};
-    use nautilus_model::identifiers::{Symbol, Venue};
 
     fn instrument(venue: &str) -> InstrumentId {
         InstrumentId::new(Symbol::from("vBTC_vUSDC"), Venue::from(venue))
@@ -345,7 +412,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn common_intervals_round_trip_through_both_directions() {
         for interval in ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"] {
             let spec = interval_to_spec(interval).unwrap();
@@ -354,7 +421,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn spot_only_intervals_are_refused_on_perps() {
         // The venue documents these as unavailable on the perps engine. Refusing at
         // subscription time beats a subscription that silently never delivers.
@@ -371,7 +438,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn monthly_bars_have_no_representation() {
         // Nautilus BarAggregation stops at Week. Mapping 1M onto Day or Week would return a
         // series that silently differs from what was asked for.
@@ -381,7 +448,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn an_unsupported_step_is_refused_rather_than_rounded() {
         // 2-minute bars are valid in Nautilus but the venue does not serve them. Rounding
         // to 1m or 3m would hand the strategy a different series than it subscribed to.
@@ -397,7 +464,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn bars_are_marked_as_externally_aggregated() {
         // These come from the venue, not from local tick aggregation; the distinction
         // affects how the engine treats them.
@@ -406,7 +473,7 @@ mod tests {
         assert_eq!(bar_type.aggregation_source(), AggregationSource::External);
     }
 
-    #[test]
+    #[rstest]
     fn forming_candles_are_refused() {
         // The channel republishes the open bar on every block. Emitting one would feed a
         // strategy an OHLC that can still change.
@@ -420,7 +487,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn closed_candle_becomes_a_bar_with_venue_prices_intact() {
         let bar_type = bar_type_for(instrument(SODEX_SPOT), "1m").unwrap();
         let bar = parse_bar(&closed_candle(), bar_type, 0, 5, UnixNanos::default()).unwrap();
@@ -432,7 +499,7 @@ mod tests {
         assert_eq!(bar.volume.to_string(), "4.12298");
     }
 
-    #[test]
+    #[rstest]
     fn mixed_decimal_places_across_one_candle_still_share_a_precision() {
         // The engine panics on a bar whose fields disagree about scale, and this venue writes
         // one tick size several ways within a single candle. Deriving precision from each
@@ -457,7 +524,7 @@ mod tests {
         assert_eq!(bar.close.precision, 1);
     }
 
-    #[test]
+    #[rstest]
     fn bar_event_time_is_the_open_converted_to_nanoseconds() {
         // The venue stamps milliseconds. Using the update time instead of the open would
         // shift every bar forward by up to one interval.
@@ -469,7 +536,7 @@ mod tests {
         assert_ne!(bar.ts_event.as_u64(), candle.update_time_ms * 1_000_000);
     }
 
-    #[test]
+    #[rstest]
     fn the_same_interval_on_each_engine_yields_distinct_bar_types() {
         let spot = bar_type_for(instrument(SODEX_SPOT), "1m").unwrap();
         let perps = bar_type_for(instrument(SODEX_PERPS), "1m").unwrap();

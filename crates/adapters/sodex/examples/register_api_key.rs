@@ -26,7 +26,7 @@
 //!
 //! The master key is read from the environment and used only to sign this one action. It is
 //! never logged, never sent (only the signature it produces is), and should go back offline
-//! afterwards — it can authorize withdrawals, while the key being registered cannot even
+//! afterwards - it can authorize withdrawals, while the key being registered cannot even
 //! read account data.
 
 use std::env;
@@ -45,8 +45,8 @@ use nautilus_sodex::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let master_hex = env::var("SODEX_MASTER_PRIVATE_KEY")
-        .map_err(|_| "SODEX_MASTER_PRIVATE_KEY is not set")?;
+    let master_hex =
+        env::var("SODEX_MASTER_PRIVATE_KEY").map_err(|_| "SODEX_MASTER_PRIVATE_KEY is not set")?;
     let account_id: u64 = env::var("SODEX_ACCOUNT_ID")
         .map_err(|_| "SODEX_ACCOUNT_ID is not set")?
         .parse()?;
@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = ApiKeyName::parse(&key_name)?;
 
     // Each engine holds its own key set, so the market decides which set this registration
-    // lands in — not merely which gateway path is used.
+    // lands in - not merely which gateway path is used.
     let market = match env::var("SODEX_MARKET").as_deref() {
         Ok("spot") => Market::Spot,
         _ => Market::Perps,
@@ -92,10 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let request = client.build_add_api_key(
-        account_id,
-        &name,
-        public_key,
-        NO_EXPIRY,
+        account_id, &name, public_key, NO_EXPIRY,
         None, // all permissions enabled; pass a DisabledPermissions mask to restrict
     )?;
 

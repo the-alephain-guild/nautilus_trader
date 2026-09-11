@@ -1,9 +1,9 @@
-//! Normalisation of the venue's decimal strings.
+//! Normalization of the venue's decimal strings.
 //!
-//! The venue emits amounts at on-chain token precision — a volume comes back as
+//! The venue emits amounts at on-chain token precision - a volume comes back as
 //! `"0.001390000000000000"`, eighteen decimal places. Nautilus's fixed-point types cap
 //! precision at [`FIXED_PRECISION`] and reject anything longer, so every decimal string
-//! crossing this boundary is normalised first.
+//! crossing this boundary is normalized first.
 //!
 //! Two steps, in order, because they have different costs:
 //!
@@ -11,17 +11,17 @@
 //!    eighteen places are almost always padding.
 //! 2. **Round what remains.** Only reached when a value carries more than
 //!    [`FIXED_PRECISION`] *significant* decimals, which no tick or step size on this venue
-//!    does — the finest observed is `0.00001`.
+//!    does - the finest observed is `0.00001`.
 //!
 //! Doing this at the boundary rather than at each call site is what keeps the rest of the
-//! adapter free of precision defence.
+//! adapter free of precision defense.
 
 use std::str::FromStr;
 
 use nautilus_model::types::fixed::FIXED_PRECISION;
 use rust_decimal::Decimal;
 
-/// Why a decimal string could not be normalised.
+/// Why a decimal string could not be normalized.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("not a decimal number: {0:?}")]
 pub struct DecimalError(pub String);
@@ -50,7 +50,7 @@ pub fn normalize(raw: &str) -> Result<String, DecimalError> {
 ///
 /// [`normalize`] makes a value representable; this makes two values *comparable*. Nautilus
 /// rejects a quote whose bid and ask carry different precisions, and the venue happily sends
-/// a bid of `"77378.5"` beside an ask of `"77379"` — the same tick size, written two ways.
+/// a bid of `"77378.5"` beside an ask of `"77379"` - the same tick size, written two ways.
 /// Pinning both to the instrument's declared precision is what keeps that from being read as
 /// a malformed quote.
 ///
@@ -79,23 +79,25 @@ pub fn normalize_to(raw: &str, precision: u8) -> Result<String, DecimalError> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn strips_on_chain_padding_without_changing_the_value() {
         // The case that broke a live fetch: an 18-decimal volume that is really 5 decimals.
         assert_eq!(normalize("0.001390000000000000").unwrap(), "0.00139");
         assert_eq!(normalize("4.12298000").unwrap(), "4.12298");
     }
 
-    #[test]
+    #[rstest]
     fn leaves_already_short_values_alone() {
         assert_eq!(normalize("91976").unwrap(), "91976");
         assert_eq!(normalize("0.00001").unwrap(), "0.00001");
         assert_eq!(normalize("1").unwrap(), "1");
     }
 
-    #[test]
+    #[rstest]
     fn result_never_exceeds_the_engine_precision() {
         // The property that matters: whatever comes in, the output can be parsed by the
         // engine's fixed-point types.
@@ -109,12 +111,12 @@ mod tests {
             let scale = Decimal::from_str(&normalized).unwrap().scale();
             assert!(
                 scale <= u32::from(FIXED_PRECISION),
-                "{raw} normalised to {normalized} with scale {scale}"
+                "{raw} normalized to {normalized} with scale {scale}"
             );
         }
     }
 
-    #[test]
+    #[rstest]
     fn rounds_only_when_significant_digits_actually_exceed_the_cap() {
         // Rounding is lossy, so it must not trigger on padding alone. This value has more
         // significant decimals than the cap and is the one case that legitimately rounds.
@@ -125,7 +127,7 @@ mod tests {
         assert!(rounded.starts_with("0.1234567"));
     }
 
-    #[test]
+    #[rstest]
     fn a_value_below_the_representable_minimum_becomes_zero_not_an_error() {
         // 1e-18 cannot be represented; rounding yields zero. Surfacing that as a parse
         // failure would drop an entire series over one dust-sized field.
@@ -134,13 +136,13 @@ mod tests {
         assert_eq!(Decimal::from_str(&normalized).unwrap(), Decimal::ZERO);
     }
 
-    #[test]
+    #[rstest]
     fn negative_values_survive() {
-        // Funding rates and PnL can be negative; normalisation must not mangle the sign.
+        // Funding rates and PnL can be negative; normalization must not mangle the sign.
         assert_eq!(normalize("-0.0000125000").unwrap(), "-0.0000125");
     }
 
-    #[test]
+    #[rstest]
     fn non_numeric_input_is_reported_rather_than_defaulted() {
         assert!(normalize("").is_err());
         assert!(normalize("abc").is_err());
@@ -150,9 +152,11 @@ mod tests {
 
 #[cfg(test)]
 mod precision_tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn a_whole_number_is_padded_out_to_the_declared_precision() {
         // Without this, an ask of "77379" parses at precision 0 while a bid of "77378.5"
         // parses at 1, and the engine rejects the pair as inconsistent.
@@ -160,29 +164,29 @@ mod precision_tests {
         assert_eq!(normalize_to("77379", 0).unwrap(), "77379");
     }
 
-    #[test]
+    #[rstest]
     fn both_sides_of_a_quote_end_up_at_one_precision() {
         assert_eq!(normalize_to("77378.5", 1).unwrap(), "77378.5");
         assert_eq!(normalize_to("77379", 1).unwrap(), "77379.0");
     }
 
-    #[test]
+    #[rstest]
     fn on_chain_padding_is_cut_to_the_instrument_precision() {
         assert_eq!(normalize_to("0.001390000000000000", 5).unwrap(), "0.00139");
     }
 
-    #[test]
+    #[rstest]
     fn places_below_the_tick_are_rounded_away() {
         assert_eq!(normalize_to("77378.567", 2).unwrap(), "77378.57");
     }
 
-    #[test]
+    #[rstest]
     fn a_precision_the_engine_cannot_hold_is_refused() {
         // Silently clamping would produce a value that claims a precision it does not have.
         assert!(normalize_to("1.0", FIXED_PRECISION + 1).is_err());
     }
 
-    #[test]
+    #[rstest]
     fn a_non_number_is_still_refused() {
         assert!(normalize_to("not-a-number", 2).is_err());
     }

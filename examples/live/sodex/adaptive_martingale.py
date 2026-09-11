@@ -18,8 +18,8 @@ Run a pared-down adaptive martingale on SoDEX, driven by two bar feeds.
 
 **With DRY_RUN = False this submits real orders.** On testnet that is play money; the same
 program against ``Network.MAINNET`` would spend real funds. Start with DRY_RUN = True, which
-exercises the whole decision path — warmup, indicators, regime, entry and exit conditions,
-position sizing — and logs what it would have submitted without touching the account.
+exercises the whole decision path - warmup, indicators, regime, entry and exit conditions,
+position sizing - and logs what it would have submitted without touching the account.
 
 The shape is a two-timeframe trend follower with a decaying pyramid. A slow feed classifies the
 regime from a SuperTrend and two moving averages; a fast feed looks for a pullback entry inside a
@@ -37,20 +37,21 @@ What this deliberately does **not** carry, relative to a full implementation:
   unfilled-order bookkeeping that is the bulk of a production execution layer.
 - One instrument, one direction (long). No portfolio-level heat, no cross-instrument netting.
 
-Two venue behaviours shape the rest, both established by live observation rather than documented:
+Two venue behaviors shape the rest, both established by live observation rather than documented:
 
 - A spot buy's fee is taken from the **base** asset received, so holdings end up short of the
   filled quantity and selling that quantity is refused for insufficient balance. The exit
   therefore clamps to the free base balance on a cash account.
 - Bars arrive while still forming and the venue never sets its own closed flag, so the data client
   releases a bar only once its successor starts. Every bar reaching ``on_bar`` is final, and the
-  first live one arrives a full interval after subscribing — which is why warmup comes from a
+  first live one arrives a full interval after subscribing - which is why warmup comes from a
   history request rather than from waiting.
 
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -320,7 +321,7 @@ class AdaptiveMartingale(Strategy):
         signal_bar_type = self._config.signal_bar_type
 
         # The actor feeds registered indicators from both live bars and history responses, keyed
-        # by bar type — so warmup needs no hand-feeding, and hand-feeding would double-count.
+        # by bar type - so warmup needs no hand-feeding, and hand-feeding would double-count.
         self.register_indicator_for_bars(regime_bar_type, self._supertrend)
         self.register_indicator_for_bars(regime_bar_type, self._ema_fast_regime)
         self.register_indicator_for_bars(regime_bar_type, self._ema_slow_regime)
@@ -349,7 +350,7 @@ class AdaptiveMartingale(Strategy):
         )
         self.log.info(log_msg, LogColor.BLUE)
 
-    def on_historical_bars(self, bars: list[Bar]) -> None:
+    def on_historical_bars(self, bars: Sequence[Bar]) -> None:
         """
         On a warmup response.
         """
@@ -358,7 +359,7 @@ class AdaptiveMartingale(Strategy):
             return
 
         # The indicators have already consumed these. Reporting readiness is what separates
-        # "warmup arrived and the indicators are armed" from "no bars ever came back" — two
+        # "warmup arrived and the indicators are armed" from "no bars ever came back" - two
         # states that otherwise look identical: a run that never decides anything.
         log_msg = (
             f"warmup_received bar_type={bars[0].bar_type} count={len(bars)} "
@@ -431,7 +432,7 @@ class AdaptiveMartingale(Strategy):
         decision = self._decide(close, gap)
 
         # One line per signal bar, naming the branch actually taken. Without it, "evaluated and
-        # declined" and "never reached" look identical from outside — and the quiet case is the
+        # declined" and "never reached" look identical from outside - and the quiet case is the
         # common one, since most bars are holds.
         log_msg = (
             f"signal_bar decision={decision} state={self._state.value} "
@@ -454,8 +455,9 @@ class AdaptiveMartingale(Strategy):
         """
         Name the branch this bar takes, without acting on it.
 
-        Separating the choice from the action is what lets the choice be logged as made rather
-        than inferred from whichever side effect happened to follow.
+        Separating the choice from the action is what lets the choice be logged as made
+        rather than inferred from whichever side effect happened to follow.
+
         """
         if abs(gap) > self._config.gap_threshold:
             return "gap_exit" if self._state == MartingaleState.SCALING else "hold_gap"
@@ -624,6 +626,7 @@ class AdaptiveMartingale(Strategy):
             instrument_id=self._config.instrument_id,
             strategy_id=self.strategy_id,
         )
+
         if positions:
             qty = positions[0].quantity
         elif self._config.dry_run:
@@ -669,7 +672,7 @@ class AdaptiveMartingale(Strategy):
         qty = event.last_qty.as_double()
 
         # A layer is an order, not a fill. Paper trading showed one market buy arriving as 0.00001
-        # then 0.00102, which appended two layers for a single order — consuming a pyramid factor
+        # then 0.00102, which appended two layers for a single order - consuming a pyramid factor
         # early and overstating exposure. Keying on the client order id folds partials back into
         # the layer they belong to, at their volume-weighted price.
         if self._layer_order_ids and self._layer_order_ids[-1] == event.client_order_id:

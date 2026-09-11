@@ -10,7 +10,7 @@
 //!
 //! # Values are not interchangeable across types
 //!
-//! Several names appear in more than one enumeration with different numbers — `EXPIRED` is
+//! Several names appear in more than one enumeration with different numbers - `EXPIRED` is
 //! 6 in [`OrderStatus`] but 7 in [`ExecutionType`], and [`OrderStatus`] jumps from 6 to 10.
 //! Sharing one integer type across both would compile and be wrong, so they are distinct
 //! types with no conversion between them.
@@ -23,12 +23,14 @@
 //! `is_supported_for_placement` marks them so a caller can refuse early rather than
 //! discovering it as a venue rejection.
 
+use std::fmt::Display;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Declares an enum with the venue's dual wire representation.
 ///
 /// Generates the integer and string mappings together so the two cannot drift apart, which
-/// is the failure this shape is guarding against — a hand-written pair would let one side be
+/// is the failure this shape is guarding against - a hand-written pair would let one side be
 /// updated without the other.
 macro_rules! wire_enum {
     (
@@ -73,7 +75,7 @@ macro_rules! wire_enum {
             }
         }
 
-        impl std::fmt::Display for $name {
+        impl Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(self.as_str())
             }
@@ -103,7 +105,7 @@ macro_rules! wire_enum {
                         })
                     }
                     other => Err(D::Error::custom(format!(
-                        "expected {} as string or integer, got {other}", stringify!($name)
+                        "expected {} as string or integer, was {other}", stringify!($name)
                     ))),
                 }
             }
@@ -319,9 +321,11 @@ impl DisabledPermissions {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn integer_values_match_the_venue_tables() {
         assert_eq!(OrderSide::Buy.as_int(), 1);
         assert_eq!(OrderSide::Sell.as_int(), 2);
@@ -336,29 +340,35 @@ mod tests {
         assert_eq!(TriggerType::MarkPrice.as_int(), 2);
     }
 
-    #[test]
+    #[rstest]
     fn signature_type_values_match_the_prefix_bytes_used_when_signing() {
         // Cross-check against the signing layer: the venue prefixes 0x01 to exchange-domain
         // signatures and 0x02 to universal-domain ones, and the enum agrees.
         use crate::common::SignatureKind;
 
-        assert_eq!(SignatureType::Eip712.as_int(), SignatureKind::Exchange.prefix());
+        assert_eq!(
+            SignatureType::Eip712.as_int(),
+            SignatureKind::Exchange.prefix()
+        );
         assert_eq!(
             SignatureType::Eip712Universal.as_int(),
             SignatureKind::Universal.prefix()
         );
     }
 
-    #[test]
+    #[rstest]
     fn expired_differs_between_order_status_and_execution_type() {
         // The whole reason these are separate types. If one integer type were shared, this
         // discrepancy would silently mislabel expiries in one direction or the other.
         assert_eq!(OrderStatus::Expired.as_int(), 6);
         assert_eq!(ExecutionType::Expired.as_int(), 7);
-        assert_ne!(OrderStatus::Expired.as_int(), ExecutionType::Expired.as_int());
+        assert_ne!(
+            OrderStatus::Expired.as_int(),
+            ExecutionType::Expired.as_int()
+        );
     }
 
-    #[test]
+    #[rstest]
     fn order_status_values_are_not_contiguous() {
         // TRIGGERED jumps to 10; anything iterating 1..=n would miss it.
         assert_eq!(OrderStatus::Triggered.as_int(), 10);
@@ -367,7 +377,7 @@ mod tests {
         assert_eq!(OrderStatus::from_int(10), Some(OrderStatus::Triggered));
     }
 
-    #[test]
+    #[rstest]
     fn every_variant_round_trips_through_both_representations() {
         macro_rules! check {
             ($ty:ty) => {
@@ -391,7 +401,7 @@ mod tests {
         check!(SignatureType);
     }
 
-    #[test]
+    #[rstest]
     fn serializes_as_integer_for_requests() {
         // Requests carry integers, and the signature commits to exactly those bytes.
         assert_eq!(serde_json::to_string(&OrderSide::Buy).unwrap(), "1");
@@ -399,7 +409,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&TimeInForce::Ioc).unwrap(), "3");
     }
 
-    #[test]
+    #[rstest]
     fn deserializes_from_the_status_strings_responses_carry() {
         assert_eq!(
             serde_json::from_str::<OrderStatus>(r#""PARTIALLY_FILLED""#).unwrap(),
@@ -411,7 +421,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn deserializes_from_integers_too() {
         // Responses are documented as strings, but accepting the integer form costs nothing
         // and avoids a hard failure if any endpoint sends the request-side encoding.
@@ -421,7 +431,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn unknown_values_are_rejected_rather_than_defaulted() {
         // Silently mapping an unknown status onto a known one would misreport order state.
         assert!(serde_json::from_str::<OrderStatus>(r#""SETTLED""#).is_err());
@@ -429,7 +439,7 @@ mod tests {
         assert!(serde_json::from_str::<OrderSide>("null").is_err());
     }
 
-    #[test]
+    #[rstest]
     fn placement_support_matches_the_documented_restrictions() {
         assert!(!TimeInForce::Fok.is_supported_for_placement());
         assert!(TimeInForce::Ioc.is_supported_for_placement());
@@ -443,18 +453,19 @@ mod tests {
         assert!(!TriggerType::IndexPrice.is_supported_for_placement());
     }
 
-    #[test]
+    #[rstest]
     fn permission_bits_mean_disabled_not_granted() {
         // Reading the mask as "granted" would produce a key holding exactly the powers the
-        // caller intended to withhold — including withdrawal.
-        let withhold_withdraw = DisabledPermissions::none().disabling(DisabledPermissions::WITHDRAW);
+        // caller intended to withhold - including withdrawal.
+        let withhold_withdraw =
+            DisabledPermissions::none().disabling(DisabledPermissions::WITHDRAW);
 
         assert!(withhold_withdraw.is_disabled(DisabledPermissions::WITHDRAW));
         assert!(!withhold_withdraw.is_disabled(DisabledPermissions::TRADE));
         assert_eq!(withhold_withdraw.as_mask(), 4);
     }
 
-    #[test]
+    #[rstest]
     fn empty_mask_enables_everything() {
         let all_enabled = DisabledPermissions::none();
 
@@ -469,7 +480,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn cancel_only_key_can_wind_down_but_not_open_or_move_funds() {
         let key = DisabledPermissions::cancel_only();
 

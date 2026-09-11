@@ -32,10 +32,7 @@ use nautilus_model::{
 use serde::Deserialize;
 
 use super::parse::{BarMappingError, spec_to_interval};
-use crate::{
-    common::Market,
-    http::SodexHttpClient,
-};
+use crate::{common::Market, http::SodexHttpClient};
 
 /// Largest number of rows the venue returns in one request.
 ///
@@ -125,9 +122,9 @@ pub fn parse_kline(
     size_precision: u8,
     ts_init: UnixNanos,
 ) -> Result<Bar, BarMappingError> {
-    // Normalised to the instrument's declared precision, not to each field's own text. Klines
+    // Normalized to the instrument's declared precision, not to each field's own text. Klines
     // carry on-chain padding the engine's fixed-point types reject, and their four prices need a
-    // uniform scale or the engine panics — a whole-number close beside a fractional open is
+    // uniform scale or the engine panics - a whole-number close beside a fractional open is
     // exactly how that surfaced.
     let price =
         |raw: &str, field: &'static str| super::parse::price_at(raw, price_precision, field);
@@ -151,7 +148,7 @@ pub fn parse_kline(
 ///
 /// **Expects oldest-first input**, which is what [`fetch_bars`] returns after sorting. The
 /// venue itself responds newest-first, so calling this on a raw response would inspect the
-/// oldest bar while the incomplete one sits at the other end — dropping good history and
+/// oldest bar while the incomplete one sits at the other end - dropping good history and
 /// keeping the very bar this is meant to remove.
 ///
 /// The check walks back rather than assuming exactly one incomplete bar, since clock skew or
@@ -249,7 +246,7 @@ pub async fn fetch_bars(
         .map_err(HistoryError::from)?;
 
     // The venue responds newest-first. Nautilus consumes series oldest-first, and
-    // `drop_forming_tail` inspects the tail, so the order is normalised here rather than
+    // `drop_forming_tail` inspects the tail, so the order is normalized here rather than
     // left for each caller to discover.
     bars.sort_by_key(|bar| bar.ts_event);
 
@@ -258,15 +255,14 @@ pub async fn fetch_bars(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        config::SODEX_SPOT,
-        data::parse::bar_type_for,
-    };
     use nautilus_model::{
         enums::{BarAggregation, PriceType},
         identifiers::{Symbol, Venue},
     };
+    use rstest::rstest;
+
+    use super::*;
+    use crate::{config::SODEX_SPOT, data::parse::bar_type_for};
 
     const MINUTE_MS: u64 = 60_000;
 
@@ -299,18 +295,24 @@ mod tests {
             .collect()
     }
 
-    #[test]
+    #[rstest]
     fn kline_parses_without_judging_closure() {
         // A historical row carries no closed flag, so parsing must not require one.
         let bar_type = bar_type_for(instrument(), "1m").unwrap();
-        let bar =
-            parse_kline(&kline(1_767_972_900_000), bar_type, 0, 5, UnixNanos::default()).unwrap();
+        let bar = parse_kline(
+            &kline(1_767_972_900_000),
+            bar_type,
+            0,
+            5,
+            UnixNanos::default(),
+        )
+        .unwrap();
 
         assert_eq!(bar.close.to_string(), "91976");
         assert_eq!(bar.volume.to_string(), "4.12298");
     }
 
-    #[test]
+    #[rstest]
     fn kline_fields_with_mixed_decimal_places_share_one_precision() {
         // The failure this guards: a history response for an instrument quoting "2465" beside
         // "2464.9" built a bar whose fields disagreed about scale, and the engine panicked.
@@ -332,7 +334,7 @@ mod tests {
         assert_eq!(bar.close.to_string(), "2464.9");
     }
 
-    #[test]
+    #[rstest]
     fn the_still_forming_final_bar_is_dropped() {
         // The venue returns it with no indication that it is incomplete. Keeping it would
         // let a backtest decide on a high, low and close that were not yet final.
@@ -342,10 +344,13 @@ mod tests {
         let kept = drop_forming_tail(bars, &minute_spec(), now);
 
         assert_eq!(kept.len(), 2);
-        assert_eq!(kept.last().unwrap().ts_event.as_u64(), 9 * MINUTE_MS * 1_000_000);
+        assert_eq!(
+            kept.last().unwrap().ts_event.as_u64(),
+            9 * MINUTE_MS * 1_000_000
+        );
     }
 
-    #[test]
+    #[rstest]
     fn a_bar_closing_exactly_now_is_kept() {
         // Boundary: open + interval == now means the interval has elapsed.
         let now = 10 * MINUTE_MS;
@@ -354,7 +359,7 @@ mod tests {
         assert_eq!(drop_forming_tail(bars, &minute_spec(), now).len(), 1);
     }
 
-    #[test]
+    #[rstest]
     fn a_fully_historical_series_is_untouched() {
         let now = 100 * MINUTE_MS;
         let bars = bars_at(&[8 * MINUTE_MS, 9 * MINUTE_MS, 10 * MINUTE_MS]);
@@ -362,7 +367,7 @@ mod tests {
         assert_eq!(drop_forming_tail(bars, &minute_spec(), now).len(), 3);
     }
 
-    #[test]
+    #[rstest]
     fn more_than_one_incomplete_tail_bar_is_handled() {
         // Should not happen with a sane clock, but skew or a stale response could produce
         // it, and assuming exactly one would leave an incomplete bar in the series.
@@ -372,10 +377,10 @@ mod tests {
         assert!(drop_forming_tail(bars, &minute_spec(), now).is_empty());
     }
 
-    #[test]
+    #[rstest]
     fn dropping_on_a_newest_first_series_would_remove_the_wrong_end() {
         // Guards the sort in `fetch_bars`. Fed the venue's own ordering, the filter inspects
-        // the oldest bar, keeps the incomplete newest one, and discards good history —
+        // the oldest bar, keeps the incomplete newest one, and discards good history -
         // exactly backwards. This test exists because the live response is newest-first
         // while the code originally assumed the opposite.
         let now = 10 * MINUTE_MS + 30_000;
@@ -388,19 +393,26 @@ mod tests {
 
         // Correct: the 10m bar is still forming and goes.
         assert_eq!(correct.len(), 2);
-        assert!(correct.iter().all(|b| b.ts_event.as_u64() < 10 * MINUTE_MS * 1_000_000));
+        assert!(
+            correct
+                .iter()
+                .all(|b| b.ts_event.as_u64() < 10 * MINUTE_MS * 1_000_000)
+        );
 
         // Wrong order: the incomplete bar survives at the head.
-        assert_eq!(wrong.first().unwrap().ts_event.as_u64(), 10 * MINUTE_MS * 1_000_000);
+        assert_eq!(
+            wrong.first().unwrap().ts_event.as_u64(),
+            10 * MINUTE_MS * 1_000_000
+        );
     }
 
-    #[test]
+    #[rstest]
     fn limits_differ_between_the_engines() {
         assert_eq!(max_limit(Market::Spot), 1500);
         assert_eq!(max_limit(Market::Perps), 1000);
     }
 
-    #[test]
+    #[rstest]
     fn an_over_large_limit_names_the_engine_maximum() {
         // Silently clamping would return fewer bars than asked for with no indication.
         let request = BarRequest {
@@ -419,7 +431,7 @@ mod tests {
         assert!(request.limit.unwrap() > max_limit(Market::Perps));
     }
 
-    #[test]
+    #[rstest]
     fn kline_deserializes_from_the_venue_field_names() {
         let raw = r#"{"t":1767972900000,"o":"91869","h":"91982","l":"91869","c":"91976","v":"4.12298","q":"379148.6798","n":12}"#;
         let parsed: RpcKline = serde_json::from_str(raw).unwrap();
@@ -428,7 +440,7 @@ mod tests {
         assert_eq!(parsed.trade_count, 12);
     }
 
-    #[test]
+    #[rstest]
     fn trade_count_is_optional() {
         // Documented as not required; a missing count must not fail the whole series.
         let raw = r#"{"t":1,"o":"1","h":"1","l":"1","c":"1","v":"1","q":"1"}"#;

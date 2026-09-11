@@ -2,7 +2,7 @@
 //!
 //! The account trades endpoint is the only route to fill reporting, and fill reporting is what
 //! stands between this adapter and unattended running. But the endpoint answers `[]` on an
-//! account that has never traded, so its shape cannot be learned by reading it — only by causing
+//! account that has never traded, so its shape cannot be learned by reading it - only by causing
 //! a fill and then reading it.
 //!
 //! Typing it by analogy to the order shape is the move this integration has already paid for
@@ -10,7 +10,7 @@
 //!
 //! **This places two real orders**: a minimum-size market buy and a market sell to flatten. On
 //! testnet that is play money. Against `SODEX_NETWORK=mainnet` it would not be, which is why the
-//! sell runs even when the read fails — leaving an unintended position behind is the one outcome
+//! sell runs even when the read fails - leaving an unintended position behind is the one outcome
 //! this program must not produce.
 //!
 //! # The sell cannot be the same size as the buy
@@ -18,7 +18,7 @@
 //! A first version sold the quantity it had ordered and was rejected for insufficient balance. The
 //! venue charges a buy's fee in the **base** asset, deducted from what arrives: ordering `0.001`
 //! vBTC credits `0.00099935`. So the flattening sell reads the balance and sells what is actually
-//! held, rounded down to the venue's step size — selling a hair more is the difference between
+//! held, rounded down to the venue's step size - selling a hair more is the difference between
 //! flattening and leaving a position behind.
 //!
 //! Set `SODEX_FLATTEN_ONLY=1` to skip the buy and only sell what the account already holds, which
@@ -35,7 +35,6 @@
 use std::{env, time::Duration};
 
 use nautilus_network::http::Method;
-use rust_decimal::Decimal;
 use nautilus_sodex::{
     common::{
         Market,
@@ -48,6 +47,7 @@ use nautilus_sodex::{
         spot::{SpotNewOrderRequest, SpotOrderItem},
     },
 };
+use rust_decimal::Decimal;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,8 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account_id: u64 = env::var("SODEX_ACCOUNT_ID")
         .map_err(|_| "SODEX_ACCOUNT_ID is not set")?
         .parse()?;
-    let wallet = env::var("SODEX_WALLET_ADDRESS")
-        .map_err(|_| "SODEX_WALLET_ADDRESS is not set")?;
+    let wallet = env::var("SODEX_WALLET_ADDRESS").map_err(|_| "SODEX_WALLET_ADDRESS is not set")?;
     let network = match env::var("SODEX_NETWORK").as_deref() {
         Ok("mainnet") => Network::Mainnet,
         _ => Network::Testnet,
@@ -86,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flatten_only = env::var("SODEX_FLATTEN_ONLY").is_ok();
 
     let bought = if flatten_only {
-        println!("SODEX_FLATTEN_ONLY set — skipping the buy");
+        println!("SODEX_FLATTEN_ONLY set - skipping the buy");
         Ok(())
     } else {
         place_market(
@@ -111,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match held_base(&client, &wallet, &base_coin, &step_size).await {
             Ok(Some(sellable)) => {
-                println!("holding {sellable} {base_coin} — selling that, not the ordered size");
+                println!("holding {sellable} {base_coin} - selling that, not the ordered size");
                 place_market(
                     &client,
                     account_id,
@@ -123,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
             }
             Ok(None) => {
-                println!("no sellable {base_coin} balance — nothing to flatten");
+                println!("no sellable {base_coin} balance - nothing to flatten");
                 Ok(())
             }
             Err(e) => {
@@ -178,11 +177,11 @@ async fn place_market(
 
     match align_batch(&submitted, acks)?.first() {
         Some(ack) if ack.is_success() => {
-            println!("{side:?} accepted — venue order id {:?}", ack.order_id);
+            println!("{side:?} accepted - venue order id {:?}", ack.order_id);
             Ok(())
         }
         Some(ack) => {
-            println!("{side:?} REJECTED — code {} : {:?}", ack.code, ack.error);
+            println!("{side:?} REJECTED - code {} : {:?}", ack.code, ack.error);
             Err(format!("{side:?} rejected: {:?}", ack.error).into())
         }
         None => Err("venue returned no acknowledgement".into()),
@@ -192,7 +191,7 @@ async fn place_market(
 /// The sellable balance of one coin, rounded **down** to the venue's step size.
 ///
 /// Down, not nearest: rounding up asks to sell more than is held, which the venue rejects for
-/// insufficient balance — the exact failure this function exists to avoid.
+/// insufficient balance - the exact failure this function exists to avoid.
 async fn held_base(
     client: &SodexHttpClient,
     wallet: &str,

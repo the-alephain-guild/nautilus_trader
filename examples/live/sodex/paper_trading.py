@@ -19,12 +19,12 @@ Paper-trade the adaptive martingale on live SoDEX data with simulated execution.
 Nothing here reaches the venue's trading surface. Market data is served unsigned, so the data
 client needs no credentials; orders go to the sandbox adapter, which runs the engine's own
 `OrderMatchingEngine` against the arriving data. No API key is read, nothing is signed, and no
-funds — real or testnet — are at risk.
+funds - real or testnet - are at risk.
 
 Mainnet rather than testnet, and that choice is forced. Every one of the venue's 33 tradable
 testnet spot symbols is frozen: sampling ten minutes of 1-minute bars gives a single distinct
 close on 22 of them and no bars at all on the other 11. A strategy whose entry depends on a
-pullback and whose volatility gate divides by ATR cannot evaluate anything there — ATR collapses
+pullback and whose volatility gate divides by ATR cannot evaluate anything there - ATR collapses
 to zero and no condition can ever become true. Mainnet quotes move, so the decision path is
 exercised rather than merely executed.
 
@@ -46,7 +46,7 @@ trade-off above is the thing to weigh when doing it.
 Two limits worth holding in view when reading the results:
 
 - **Fills are still optimistic.** The matching engine prices against bars and trades without
-  modelling the book, so queue position and depth cost nothing here. Treat fills as proof the
+  modeling the book, so queue position and depth cost nothing here. Treat fills as proof the
   plumbing works, not as evidence the size is tradable.
 - **Simulated fees are the engine's, not the venue's.** The sandbox applies its own fee model. The
   live execution client charges the venue's own maker/taker rates taken from the instrument, and
@@ -105,7 +105,7 @@ MAX_TOTAL_NOTIONAL = Decimal(250)
 STARTING_BALANCE = 5_000.0
 
 # The venue's quote coin is in no standard currency table, and the data client only registers it at
-# connect — after the sandbox configuration below needs it to denominate a starting balance.
+# connect - after the sandbox configuration below needs it to denominate a starting balance.
 # Registering it here, at the engine's full fixed-point width, is what keeps the two definitions
 # identical: the adapter reuses an already-registered code rather than replacing it, so a narrower
 # precision chosen here would silently become the ledger's precision. That matters because this
@@ -136,7 +136,7 @@ def main() -> None:
                 starting_balances=[Money(STARTING_BALANCE, QUOTE_CURRENCY)],
                 account_id=ACCOUNT_ID,
                 # Spot on this venue is a multi-currency cash account: a buy spends the quote coin
-                # and credits the base one, and nothing can be sold that is not held. Modelling it
+                # and credits the base one, and nothing can be sold that is not held. Modeling it
                 # as margin would let the strategy take positions the live venue would refuse.
                 account_type=AccountType.CASH,
                 oms_type=OmsType.NETTING,
@@ -160,7 +160,7 @@ def main() -> None:
                 max_total_notional=MAX_TOTAL_NOTIONAL,
                 warmup_bars=200,
                 # Every threshold below is a fraction of price, so it has to be rescaled with the
-                # bar interval — the defaults are calibrated for 4-hour bars. A 1.5% pullback is a
+                # bar interval - the defaults are calibrated for 4-hour bars. A 1.5% pullback is a
                 # normal day on that cadence and an impossibility on this one: ETH's whole two-hour
                 # range was 0.77%, so the default would hold every bar forever and the run would
                 # prove nothing. These are set against the measured minute statistics above, in
@@ -174,7 +174,7 @@ def main() -> None:
                 # Observed atr_pct sits near 3 bp, so 30 bp blocks a genuine spike while leaving
                 # the gate live. The 8% default could never fire here, making it dead code.
                 volatility_threshold=0.0030,
-                # Orders are submitted for real — to the matching engine, not to the venue.
+                # Orders are submitted for real - to the matching engine, not to the venue.
                 dry_run=False,
             ),
         ),

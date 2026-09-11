@@ -48,7 +48,7 @@ struct SigningPayload<'a, T: Serialize> {
 /// Computes `keccak256` over the compact JSON encoding of `{type, params}`.
 ///
 /// `params` must be a concrete `Serialize` type whose field order mirrors the
-/// corresponding Go struct — see the [module docs](super) for why a
+/// corresponding Go struct - see the [module docs](super) for why a
 /// [`serde_json::Value`] cannot be used here: its key order is decided by a Cargo feature
 /// this crate does not control.
 ///
@@ -91,8 +91,8 @@ impl ExchangeSigner {
 
     /// Creates a signer from the master wallet, for the one action that requires it.
     ///
-    /// `revokeAPIKey` sits in the venue's trading-action list — it commits to an
-    /// [`ExchangeAction`] under the `spot`/`futures` domain with the `0x01` prefix — yet the
+    /// `revokeAPIKey` sits in the venue's trading-action list - it commits to an
+    /// [`ExchangeAction`] under the `spot`/`futures` domain with the `0x01` prefix - yet the
     /// "which key signs what" table requires the **master wallet** to sign it, because it
     /// changes the API key set itself. That makes it the only combination of master key and
     /// exchange domain, and this constructor exists solely for it.
@@ -150,7 +150,7 @@ impl ExchangeSigner {
 
         // `as_rsy`, not `as_bytes`: the gateway recovers the signer from a raw recovery id
         // of 0 or 1, while `as_bytes` emits the EIP-155 style `27 + parity`. Sending the
-        // latter is rejected with "Invalid recovery ID: bad recovery id" — a distinction the
+        // latter is rejected with "Invalid recovery ID: bad recovery id" - a distinction the
         // venue's documentation never states, since it publishes no expected signature bytes.
         let raw = signature.as_rsy();
         let mut out = Vec::with_capacity(1 + raw.len());
@@ -162,11 +162,11 @@ impl ExchangeSigner {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::common::CHAIN_ID_TESTNET;
+    use rstest::rstest;
 
+    use super::*;
     use crate::{
-        common::enums::OrderSide,
+        common::{CHAIN_ID_TESTNET, enums::OrderSide},
         http::requests::{ClientOrderId, NewOrderRequest, OrderItem},
     };
 
@@ -191,7 +191,7 @@ mod tests {
     /// `omitempty` fields, quoted `DecimalString`, and present-at-zero-value non-optionals.
     /// If a future edit reorders a field or drops a `skip_serializing_if`, this fails here
     /// rather than as an opaque signature rejection from the gateway.
-    #[test]
+    #[rstest]
     fn signing_payload_matches_venue_example_byte_for_byte() {
         let expected = r#"{"type":"newOrder","params":{"accountID":12345,"symbolID":1,"orders":[{"clOrdID":"my-order-1","modifier":1,"side":1,"type":2,"timeInForce":3,"quantity":"0.001","reduceOnly":false,"positionSide":1}]}}"#;
 
@@ -207,7 +207,7 @@ mod tests {
     /// Guards the trap the module docs describe, without asserting the trap's shape.
     ///
     /// An earlier version of this test asserted that a `Value` round-trip *reorders* keys, and
-    /// it failed the moment the crate was built with the `python` feature — which enables
+    /// it failed the moment the crate was built with the `python` feature - which enables
     /// `serde_json/preserve_order` transitively and makes the round-trip order-preserving.
     /// That failure was the test doing its job in the wrong place: the hazard is not that
     /// `Value` sorts, it is that **whether it sorts depends on a feature this crate does not
@@ -216,14 +216,14 @@ mod tests {
     /// What is pinned here is therefore the property that holds in every configuration: the
     /// signing payload is produced by serializing the concrete type directly, in declaration
     /// order, and that encoding is stable regardless of how `Value` happens to behave.
-    #[test]
+    #[rstest]
     fn the_signing_encoding_is_taken_from_the_typed_struct_not_from_a_value() {
         let direct = serde_json::to_string(&doc_example_params()).unwrap();
 
         // Declaration order, which is the venue's contract.
         assert!(
             direct.starts_with(r#"{"accountID""#),
-            "the typed encoding must lead with the first declared field, got {direct}"
+            "the typed encoding must lead with the first declared field, found {direct}"
         );
 
         // And the digest is computed from that encoding, not from a re-encoded `Value`.
@@ -244,7 +244,7 @@ mod tests {
         let _ = reordered;
     }
 
-    #[test]
+    #[rstest]
     fn signature_carries_exchange_prefix_and_is_66_bytes() {
         let key = ApiPrivateKey::parse(&"2".repeat(64)).unwrap();
         let signer = ExchangeSigner::new(&key, Market::Perps, CHAIN_ID_TESTNET).unwrap();
@@ -258,8 +258,8 @@ mod tests {
 
     /// The gateway rejected `27 + parity` with "Invalid recovery ID: bad recovery id" on the
     /// first live attempt. Nothing in the venue's documentation states which convention it
-    /// wants — it publishes no expected signature bytes — so this test carries the finding.
-    #[test]
+    /// wants - it publishes no expected signature bytes - so this test carries the finding.
+    #[rstest]
     fn recovery_id_is_raw_zero_or_one_not_eip155_v() {
         let key = ApiPrivateKey::parse(&"2".repeat(64)).unwrap();
         let signer = ExchangeSigner::new(&key, Market::Perps, CHAIN_ID_TESTNET).unwrap();
@@ -280,13 +280,16 @@ mod tests {
                 "recovery id {recovery_id} is EIP-155 style; the gateway needs 0 or 1"
             );
         }
-        assert!(seen.contains(&0) && seen.contains(&1), "both parities exercised");
+        assert!(
+            seen.contains(&0) && seen.contains(&1),
+            "both parities exercised"
+        );
     }
 
     /// Spot and perps sign under different domains, so the same payload must not produce
     /// the same signature. This is the kind of mistake that only surfaces as a gateway
     /// rejection, so it is pinned here.
-    #[test]
+    #[rstest]
     fn market_selects_a_distinct_domain() {
         let key = ApiPrivateKey::parse(&"2".repeat(64)).unwrap();
         let hash = payload_hash("newOrder", &doc_example_params()).unwrap();
@@ -305,7 +308,7 @@ mod tests {
     }
 
     /// Same for mainnet vs testnet: the chain id is part of the domain.
-    #[test]
+    #[rstest]
     fn chain_id_selects_a_distinct_domain() {
         use crate::common::CHAIN_ID_MAINNET;
 

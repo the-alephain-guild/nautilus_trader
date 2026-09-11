@@ -9,25 +9,25 @@
 //! produced this integration's worst failures, so it waits for one observed fill instead.
 //!
 //! Position reports are served on both engines, but only partly on perps. Spot does not route the
-//! path at all, which is correct rather than missing — spot holds balances and has no positions, so
+//! path at all, which is correct rather than missing - spot holds balances and has no positions, so
 //! an empty report is the truth. On perps the endpoint is read and decoded: an **empty** list is
 //! reported as empty, because the venue saying the account holds nothing is an answer, not a gap.
 //! A **non-empty** payload fails loudly with its own contents attached, because that shape has
 //! never been observed and an empty list in its place would assert the account is flat while the
-//! venue just said otherwise — reconciliation would then close positions that exist.
+//! venue just said otherwise - reconciliation would then close positions that exist.
 //!
 //! # A submission whose outcome is unknown is not guessed at
 //!
 //! A transport failure on a submit does not say whether the venue received it: it may have been
 //! processed and only the response lost. Reporting a rejection there would let the engine believe
-//! an order is dead while it rests on the book — real money behind a position nothing is managing,
+//! an order is dead while it rests on the book - real money behind a position nothing is managing,
 //! and the single worst divergence this adapter could produce.
 //!
 //! So the venue is asked. The account's order list is the authority, and it is consulted a few
 //! times because the venue settles on-chain and an accepted order takes a moment to appear. Found
 //! means the venue's own state is reported; confidently absent means a rejection that is now an
 //! observation; and a failed lookup emits nothing at all, leaving the order submitted for
-//! reconciliation to settle — guessing there would reintroduce exactly what this avoids.
+//! reconciliation to settle - guessing there would reintroduce exactly what this avoids.
 //!
 //! This is also why write requests are still not retried. Retrying would create the ambiguity;
 //! resolving it after the fact is strictly better than risking a second order.
@@ -35,13 +35,13 @@
 //! # The account reads are addressed by the master wallet, and a wrong address does not fail
 //!
 //! They are keyed by the account's wallet address. The API key's own address also answers `200`,
-//! with an empty account — so a misconfigured client would reconcile against "no balance, no open
+//! with an empty account - so a misconfigured client would reconcile against "no balance, no open
 //! orders" and the engine would take that for a flat account, with nothing reporting a problem.
 //!
 //! Emptiness cannot be the error, because a new account is legitimately empty. So the client
 //! proves the address instead: at connect it asks the venue which API keys that wallet has
 //! registered **on this engine**, and refuses to start unless the key it signs with is among
-//! them. That check also catches the other documented trap in one go — a key registered on the
+//! them. That check also catches the other documented trap in one go - a key registered on the
 //! other engine, which otherwise surfaces much later as `API key not found` on the first order.
 //!
 //! # One order per request
@@ -53,7 +53,7 @@
 //! independently would leave a stop that never activates and a take-profit that fires with
 //! no position, so a contingent list is denied rather than flattened.
 
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 use nautilus_common::{
@@ -69,7 +69,10 @@ use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
     enums::{LiquiditySide, OmsType},
-    identifiers::{AccountId, ClientId, InstrumentId, Venue, VenueOrderId},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId as NautilusClientOrderId, InstrumentId, Venue,
+        VenueOrderId,
+    },
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     reports::{fill::FillReport, order::OrderStatusReport, position::PositionStatusReport},
@@ -86,12 +89,16 @@ use crate::{
     common::Market,
     config::SodexExecClientConfig,
     http::{
-        BatchCost, account_reads::OrderRecord, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
+        BatchCost, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
+        account_reads::OrderRecord,
         align_batch,
         requests::{CancelItem, ClientOrderId as VenueClientOrderId},
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
-    providers::{InstrumentCatalog, instrument_id_for, load_instruments, spawn_instrument_refresh},
+    providers::{
+        InstrumentCatalog, InstrumentReload, instrument_id_for, load_instruments,
+        spawn_instrument_refresh,
+    },
 };
 
 /// Live execution client for one SoDEX engine.
@@ -111,9 +118,9 @@ pub struct SodexExecutionClient {
     cancellation: CancellationToken,
 }
 
-impl std::fmt::Debug for SodexExecutionClient {
+impl Debug for SodexExecutionClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SodexExecutionClient")
+        f.debug_struct(stringify!(SodexExecutionClient))
             .field("client_id", &self.core.client_id)
             .field("venue", &self.core.venue)
             .field("connected", &self.core.is_connected())
@@ -151,7 +158,6 @@ impl SodexExecutionClient {
             None,
         )
         .map_err(|e| anyhow::anyhow!("failed to build signed HTTP client: {e}"))?;
-
 
         let emitter = ExecutionEventEmitter::new(
             clock,
@@ -206,8 +212,8 @@ impl SodexExecutionClient {
             .collect();
         anyhow::bail!(
             "wallet {} has no API key matching this client's signing address {signer} on {:?}. \
-             Registered there: [{}]. Either the wallet address is wrong — in which case the \
-             account reads would have reported an empty account rather than failing — or the key \
+             Registered there: [{}]. Either the wallet address is wrong - in which case the \
+             account reads would have reported an empty account rather than failing - or the key \
              was registered on the other engine, which keeps a separate key set.",
             self.wallet,
             self.config.market,
@@ -223,7 +229,7 @@ impl SodexExecutionClient {
         })
     }
 
-    /// Denies an order the venue cannot honour as asked, and reports why.
+    /// Denies an order the venue cannot honor as asked, and reports why.
     ///
     /// Returns `true` when the order was denied and must not be sent.
     fn deny_if_contingent(&self, order: &OrderAny) -> bool {
@@ -317,8 +323,8 @@ enum Cancellation {
 impl Cancellation {
     /// Builds a cancel for one order.
     ///
-    /// Spot cancels carry two client order ids — one naming the cancellation itself and one
-    /// naming its target — so the caller must supply a distinct label for the request.
+    /// Spot cancels carry two client order ids - one naming the cancellation itself and one
+    /// naming its target - so the caller must supply a distinct label for the request.
     fn build(
         market: Market,
         account_id: u64,
@@ -428,8 +434,7 @@ impl ExecutionClient for SodexExecutionClient {
         // The sender is resolved here rather than at construction: the node rebinds the
         // runner's senders on this thread before starting clients, so an emitter wired
         // earlier would hold the wrong one and drop every event it produced.
-        self.emitter
-            .set_sender(get_exec_event_sender());
+        self.emitter.set_sender(get_exec_event_sender());
         self.core.set_started();
 
         log::info!(
@@ -480,13 +485,15 @@ impl ExecutionClient for SodexExecutionClient {
 
         if let Some(task) = spawn_instrument_refresh(
             self.config.update_instruments_interval_mins,
-            Arc::clone(&self.http),
-            self.config.market,
-            self.core.venue,
-            Arc::clone(&self.catalog),
-            self.cancellation.clone(),
-            self.core.client_id,
-            None,
+            InstrumentReload {
+                client: Arc::clone(&self.http),
+                market: self.config.market,
+                venue: self.core.venue,
+                catalog: Arc::clone(&self.catalog),
+                cancellation: self.cancellation.clone(),
+                client_id: self.core.client_id,
+                data_sender: None,
+            },
         ) {
             self.tasks.push(task);
         }
@@ -516,7 +523,7 @@ impl ExecutionClient for SodexExecutionClient {
     ) -> anyhow::Result<Option<Money>> {
         // This matters more here than on a venue that reports fills. Without per-fill reports,
         // reconciliation *infers* a fill from the order record, and the trait's default supplies
-        // no commission — so reconciled P&L would omit fees entirely. On a strategy that adds to
+        // no commission - so reconciled P&L would omit fees entirely. On a strategy that adds to
         // positions, omitted fees compound into a position larger than the risk model intended.
         let rate = match liquidity_side {
             LiquiditySide::Maker => instrument.maker_fee(),
@@ -525,13 +532,11 @@ impl ExecutionClient for SodexExecutionClient {
             // side. Taking the larger rate is deliberate: understating fees is the error that
             // compounds, and `max` stays conservative even where a maker rebate makes the maker
             // rate the larger one.
-            LiquiditySide::NoLiquiditySide => {
-                instrument.maker_fee().max(instrument.taker_fee())
-            }
+            LiquiditySide::NoLiquiditySide => instrument.maker_fee().max(instrument.taker_fee()),
         };
 
         // Fees are charged on notional in the quote asset on both engines, and the arithmetic
-        // stays in `Decimal` — this is money, and a float hop here would be a silent rounding
+        // stays in `Decimal` - this is money, and a float hop here would be a silent rounding
         // policy nobody chose.
         let notional = last_qty.as_decimal() * last_px.as_decimal();
         let currency = instrument.cost_currency();
@@ -565,7 +570,7 @@ impl ExecutionClient for SodexExecutionClient {
     ) -> anyhow::Result<Option<OrderStatusReport>> {
         // The venue offers no single-order read, so one order is found within the account's own
         // two lists. Matching on either identifier because the engine may hold only one of them:
-        // a reconciled external order has no client order id it recognises.
+        // a reconciled external order has no client order id it recognizes.
         let reports = self.collect_order_reports().await?;
 
         Ok(reports.into_iter().find(|report| {
@@ -594,7 +599,10 @@ impl ExecutionClient for SodexExecutionClient {
             // The venue returns the whole account, so a request scoped to one instrument or a
             // time window has to be narrowed here rather than at the venue.
             let instrument_id = instrument_id_for(&trade.symbol, self.core.venue);
-            if cmd.instrument_id.is_some_and(|wanted| wanted != instrument_id) {
+            if cmd
+                .instrument_id
+                .is_some_and(|wanted| wanted != instrument_id)
+            {
                 continue;
             }
             let ts_event = UnixNanos::from(trade.time * 1_000_000);
@@ -650,14 +658,14 @@ impl ExecutionClient for SodexExecutionClient {
 
         if positions.positions.is_empty() {
             // An empty list is not a guess. The venue says the account holds nothing, and
-            // reporting that is exactly right — it is a *non-empty* payload this cannot yet map.
+            // reporting that is exactly right - it is a *non-empty* payload this cannot yet map.
             return Ok(Vec::new());
         }
 
         // Failing here rather than returning an empty list is the whole point: an empty list would
         // assert the account is flat while the venue just said it is not, and reconciliation would
         // close positions that exist. The payload is included because it is the one thing needed
-        // to finish this — reading it requires a real perps position, which the testnet account
+        // to finish this - reading it requires a real perps position, which the testnet account
         // could not open for lack of a perps balance.
         anyhow::bail!(
             "SoDEX perps reports {} open position(s) but this adapter cannot map the payload yet. \
@@ -692,18 +700,14 @@ impl ExecutionClient for SodexExecutionClient {
             }
         };
 
-        let submission = match Submission::build(
-            &spec,
-            self.config.market,
-            self.venue_account_id,
-            symbol_id,
-        ) {
-            Ok(submission) => submission,
-            Err(e) => {
-                self.emitter.emit_order_denied(&order, &e.to_string());
-                return Ok(());
-            }
-        };
+        let submission =
+            match Submission::build(&spec, self.config.market, self.venue_account_id, symbol_id) {
+                Ok(submission) => submission,
+                Err(e) => {
+                    self.emitter.emit_order_denied(&order, &e.to_string());
+                    return Ok(());
+                }
+            };
 
         self.emitter.emit_order_submitted(&order);
 
@@ -720,10 +724,14 @@ impl ExecutionClient for SodexExecutionClient {
                 Ok(acks) => match align_batch(&submitted, acks) {
                     Ok(aligned) => report_submission(&emitter, &order, aligned.first(), ts_event),
                     // The response cannot be attributed to this order, so whether it is live is
-                    // exactly as unknown as a lost response — same resolution.
+                    // exactly as unknown as a lost response - same resolution.
                     Err(e) => {
                         resolve_ambiguous_submission(
-                            &http, &wallet, &emitter, &order, clock,
+                            &http,
+                            &wallet,
+                            &emitter,
+                            &order,
+                            clock,
                             &format!("venue response could not be matched to the order: {e}"),
                         )
                         .await;
@@ -731,11 +739,16 @@ impl ExecutionClient for SodexExecutionClient {
                 },
                 // The request failed without a verdict. It may have been processed and only the
                 // response lost, so reporting a rejection here could leave the engine believing
-                // an order is dead while it rests at the venue — the one divergence that puts
+                // an order is dead while it rests at the venue - the one divergence that puts
                 // real money behind a position nothing is managing.
                 Err(e) => {
                     resolve_ambiguous_submission(
-                        &http, &wallet, &emitter, &order, clock, &e.to_string(),
+                        &http,
+                        &wallet,
+                        &emitter,
+                        &order,
+                        clock,
+                        &e.to_string(),
                     )
                     .await;
                 }
@@ -753,8 +766,7 @@ impl ExecutionClient for SodexExecutionClient {
         // contingency of their own: denying only the marked legs would leave the rest of the
         // bracket resting with nothing to trigger or protect it.
         if let Some(contingency) = orders.iter().find_map(Order::contingency_type) {
-            let reason =
-                format!("SoDEX cannot enforce {contingency:?} contingency between orders");
+            let reason = format!("SoDEX cannot enforce {contingency:?} contingency between orders");
             for order in &orders {
                 self.emitter.emit_order_denied(order, &reason);
             }
@@ -903,7 +915,7 @@ impl ExecutionClient for SodexExecutionClient {
 impl SodexExecutionClient {
     /// A handle holding only what a spawned read needs.
     ///
-    /// The client itself is not `Send` — its core holds the engine's cache — so a task cannot
+    /// The client itself is not `Send` - its core holds the engine's cache - so a task cannot
     /// borrow it. What a read needs is the transport, the wallet and the instrument set, all of
     /// which are shareable.
     fn clone_for_task(&self) -> AccountReader {
@@ -974,7 +986,6 @@ impl SodexExecutionClient {
             ts_init,
         )?)
     }
-
 }
 
 /// What a spawned account read needs, without the engine-bound parts of the client.
@@ -1053,7 +1064,7 @@ fn money(raw: &str, currency: Currency) -> anyhow::Result<Money> {
 /// How many times to look for an order whose submission produced no verdict.
 ///
 /// The venue settles on-chain, so an accepted order takes a moment to appear in the account's
-/// list — a single immediate lookup would report "absent" for an order that is merely pending.
+/// list - a single immediate lookup would report "absent" for an order that is merely pending.
 const AMBIGUOUS_LOOKUP_ATTEMPTS: u32 = 3;
 
 /// How long to wait between those looks.
@@ -1109,16 +1120,14 @@ async fn resolve_ambiguous_submission(
                 return;
             }
             Ok(None) => {
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    AMBIGUOUS_LOOKUP_DELAY_MS,
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_millis(AMBIGUOUS_LOOKUP_DELAY_MS))
+                    .await;
             }
             Err(e) => {
                 // Emitting either verdict now would be the guess this function exists to avoid.
                 log::error!(
                     "sodex_submit_outcome_unresolved cl_ord_id={wanted} cause={cause} \
-                     lookup_error={e} — left in its submitted state for reconciliation to settle"
+                     lookup_error={e} - left in its submitted state for reconciliation to settle"
                 );
                 return;
             }
@@ -1129,7 +1138,7 @@ async fn resolve_ambiguous_submission(
 /// Looks for one client order id across the account's open and historical orders.
 ///
 /// Both lists, because an order that was accepted and immediately filled or cancelled never
-/// appears on the open one — and concluding "absent" from the open list alone would report a
+/// appears on the open one - and concluding "absent" from the open list alone would report a
 /// completed order as rejected.
 async fn find_submitted_order(
     http: &SodexHttpClient,
@@ -1196,7 +1205,7 @@ fn report_submission(
 /// not collide. Truncated to the venue's 36-character limit from the front, keeping the
 /// timestamp, because that is the part that makes it unique.
 fn cancel_label(
-    target: &nautilus_model::identifiers::ClientOrderId,
+    target: &NautilusClientOrderId,
     ts: UnixNanos,
 ) -> anyhow::Result<VenueClientOrderId> {
     const MAX: usize = 36;
@@ -1215,7 +1224,7 @@ fn cancel_label(
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::identifiers::ClientOrderId;
+    use rstest::rstest;
 
     use super::*;
     use crate::common::enums::{OrderSide, OrderType, TimeInForce};
@@ -1233,12 +1242,11 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn a_spot_submission_carries_the_symbol_on_the_order_item() {
         // Spot puts `symbolID` on each item; perps puts it once on the request. Crossing the
         // two is what the venue rejected as a missing required field on the live testnet.
-        let Submission::Spot(request) =
-            Submission::build(&spec(), Market::Spot, 60366, 1).unwrap()
+        let Submission::Spot(request) = Submission::build(&spec(), Market::Spot, 60366, 1).unwrap()
         else {
             panic!("expected a spot submission");
         };
@@ -1249,7 +1257,7 @@ mod tests {
         assert_eq!(SpotNewOrderRequest::ACTION, "batchNewOrder");
     }
 
-    #[test]
+    #[rstest]
     fn a_perps_submission_carries_the_symbol_once_on_the_request() {
         let Submission::Perps(request) =
             Submission::build(&spec(), Market::Perps, 60366, 7).unwrap()
@@ -1264,7 +1272,7 @@ mod tests {
         assert_eq!(NewOrderRequest::ACTION, "newOrder");
     }
 
-    #[test]
+    #[rstest]
     fn a_submission_reports_the_ids_it_sent_for_alignment() {
         let submission = Submission::build(&spec(), Market::Perps, 60366, 7).unwrap();
 
@@ -1274,7 +1282,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn a_spot_cancel_names_both_itself_and_its_target() {
         // The venue reads `clOrdID` as the cancellation's own id and `origClOrdID` as the
         // order being cancelled. Sending only one leaves the request ambiguous.
@@ -1297,7 +1305,7 @@ mod tests {
         assert!(json.contains(r#""origClOrdID":"order-1""#), "{json}");
     }
 
-    #[test]
+    #[rstest]
     fn a_perps_cancel_by_venue_order_id_carries_no_client_id() {
         let label = VenueClientOrderId::parse("cancel-1").unwrap();
 
@@ -1317,22 +1325,22 @@ mod tests {
         assert!(!json.contains("clOrdID"), "{json}");
     }
 
-    #[test]
+    #[rstest]
     fn a_cancel_label_fits_the_venue_limit() {
         // Nautilus ids run to 27 characters and the timestamp adds 20 more, so an
         // unconditional concatenation would exceed the venue's 36 and be rejected.
-        let long = ClientOrderId::from("O-20260910-120000-001-002-3");
+        let long = NautilusClientOrderId::from("O-20260910-120000-001-002-3");
         let label = cancel_label(&long, UnixNanos::from(1_767_972_900_123_456_789)).unwrap();
 
         assert!(label.as_str().len() <= 36, "{}", label.as_str());
         assert!(label.as_str().ends_with("-1767972900123456789"));
     }
 
-    #[test]
+    #[rstest]
     fn two_cancels_of_one_order_get_different_labels() {
         // Reusing a label would make the second cancellation indistinguishable from the
         // first in the venue's own records.
-        let target = ClientOrderId::from("O-1");
+        let target = NautilusClientOrderId::from("O-1");
 
         let first = cancel_label(&target, UnixNanos::from(1_000_000_000)).unwrap();
         let second = cancel_label(&target, UnixNanos::from(2_000_000_000)).unwrap();
@@ -1340,11 +1348,11 @@ mod tests {
         assert_ne!(first.as_str(), second.as_str());
     }
 
-    #[test]
+    #[rstest]
     fn a_cancel_label_drops_characters_the_venue_forbids() {
         // The venue accepts only `[0-9a-zA-Z_-]`. A dot or colon in the id would otherwise
         // fail at parse time and turn a routine cancel into a rejection.
-        let target = ClientOrderId::from("O.1:2");
+        let target = NautilusClientOrderId::from("O.1:2");
 
         let label = cancel_label(&target, UnixNanos::from(1_000_000_000)).unwrap();
 
@@ -1360,6 +1368,7 @@ mod commission_tests {
         instruments::{CurrencyPair, InstrumentAny},
         types::{Currency, Price, Quantity},
     };
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -1403,22 +1412,22 @@ mod commission_tests {
         (notional * rate).round_dp(u32::from(instrument().cost_currency().precision))
     }
 
-    #[test]
+    #[rstest]
     fn a_maker_fill_is_charged_the_maker_rate() {
         // 0.001 * 40000 * 0.00035 = 0.014
         assert_eq!(commission(LiquiditySide::Maker), dec!(0.014));
     }
 
-    #[test]
+    #[rstest]
     fn a_taker_fill_is_charged_the_taker_rate() {
         // 0.001 * 40000 * 0.00065 = 0.026
         assert_eq!(commission(LiquiditySide::Taker), dec!(0.026));
     }
 
-    #[test]
+    #[rstest]
     fn an_unknown_liquidity_side_is_charged_the_larger_rate() {
         // An inferred fill on a limit order that is not post-only has no known side. Understating
-        // fees is the error that compounds into an oversized position, so the larger rate wins —
+        // fees is the error that compounds into an oversized position, so the larger rate wins -
         // and `max` stays conservative even where a maker rebate makes maker the larger one.
         assert_eq!(
             commission(LiquiditySide::NoLiquiditySide),
@@ -1427,7 +1436,7 @@ mod commission_tests {
         assert!(commission(LiquiditySide::NoLiquiditySide) >= commission(LiquiditySide::Maker));
     }
 
-    #[test]
+    #[rstest]
     fn commission_is_denominated_in_the_cost_currency() {
         // Both engines charge on notional in the quote asset, so the fee belongs in the quote
         // currency rather than the one being bought.

@@ -12,7 +12,7 @@
 //!
 //! Market-data reads are unsigned; writes carry `X-API-Key`, `X-API-Sign` and `X-API-Nonce`.
 //! Omitting `X-API-Key` tells the venue to verify against the master wallet instead of a
-//! registered key — this adapter does not use that path, since it would require the master
+//! registered key - this adapter does not use that path, since it would require the master
 //! key in a trading process.
 
 pub mod account;
@@ -37,7 +37,9 @@ pub use requests::{CancelOrderRequest, ClientOrderId, NewOrderRequest, OrderItem
 use crate::common::Market;
 
 /// Gateway host for the two networks.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(
     feature = "python",
@@ -102,10 +104,12 @@ impl Network {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::common::{CHAIN_ID_MAINNET, CHAIN_ID_TESTNET};
 
-    #[test]
+    #[rstest]
     fn market_base_uses_the_rest_path_segment_not_the_domain_name() {
         // perps signs under domain "futures" but is reached at "/perps"; conflating the two
         // yields a 404 that looks like a routing bug rather than a naming one.
@@ -116,7 +120,7 @@ mod tests {
         assert_eq!(Market::Perps.domain_name(), "futures");
     }
 
-    #[test]
+    #[rstest]
     fn network_binds_url_and_chain_id_together() {
         assert_eq!(Network::Mainnet.chain_id(), CHAIN_ID_MAINNET);
         assert_eq!(Network::Testnet.chain_id(), CHAIN_ID_TESTNET);
@@ -124,7 +128,7 @@ mod tests {
         assert!(Network::Mainnet.public_base().contains("mainnet"));
     }
 
-    #[test]
+    #[rstest]
     fn spot_and_perps_differ_only_in_the_trailing_segment() {
         let spot = Network::Mainnet.market_base(Market::Spot);
         let perps = Network::Mainnet.market_base(Market::Perps);

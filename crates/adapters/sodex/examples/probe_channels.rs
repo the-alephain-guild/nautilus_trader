@@ -3,7 +3,7 @@
 //! The candle channel is the only one this adapter implements, because it is the only one
 //! whose name and payload were documented. Order and fill streams would complete the
 //! execution client, but a channel name invented here would fail at run time in a way that
-//! reads like a credential problem — so this probe subscribes to candidate names and prints
+//! reads like a credential problem - so this probe subscribes to candidate names and prints
 //! exactly what the venue says about each.
 //!
 //! Read-only: a subscribe that is refused changes nothing, and a subscribe that is accepted
@@ -17,7 +17,7 @@
 //!   unlike `candle`, which takes one `symbol` plus an `interval`.
 //! - `accountUpdate` exists but refused all eighteen parameter shapes tried as
 //!   `invalid params`. Its selector is still unknown, which is why this adapter reports no
-//!   fills — see the crate documentation.
+//!   fills - see the crate documentation.
 //! - Everything else answered `unknown channel`, including `order`, `orders`, `fill`,
 //!   `fills`, `position`, `positions`, `depth` and `orderbook`. The venue publishes no order
 //!   book channel.
@@ -45,14 +45,56 @@ use tokio_tungstenite::tungstenite::Message;
 /// Names to try, with the shape each is asked for.
 const CANDIDATES: &[&str] = &[
     // Market data
-    "candle", "trade", "ticker", "depth", "orderbook", "books", "book", "bbo", "level2",
-    "markPrice", "indexPrice", "fundingRate", "funding", "liquidation", "openInterest",
+    "candle",
+    "trade",
+    "ticker",
+    "depth",
+    "orderbook",
+    "books",
+    "book",
+    "bbo",
+    "level2",
+    "markPrice",
+    "indexPrice",
+    "fundingRate",
+    "funding",
+    "liquidation",
+    "openInterest",
     // Account and order streams
-    "user", "userData", "userTrade", "userTrades", "userOrder", "userOrders", "private",
-    "account", "accountUpdate", "balance", "balances", "wallet", "asset", "assets",
-    "order", "orders", "openOrder", "openOrders", "orderUpdate", "orderStatus",
-    "myTrade", "myTrades", "fill", "fills", "execution", "executions", "deal", "deals",
-    "position", "positions", "positionUpdate", "margin", "notification", "activity",
+    "user",
+    "userData",
+    "userTrade",
+    "userTrades",
+    "userOrder",
+    "userOrders",
+    "private",
+    "account",
+    "accountUpdate",
+    "balance",
+    "balances",
+    "wallet",
+    "asset",
+    "assets",
+    "order",
+    "orders",
+    "openOrder",
+    "openOrders",
+    "orderUpdate",
+    "orderStatus",
+    "myTrade",
+    "myTrades",
+    "fill",
+    "fills",
+    "execution",
+    "executions",
+    "deal",
+    "deals",
+    "position",
+    "positions",
+    "positionUpdate",
+    "margin",
+    "notification",
+    "activity",
 ];
 
 #[tokio::main]

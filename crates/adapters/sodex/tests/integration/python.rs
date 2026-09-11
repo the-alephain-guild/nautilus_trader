@@ -28,7 +28,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use nautilus_common::{
     cache::Cache,
-    clock::TestClock,
+    clock::{Clock, TestClock},
     live::runner::{replace_data_event_sender, replace_exec_event_sender},
     messages::{DataEvent, ExecutionEvent},
 };
@@ -124,7 +124,10 @@ fn assert_data_factory_extracts_from_python_object(py: Python<'_>) {
     assert_eq!(sodex_config.timeout_secs, 7);
     assert_eq!(sodex_config.update_instruments_interval_mins, Some(30));
     assert_eq!(client.client_id(), ClientId::from("SODEX-DATA-EXTRACTED"));
-    assert_eq!(client.venue().map(|v| v.to_string()), Some(SODEX_SPOT.to_string()));
+    assert_eq!(
+        client.venue().map(|v| v.to_string()),
+        Some(SODEX_SPOT.to_string())
+    );
 }
 
 fn assert_exec_factory_extracts_from_python_object(py: Python<'_>) {
@@ -173,7 +176,7 @@ fn assert_exec_factory_extracts_from_python_object(py: Python<'_>) {
     assert_eq!(sodex_config.market, Market::Perps);
     assert_eq!(sodex_config.timeout_secs, 11);
     // Validated for shape at construction, because a malformed address does not make the venue
-    // fail — it makes the account reads answer with an empty account.
+    // fail - it makes the account reads answer with an empty account.
     assert_eq!(
         sodex_config.resolve_wallet_address().as_deref(),
         Ok(TEST_WALLET)
@@ -194,8 +197,7 @@ fn assert_both_engines_reachable_from_one_factory(py: Python<'_>) {
     // two registrations and this would be two keys.
     let registry = get_global_pyo3_registry();
     let cache = Rc::new(RefCell::new(Cache::default()));
-    let clock: Rc<RefCell<dyn nautilus_common::clock::Clock>> =
-        Rc::new(RefCell::new(TestClock::new()));
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
 
     let mut venues = Vec::new();
     for (market, name) in [(Market::Spot, "SODEX-SPOT"), (Market::Perps, "SODEX-PERPS")] {

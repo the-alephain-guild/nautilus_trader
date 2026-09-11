@@ -17,7 +17,7 @@
 //! [`Price`] and [`Quantity`] via `FromStr`. No binary float sits between the venue's value
 //! and the engine's fixed-point type.
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use async_trait::async_trait;
 use nautilus_common::{
@@ -28,13 +28,12 @@ use nautilus_core::{AtomicMap, UnixNanos};
 use nautilus_model::{
     currencies::CURRENCY_MAP,
     enums::CurrencyType,
-    identifiers::{InstrumentId, Symbol, Venue},
-    instruments::{Instrument, CryptoPerpetual, CurrencyPair, InstrumentAny},
+    identifiers::{ClientId, InstrumentId, Symbol, Venue},
+    instruments::{CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Money, Price, Quantity, fixed::FIXED_PRECISION},
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     common::{Market, decimal::normalize as normalize_decimal},
@@ -112,7 +111,7 @@ pub struct PerpsSymbol {
 ///
 /// # Precision is clamped, and that is safe here
 ///
-/// The venue reports coin precision as on-chain token decimals, which reach 18 — beyond
+/// The venue reports coin precision as on-chain token decimals, which reach 18 - beyond
 /// Nautilus's fixed-point maximum, where an unclamped value panics. Clamping loses nothing
 /// that matters for trading: this precision describes the currency's own denomination, while
 /// order prices and sizes take their precision from the symbol's `tickSize` and `stepSize`,
@@ -121,12 +120,12 @@ pub struct PerpsSymbol {
 ///
 /// Registering is not optional housekeeping. An unregistered currency still works as a value on
 /// the instrument, so everything looked fine until the first consumer tried to resolve one *by
-/// code* — the fill report, whose fee arrives as `{"fee": "...", "feeCoin": "vBTC"}` and has
+/// code* - the fill report, whose fee arrives as `{"fee": "...", "feeCoin": "vBTC"}` and has
 /// nothing but the code to go on. Without registration that lookup fails and the fill is dropped.
 ///
 /// `overwrite: false` so a currency the engine already defines keeps its own definition rather
-/// than being replaced by this venue's view of it. The venue's coins are distinctly named —
-/// `vBTC`, `vUSDC` — so a clash is unlikely, but a precision quietly changed under another
+/// than being replaced by this venue's view of it. The venue's coins are distinctly named -
+/// `vBTC`, `vUSDC` - so a clash is unlikely, but a precision quietly changed under another
 /// adapter would be very hard to trace back to here.
 fn resolve_currency(code: &str, _listed_precision: u8) -> Currency {
     if let Some(existing) = CURRENCY_MAP.lock().get(code) {
@@ -137,11 +136,11 @@ fn resolve_currency(code: &str, _listed_precision: u8) -> Currency {
     // those two are not the same thing and using the listing loses money.
     //
     // Observed: the symbol listing reports `quoteCoinPrecision: 6` for vUSDC, but the venue's own
-    // ledger carries more — a balance of `999.3931824565` and a fee of `0.0498075435`, both ten
+    // ledger carries more - a balance of `999.3931824565` and a fee of `0.0498075435`, both ten
     // places. Registering at six rounded that fee to `0.049808`, overstating it and leaving the
     // recorded commission unable to reconcile against the balance it came out of.
     //
-    // The listing's precision governs *orders* — what price and size the venue will accept — and
+    // The listing's precision governs *orders* - what price and size the venue will accept - and
     // that is carried separately on the instrument as `price_precision` and `size_precision`. A
     // currency's precision only bounds `Money`, which here has to hold whatever the ledger says.
     let currency = Currency::new(code, FIXED_PRECISION, 0, code, CurrencyType::Crypto);
@@ -179,7 +178,7 @@ fn optional_quantity(raw: &str) -> Option<Quantity> {
 
 /// Notional bounds are the one place a float is unavoidable: `Money` is constructed from
 /// `f64`. These are filter thresholds rather than traded values, so the rounding `Money`
-/// applies is harmless — unlike on a price or size, where it would break a lot filter.
+/// applies is harmless - unlike on a price or size, where it would break a lot filter.
 fn optional_notional(raw: &str, currency: Currency) -> Option<Money> {
     let amount = Decimal::from_str(raw).ok()?;
     (!amount.is_zero()).then(|| Money::new(amount.to_f64().unwrap_or(0.0), currency))
@@ -187,7 +186,7 @@ fn optional_notional(raw: &str, currency: Currency) -> Option<Money> {
 
 /// Parses a required decimal string, attributing failures to the field that caused them.
 ///
-/// Normalises first: the venue emits on-chain precision, which the engine's fixed-point
+/// Normalizes first: the venue emits on-chain precision, which the engine's fixed-point
 /// types reject outright.
 fn parse_price(raw: &str, field: &'static str) -> anyhow::Result<Price> {
     let normalized = normalize_decimal(raw)?;
@@ -354,8 +353,8 @@ pub async fn fetch_instruments(
 /// The loaded instrument set, shared between the clients that read it and the task that
 /// refreshes it.
 ///
-/// Reads happen on synchronous trait methods — `request_instruments`, and the precision lookup
-/// a subscription needs — while the refresh happens on a task that must `await` the venue.
+/// Reads happen on synchronous trait methods - `request_instruments`, and the precision lookup
+/// a subscription needs - while the refresh happens on a task that must `await` the venue.
 /// Holding the provider behind a lock would force those readers to block on a network call, so
 /// the provider stays on the refresh side and publishes whole snapshots here instead: readers
 /// see either the previous set or the next one, never a half-built one.
@@ -408,7 +407,7 @@ impl InstrumentCatalog {
     /// The numeric symbol id an order must carry.
     ///
     /// `None` before the instrument has been published. Callers must treat that as an error
-    /// rather than a default — submitting without it would mean guessing an id.
+    /// rather than a default - submitting without it would mean guessing an id.
     #[must_use]
     pub fn symbol_id(&self, instrument_id: &InstrumentId) -> Option<u64> {
         self.symbol_ids.get_cloned(instrument_id)
@@ -427,9 +426,9 @@ impl InstrumentCatalog {
     }
 }
 
-impl std::fmt::Debug for SodexInstrumentProvider {
+impl Debug for SodexInstrumentProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SodexInstrumentProvider")
+        f.debug_struct(stringify!(SodexInstrumentProvider))
             .field("market", &self.market)
             .field("venue", &self.venue)
             .field("loaded", &self.symbol_ids.len())
@@ -476,7 +475,7 @@ impl SodexInstrumentProvider {
 
     /// The numeric symbol id an order must carry for this instrument.
     ///
-    /// Returns `None` before the instrument has been loaded — submitting without it would
+    /// Returns `None` before the instrument has been loaded - submitting without it would
     /// mean guessing an id, so callers must treat the absence as an error rather than a
     /// default.
     #[must_use]
@@ -484,7 +483,7 @@ impl SodexInstrumentProvider {
         self.symbol_ids.get(instrument_id).copied()
     }
 
-    /// The full reverse map, for publishing into a shared catalogue.
+    /// The full reverse map, for publishing into a shared catalog.
     #[must_use]
     pub const fn symbol_ids(&self) -> &HashMap<InstrumentId, u64> {
         &self.symbol_ids
@@ -501,7 +500,6 @@ impl SodexInstrumentProvider {
     pub fn is_empty(&self) -> bool {
         self.symbol_ids.is_empty()
     }
-
 }
 
 /// Folds a spot symbol listing into a [`Listing`], skipping anything not trading.
@@ -598,6 +596,8 @@ impl InstrumentProvider for SodexInstrumentProvider {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::config::{SODEX_PERPS, SODEX_SPOT};
 
@@ -652,10 +652,11 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn spot_instrument_preserves_the_venue_tick_and_step() {
         let venue = Venue::from(SODEX_SPOT);
-        let instrument = parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
+        let instrument =
+            parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
 
         assert_eq!(instrument.price_increment.to_string(), "1");
         assert_eq!(instrument.size_increment.to_string(), "0.00001");
@@ -663,30 +664,32 @@ mod tests {
         assert_eq!(instrument.size_precision, 5);
     }
 
-    #[test]
+    #[rstest]
     fn decimal_strings_do_not_pass_through_a_float() {
         // 0.00001 has no exact binary representation; round-tripping it through f64 and back
         // is how step sizes acquire trailing noise and orders start failing lot filters.
         let venue = Venue::from(SODEX_SPOT);
-        let instrument = parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
+        let instrument =
+            parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
 
         assert_eq!(instrument.size_increment.to_string(), "0.00001");
         assert!(!instrument.size_increment.to_string().contains("9999"));
     }
 
-    #[test]
+    #[rstest]
     fn zero_bounds_map_to_unbounded_not_to_a_literal_zero() {
         // The venue documents a filter as inactive when its value is 0. Mapping that onto a
         // real maximum price of zero would reject every order.
         let venue = Venue::from(SODEX_SPOT);
-        let instrument = parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
+        let instrument =
+            parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
 
         assert!(instrument.min_price.is_none());
         assert!(instrument.max_price.is_none());
         assert!(instrument.min_quantity.is_some(), "0.00001 is a real bound");
     }
 
-    #[test]
+    #[rstest]
     fn on_chain_token_decimals_are_clamped_to_the_fixed_point_maximum() {
         // The venue reports coin precision as token decimals, which reach 18. Passing that
         // through panics inside Nautilus. Found by fetching the live symbol listing, not by
@@ -701,7 +704,7 @@ mod tests {
         assert_eq!(instrument.base_currency.precision, FIXED_PRECISION);
     }
 
-    #[test]
+    #[rstest]
     fn clamping_does_not_touch_order_precision() {
         // The clamp applies to the currency's denomination only; order price and size
         // precision come from tickSize and stepSize and must be unaffected.
@@ -717,17 +720,18 @@ mod tests {
         assert_eq!(instrument.size_increment.to_string(), "0.00001");
     }
 
-    #[test]
+    #[rstest]
     fn unknown_venue_coins_are_registered_rather_than_rejected() {
         // vBTC and vUSDC are testnet tokens absent from any standard currency table.
         let venue = Venue::from(SODEX_SPOT);
-        let instrument = parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
+        let instrument =
+            parse_spot_instrument(&spot_symbol(), venue, UnixNanos::default()).unwrap();
 
         assert_eq!(instrument.base_currency.code.as_str(), "vBTC");
         assert_eq!(instrument.quote_currency.code.as_str(), "vUSDC");
     }
 
-    #[test]
+    #[rstest]
     fn perps_settle_in_the_quote_currency_and_are_linear() {
         let venue = Venue::from(SODEX_PERPS);
         let instrument =
@@ -737,7 +741,7 @@ mod tests {
         assert!(!instrument.is_inverse);
     }
 
-    #[test]
+    #[rstest]
     fn the_same_symbol_name_on_each_engine_is_a_different_instrument() {
         // The venue split shows up here: identical names must not collide across engines.
         let spot = instrument_id_for("BTC-USD", Venue::from(SODEX_SPOT));
@@ -747,7 +751,7 @@ mod tests {
         assert_eq!(spot.symbol, perps.symbol);
     }
 
-    #[test]
+    #[rstest]
     fn halted_symbols_are_not_loaded() {
         let mut listing = Listing::default();
         let mut halted = spot_symbol();
@@ -764,7 +768,7 @@ mod tests {
         assert!(listing.instruments.is_empty());
     }
 
-    #[test]
+    #[rstest]
     fn loading_populates_the_reverse_map_for_order_submission() {
         let mut listing = Listing::default();
         ingest_spot(
@@ -783,7 +787,7 @@ mod tests {
         assert_eq!(catalog.len(), 1);
     }
 
-    #[test]
+    #[rstest]
     fn an_unloaded_instrument_has_no_symbol_id() {
         // Callers must treat this as an error: guessing an id would submit an order against
         // whatever instrument happens to hold that number.
@@ -794,7 +798,7 @@ mod tests {
         assert!(catalog.is_empty());
     }
 
-    #[test]
+    #[rstest]
     fn a_refresh_replaces_the_published_set_rather_than_adding_to_it() {
         // The venue listing is the authority, so a delisted symbol must disappear rather than
         // linger from an earlier reload. The refresh publishes whole snapshots for exactly
@@ -803,13 +807,7 @@ mod tests {
         let venue = Venue::from(SODEX_SPOT);
 
         let mut first = Listing::default();
-        ingest_spot(
-            &mut first,
-            vec![spot_symbol()],
-            venue,
-            UnixNanos::default(),
-        )
-        .unwrap();
+        ingest_spot(&mut first, vec![spot_symbol()], venue, UnixNanos::default()).unwrap();
         catalog.publish(&first);
         assert_eq!(catalog.len(), 1);
 
@@ -821,7 +819,7 @@ mod tests {
         catalog.publish(&Listing::default());
         assert!(
             catalog.is_empty(),
-            "a delisted pair must disappear from the catalogue"
+            "a delisted pair must disappear from the catalog"
         );
         let id = instrument_id_for("vBTC_vUSDC", venue);
         assert_eq!(
@@ -844,14 +842,14 @@ pub async fn load_instruments(
     market: Market,
     venue: Venue,
     catalog: &InstrumentCatalog,
-    data_sender: Option<&UnboundedSender<DataEvent>>,
+    data_sender: Option<&tokio::sync::mpsc::UnboundedSender<DataEvent>>,
 ) -> anyhow::Result<()> {
     let listing = fetch_instruments(client, market, venue).await?;
     catalog.publish(&listing);
 
     // The catalog is this client's own lookup; the engine keeps a separate cache, and anything
-    // reading an instrument through the engine — a strategy sizing an order, the portfolio, the
-    // risk engine — sees only what arrived as an event. Publishing after the catalog update keeps
+    // reading an instrument through the engine - a strategy sizing an order, the portfolio, the
+    // risk engine - sees only what arrived as an event. Publishing after the catalog update keeps
     // a consumer from observing a definition this client cannot yet resolve.
     //
     // Only the data client passes a sender. Definitions are data, and having both clients emit
@@ -866,6 +864,23 @@ pub async fn load_instruments(
     Ok(())
 }
 
+/// What one reload of the instrument listing needs.
+///
+/// Grouped because these travel together and individually say nothing: the reload is a single
+/// action, and a seven-argument spawn call made the interval - the one parameter that decides
+/// whether the task exists at all - indistinguishable from its plumbing.
+#[derive(Debug)]
+pub struct InstrumentReload {
+    pub client: std::sync::Arc<SodexHttpClient>,
+    pub market: Market,
+    pub venue: Venue,
+    pub catalog: std::sync::Arc<InstrumentCatalog>,
+    pub cancellation: tokio_util::sync::CancellationToken,
+    pub client_id: ClientId,
+    /// Only the data client supplies one; see [`load_instruments`].
+    pub data_sender: Option<tokio::sync::mpsc::UnboundedSender<DataEvent>>,
+}
+
 /// Spawns the periodic reload, or returns `None` when it is disabled.
 ///
 /// A reload failure is logged and the loop continues: the previously published listing is still
@@ -877,14 +892,17 @@ pub async fn load_instruments(
 #[must_use]
 pub fn spawn_instrument_refresh(
     interval_mins: Option<u64>,
-    client: std::sync::Arc<SodexHttpClient>,
-    market: Market,
-    venue: Venue,
-    catalog: std::sync::Arc<InstrumentCatalog>,
-    cancellation: tokio_util::sync::CancellationToken,
-    client_id: nautilus_model::identifiers::ClientId,
-    data_sender: Option<UnboundedSender<DataEvent>>,
+    reload: InstrumentReload,
 ) -> Option<tokio::task::JoinHandle<()>> {
+    let InstrumentReload {
+        client,
+        market,
+        venue,
+        catalog,
+        cancellation,
+        client_id,
+        data_sender,
+    } = reload;
     let minutes = interval_mins.filter(|minutes| *minutes > 0)?;
     let interval = std::time::Duration::from_secs(minutes.saturating_mul(60));
 
@@ -920,7 +938,6 @@ pub fn spawn_instrument_refresh(
 
 #[cfg(test)]
 mod refresh_tests {
-    use nautilus_model::identifiers::ClientId;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -939,33 +956,40 @@ mod refresh_tests {
         for interval in [None, Some(0)] {
             let task = spawn_instrument_refresh(
                 interval,
-                client(),
-                Market::Spot,
-                Venue::from(SODEX_SPOT),
-                std::sync::Arc::new(InstrumentCatalog::new()),
-                CancellationToken::new(),
-                ClientId::from("SODEX-TEST"),
-                None,
+                InstrumentReload {
+                    client: client(),
+                    market: Market::Spot,
+                    venue: Venue::from(SODEX_SPOT),
+                    catalog: std::sync::Arc::new(InstrumentCatalog::new()),
+                    cancellation: CancellationToken::new(),
+                    client_id: ClientId::from("SODEX-TEST"),
+                    data_sender: None,
+                },
             );
 
-            assert!(task.is_none(), "interval {interval:?} must not spawn a task");
+            assert!(
+                task.is_none(),
+                "interval {interval:?} must not spawn a task"
+            );
         }
     }
 
     #[tokio::test]
     async fn cancelling_stops_the_refresh_without_waiting_out_the_interval() {
         // The loop selects on the token alongside the sleep. Without that, a shutdown would
-        // block for up to a full interval — an hour, at the default.
+        // block for up to a full interval - an hour, at the default.
         let cancellation = CancellationToken::new();
         let task = spawn_instrument_refresh(
             Some(60),
-            client(),
-            Market::Spot,
-            Venue::from(SODEX_SPOT),
-            std::sync::Arc::new(InstrumentCatalog::new()),
-            cancellation.clone(),
-            ClientId::from("SODEX-TEST"),
-            None,
+            InstrumentReload {
+                client: client(),
+                market: Market::Spot,
+                venue: Venue::from(SODEX_SPOT),
+                catalog: std::sync::Arc::new(InstrumentCatalog::new()),
+                cancellation: cancellation.clone(),
+                client_id: ClientId::from("SODEX-TEST"),
+                data_sender: None,
+            },
         )
         .expect("a positive interval spawns a task");
 

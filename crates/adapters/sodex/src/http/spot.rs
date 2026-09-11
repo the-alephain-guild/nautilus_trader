@@ -13,12 +13,12 @@
 //! - **The batch endpoints live at a different path.** Spot batches go to
 //!   `/trade/orders/batch`, while the perps batch endpoint is `/trade/orders`. Spot's
 //!   `/trade/orders` is a *single-order* endpoint, so posting a batch there is rejected for
-//!   missing the top-level `symbolID`, `clOrdID`, `side`, `type` and `timeInForce` — the
+//!   missing the top-level `symbolID`, `clOrdID`, `side`, `type` and `timeInForce` - the
 //!   fields it wanted flat rather than nested. The path is therefore bound to the request
 //!   type as [`SpotNewOrderRequest::ENDPOINT`] instead of left to the caller.
 //!
-//! Spot order items also lack the perps-only fields — no modifier, stop, trigger,
-//! reduce-only or position side — since those describe positions, which spot does not have.
+//! Spot order items also lack the perps-only fields - no modifier, stop, trigger,
+//! reduce-only or position side - since those describe positions, which spot does not have.
 //!
 //! - **The action names differ too.** Spot's batch actions are `batchNewOrder` and
 //!   `batchCancelOrder`, where perps uses `newOrder` and `cancelOrder`. The action name is
@@ -28,7 +28,7 @@
 //! # Why a wrong action name reports "API key not found"
 //!
 //! The gateway recovers the signer's address from the digest and signature, then looks up an
-//! API key by that address. ECDSA recovery does not fail on a wrong digest — it returns a
+//! API key by that address. ECDSA recovery does not fail on a wrong digest - it returns a
 //! *different* address, and no key is registered for it. So a mismatched payload hash
 //! surfaces as a missing key rather than as a signature error, pointing at credentials when
 //! the credentials are fine.
@@ -153,12 +153,12 @@ pub struct SpotNewOrderRequest {
 impl SpotNewOrderRequest {
     /// Path this request must be posted to.
     ///
-    /// Not `/trade/orders` — that is spot's single-order endpoint and rejects a batch.
+    /// Not `/trade/orders` - that is spot's single-order endpoint and rejects a batch.
     pub const ENDPOINT: &'static str = "/trade/orders/batch";
 
     /// Action name for the signing payload.
     ///
-    /// `batchNewOrder`, not `newOrder` — spot's batch form is its own action. The name is
+    /// `batchNewOrder`, not `newOrder` - spot's batch form is its own action. The name is
     /// hashed into the signature, so using the perps name yields a digest the venue cannot
     /// match. See the module docs for why that surfaces as "API key not found".
     pub const ACTION: &'static str = "batchNewOrder";
@@ -288,21 +288,30 @@ impl SpotCancelOrderRequest {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn id(value: &str) -> ClientOrderId {
         ClientOrderId::parse(value).unwrap()
     }
 
-    #[test]
+    #[rstest]
     fn order_item_carries_its_own_symbol() {
         // The perps form puts symbolID on the request; putting it there for spot would drop
         // it from every item and leave the venue unable to route the order.
         let request = SpotNewOrderRequest::new(
             60366,
             vec![
-                SpotOrderItem::limit(1, id("a"), OrderSide::Buy, TimeInForce::Gtc, "40000", "0.001")
-                    .unwrap(),
+                SpotOrderItem::limit(
+                    1,
+                    id("a"),
+                    OrderSide::Buy,
+                    TimeInForce::Gtc,
+                    "40000",
+                    "0.001",
+                )
+                .unwrap(),
             ],
         )
         .unwrap();
@@ -314,7 +323,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn a_spot_batch_may_span_symbols() {
         // Consequence of the per-item symbol; a perps batch cannot do this.
         let request = SpotNewOrderRequest::new(
@@ -331,7 +340,7 @@ mod tests {
         assert!(json.contains(r#""symbolID":2"#));
     }
 
-    #[test]
+    #[rstest]
     fn cancel_distinguishes_its_own_id_from_the_target() {
         // clOrdID labels the cancellation; origClOrdID names the order. Conflating them
         // produces a request that is accepted in shape but cancels nothing.
@@ -345,7 +354,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn cancel_by_order_id_omits_the_original_client_id() {
         let cancel = SpotCancelItem::by_order_id(1, id("cancel-1"), 987);
         let json = serde_json::to_string(&cancel).unwrap();
@@ -354,7 +363,7 @@ mod tests {
         assert!(!json.contains("origClOrdID"));
     }
 
-    #[test]
+    #[rstest]
     fn cancel_must_name_exactly_one_target() {
         let both = SpotCancelItem {
             symbol_id: 1,
@@ -373,24 +382,20 @@ mod tests {
         assert_eq!(neither.validate(), Err(RequestError::CancelIdentification));
     }
 
-    #[test]
+    #[rstest]
     fn spot_items_have_no_position_fields() {
         // Spot has no positions, so reduceOnly and positionSide must not appear; sending
         // them would be a shape the venue does not expect.
-        let json = serde_json::to_string(&SpotOrderItem::market(
-            1,
-            id("m"),
-            OrderSide::Buy,
-            "0.001",
-        ))
-        .unwrap();
+        let json =
+            serde_json::to_string(&SpotOrderItem::market(1, id("m"), OrderSide::Buy, "0.001"))
+                .unwrap();
 
         assert!(!json.contains("reduceOnly"));
         assert!(!json.contains("positionSide"));
         assert!(!json.contains("modifier"));
     }
 
-    #[test]
+    #[rstest]
     fn market_orders_are_ioc() {
         let order = SpotOrderItem::market(1, id("m"), OrderSide::Buy, "0.001");
 
@@ -398,7 +403,7 @@ mod tests {
         order.validate().unwrap();
     }
 
-    #[test]
+    #[rstest]
     fn batch_bounds_are_enforced() {
         assert_eq!(
             SpotNewOrderRequest::new(1, vec![]).unwrap_err(),
@@ -409,7 +414,7 @@ mod tests {
     /// Action names are hashed into the signature, and the perps names are not
     /// interchangeable with the spot ones. Values taken from the official Go SDK
     /// (`spot/types/batch_new_order_request.go`, `perps/types/new_order_request.go`).
-    #[test]
+    #[rstest]
     fn spot_batch_actions_are_not_the_perps_action_names() {
         use crate::http::requests::{CancelOrderRequest, NewOrderRequest};
 
@@ -424,8 +429,8 @@ mod tests {
     }
 
     /// The action name is part of the hashed envelope, so swapping it changes the digest and
-    /// therefore the signature — which is why the wrong name cannot be shrugged off.
-    #[test]
+    /// therefore the signature - which is why the wrong name cannot be shrugged off.
+    #[rstest]
     fn action_name_changes_the_signing_digest() {
         use crate::signing::payload_hash;
 
@@ -441,7 +446,7 @@ mod tests {
         assert_ne!(correct, perps_name);
     }
 
-    #[test]
+    #[rstest]
     fn spot_batches_target_the_batch_path_not_the_single_order_one() {
         // Posting to /trade/orders reaches spot's single-order endpoint, which rejects the
         // batch for missing the flat fields it expects. This was a live failure, not a

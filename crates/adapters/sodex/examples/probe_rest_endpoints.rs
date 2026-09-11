@@ -2,8 +2,8 @@
 //!
 //! These three reads are what stands between this adapter and unattended running. Nautilus
 //! builds reconciliation on `generate_order_status_reports`, `generate_fill_reports` and
-//! `generate_position_status_reports`, all of which are request/response — so the account
-//! WebSocket channel is a latency optimisation, not a prerequisite. What *is* a prerequisite is
+//! `generate_position_status_reports`, all of which are request/response - so the account
+//! WebSocket channel is a latency optimization, not a prerequisite. What *is* a prerequisite is
 //! knowing the paths, and guessing them is the mistake this integration already paid for once:
 //! a wrong path produced an error that read like a credential problem.
 //!
@@ -11,7 +11,7 @@
 //!
 //! A first version of this probe sent only `GET` and concluded that almost nothing existed. Its
 //! positive control refuted that: `GET /trade/orders` also answered `404 page not found`, and
-//! that path certainly exists — orders are placed on it with `POST`. The gateway registers
+//! that path certainly exists - orders are placed on it with `POST`. The gateway registers
 //! routes per method and does not return `405`, so a `404` means "this method is not routed
 //! here" and says nothing about the path.
 //!
@@ -21,7 +21,7 @@
 //! # Why the writes here cannot write
 //!
 //! Every request is unsigned. Signed endpoints reject on the missing signature before any
-//! business logic runs, so an unsigned `POST` or `DELETE` is inert — it can only produce the
+//! business logic runs, so an unsigned `POST` or `DELETE` is inert - it can only produce the
 //! error that tells us the route exists. The candidate list is also read-shaped on purpose: no
 //! bulk-mutation path (`cancel-all`, `close-all`, `schedule-cancel`) is probed at all, because
 //! an endpoint that acts on no parameters would not be protected by an empty body.
@@ -38,8 +38,8 @@ use nautilus_sodex::{common::Market, http::Network};
 
 /// Resources to ask about under the address-parameterized account namespace.
 ///
-/// This namespace is where the lead was. One endpoint in it is already documented and working —
-/// `GET /{engine}/accounts/{address}/api-keys` — and its shape explains why a bare `/accounts`
+/// This namespace is where the lead was. One endpoint in it is already documented and working -
+/// `GET /{engine}/accounts/{address}/api-keys` - and its shape explains why a bare `/accounts`
 /// or `/accounts/balances` answers 404: the path carries the address as a segment. The earlier
 /// sweep missed it by probing the namespace without the parameter.
 const ACCOUNT_RESOURCES: &[&str] = &[
@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base = network.market_base(market);
 
     let http = HttpClient::builder().timeout_secs(20).build()?;
-    println!("probing {base} — unsigned, so no request here can act");
+    println!("probing {base} - unsigned, so no request here can act");
     println!();
 
     // path -> method -> (status, body excerpt)

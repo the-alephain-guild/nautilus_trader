@@ -5,7 +5,7 @@
 //! Nautilus and the venue both encode time-in-force as small integers, and the two
 //! encodings **collide on the wrong pairs**: `IOC` is 2 in Nautilus and 3 at the venue,
 //! while `FOK` is 3 and 2 respectively. A numeric cast would silently turn an
-//! immediate-or-cancel order into fill-or-kill and vice versa — same request shape, same
+//! immediate-or-cancel order into fill-or-kill and vice versa - same request shape, same
 //! successful submission, entirely different execution semantics.
 //!
 //! Every enum is therefore mapped by name here, never by value, and a test asserts the two
@@ -23,22 +23,24 @@
 //! # Client order ids pass through unchanged
 //!
 //! The venue constrains them to `^[0-9a-zA-Z_-]{1,36}$`. Rather than hashing or rewriting a
-//! non-conforming id — which would leave the venue, the logs and any reconciliation
-//! disagreeing about what an order is called — the conversion refuses it and says why.
+//! non-conforming id - which would leave the venue, the logs and any reconciliation
+//! disagreeing about what an order is called - the conversion refuses it and says why.
 
 use nautilus_model::{
     enums::{
-        OrderSide as NautilusSide, OrderType as NautilusType, TimeInForce as NautilusTif,
+        OrderSide as NautilusSide, OrderStatus as NautilusStatus, OrderType as NautilusType,
+        TimeInForce as NautilusTif,
     },
     events::OrderInitialized,
+    identifiers::ClientOrderId as NautilusClientOrderId,
 };
 
 use crate::{
-    common::enums::{
-        ExecutionType, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce,
+    common::enums::{ExecutionType, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce},
+    http::{
+        requests::{ClientOrderId, OrderItem, RequestError},
+        spot::SpotOrderItem,
     },
-    http::requests::{ClientOrderId, OrderItem, RequestError},
-    http::spot::SpotOrderItem,
 };
 
 /// Why a Nautilus order cannot be expressed at this venue.
@@ -71,8 +73,8 @@ pub const fn map_side(side: NautilusSide) -> OrderSide {
 
 /// The venue-shaped essentials of an order, extracted from a Nautilus event.
 ///
-/// Separating extraction from mapping keeps the semantic work — which enum becomes which,
-/// which flag combinations are legal — testable without constructing a 34-field engine
+/// Separating extraction from mapping keeps the semantic work - which enum becomes which,
+/// which flag combinations are legal - testable without constructing a 34-field engine
 /// event, and gives modify and replace a shared vocabulary later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderSpec {
@@ -97,11 +99,10 @@ impl OrderSpec {
     /// Returns [`OrderConversionError`] when the order uses a type, time-in-force or client
     /// order id the venue cannot express.
     pub fn from_initialized(init: &OrderInitialized) -> Result<Self, OrderConversionError> {
-        let order_type = map_order_type(init.order_type).ok_or_else(|| {
-            OrderConversionError::Unsupported {
+        let order_type =
+            map_order_type(init.order_type).ok_or_else(|| OrderConversionError::Unsupported {
                 what: format!("{:?} orders", init.order_type),
-            }
-        })?;
+            })?;
 
         Ok(Self {
             cl_ord_id: map_client_order_id(&init.client_order_id)?,
@@ -120,7 +121,7 @@ impl OrderSpec {
 ///
 /// The venue offers only market and limit. Stop and trailing variants exist there as order
 /// *modifiers* on perps rather than as types, so they are refused here instead of being
-/// approximated by a plain limit — which would place an order that executes immediately
+/// approximated by a plain limit - which would place an order that executes immediately
 /// instead of waiting for its trigger.
 #[must_use]
 pub const fn map_order_type(order_type: NautilusType) -> Option<OrderType> {
@@ -165,7 +166,7 @@ pub fn map_time_in_force(
 ///
 /// Returns [`OrderConversionError::ClientOrderId`] when the id violates the venue's pattern.
 pub fn map_client_order_id(
-    id: &nautilus_model::identifiers::ClientOrderId,
+    id: &NautilusClientOrderId,
 ) -> Result<ClientOrderId, OrderConversionError> {
     ClientOrderId::parse(id.as_str()).map_err(|e| OrderConversionError::ClientOrderId {
         id: id.to_string(),
@@ -257,8 +258,7 @@ pub fn to_perps_order(spec: &OrderSpec) -> Result<OrderItem, OrderConversionErro
                 }
                 OrderItem::market_buy_with_funds(cl_ord_id, spec.quantity.clone())
             } else {
-                let mut market =
-                    OrderItem::market(cl_ord_id, spec.side, spec.quantity.clone());
+                let mut market = OrderItem::market(cl_ord_id, spec.side, spec.quantity.clone());
                 if let Some(price) = &spec.price {
                     market = market.with_price_bound(price.clone());
                 }
@@ -282,9 +282,7 @@ pub fn to_perps_order(spec: &OrderSpec) -> Result<OrderItem, OrderConversionErro
 /// becomes an ordinary working order there, so the caller decides what to emit rather than
 /// having a guess made here.
 #[must_use]
-pub const fn map_order_status(
-    status: OrderStatus,
-) -> Option<nautilus_model::enums::OrderStatus> {
+pub const fn map_order_status(status: OrderStatus) -> Option<NautilusStatus> {
     use nautilus_model::enums::OrderStatus as N;
     match status {
         OrderStatus::New => Some(N::Accepted),
@@ -308,6 +306,8 @@ pub const fn is_fill(execution_type: ExecutionType) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     /// The default Nautilus client order id shape: 27 characters, inside the venue's limit.
     const DEFAULT_ID: &str = "O-19700101-000000-001-001-1";
@@ -325,17 +325,17 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn nautilus_and_venue_time_in_force_numbering_actually_disagree() {
         // The reason every mapping here is by name. If this ever stops holding, the mapping
-        // could be simplified — until then a cast silently swaps IOC and FOK.
+        // could be simplified - until then a cast silently swaps IOC and FOK.
         assert_eq!(NautilusTif::Ioc as u8, 2);
         assert_eq!(TimeInForce::Ioc.as_int(), 3);
         assert_eq!(NautilusTif::Fok as u8, 3);
         assert_eq!(TimeInForce::Fok.as_int(), 2);
     }
 
-    #[test]
+    #[rstest]
     fn ioc_maps_to_ioc_and_not_to_the_venue_value_that_shares_its_number() {
         let mapped = map_time_in_force(NautilusTif::Ioc, false).unwrap();
 
@@ -343,7 +343,7 @@ mod tests {
         assert_ne!(mapped, TimeInForce::Fok);
     }
 
-    #[test]
+    #[rstest]
     fn post_only_becomes_gtx() {
         assert_eq!(
             map_time_in_force(NautilusTif::Gtc, true).unwrap(),
@@ -351,7 +351,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn post_only_with_ioc_is_refused() {
         // Asking for "never take liquidity" and "fill immediately" at once. Dropping either
         // flag silently would change what the strategy asked for.
@@ -361,7 +361,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn unsupported_time_in_force_is_refused() {
         for tif in [NautilusTif::Fok, NautilusTif::Gtd, NautilusTif::Day] {
             assert!(
@@ -371,10 +371,10 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn stop_orders_are_refused_rather_than_flattened_to_limit() {
         // A stop treated as a plain limit would execute right away instead of waiting for
-        // its trigger — the most damaging possible silent substitution.
+        // its trigger - the most damaging possible silent substitution.
         for order_type in [
             NautilusType::StopMarket,
             NautilusType::StopLimit,
@@ -384,7 +384,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn a_limit_order_converts_with_its_price_and_id_intact() {
         let item =
             to_spot_order(&spec(OrderType::Limit, OrderSide::Buy, TimeInForce::Gtc), 1).unwrap();
@@ -396,20 +396,20 @@ mod tests {
         assert_eq!(item.time_in_force, TimeInForce::Gtc);
     }
 
-    #[test]
+    #[rstest]
     fn the_default_nautilus_client_order_id_is_accepted_unchanged() {
-        // 27 characters of [0-9A-Za-z-], inside the venue's 36-character limit — which is
+        // 27 characters of [0-9A-Za-z-], inside the venue's 36-character limit - which is
         // what makes pass-through viable instead of a hashed mapping.
-        let id = nautilus_model::identifiers::ClientOrderId::from(DEFAULT_ID);
+        let id = NautilusClientOrderId::from(DEFAULT_ID);
 
         assert_eq!(map_client_order_id(&id).unwrap().as_str(), DEFAULT_ID);
     }
 
-    #[test]
+    #[rstest]
     fn a_non_conforming_client_order_id_is_refused_not_rewritten() {
         // Rewriting would leave the venue, the logs and reconciliation disagreeing about
         // what this order is called.
-        let id = nautilus_model::identifiers::ClientOrderId::from("order:with:colons");
+        let id = NautilusClientOrderId::from("order:with:colons");
 
         assert!(matches!(
             map_client_order_id(&id),
@@ -417,7 +417,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn a_limit_order_without_a_price_is_refused() {
         let mut order = spec(OrderType::Limit, OrderSide::Buy, TimeInForce::Gtc);
         order.price = None;
@@ -428,7 +428,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn quote_quantity_requires_a_market_buy() {
         let mut sell = spec(OrderType::Market, OrderSide::Sell, TimeInForce::Ioc);
         sell.quote_quantity = true;
@@ -444,7 +444,7 @@ mod tests {
         assert!(item.quantity.is_none());
     }
 
-    #[test]
+    #[rstest]
     fn reduce_only_is_refused_on_spot_but_carried_on_perps() {
         let mut order = spec(OrderType::Market, OrderSide::Sell, TimeInForce::Ioc);
         order.reduce_only = true;
@@ -457,7 +457,7 @@ mod tests {
         assert!(to_perps_order(&order).unwrap().reduce_only);
     }
 
-    #[test]
+    #[rstest]
     fn perps_orders_use_one_way_position_side() {
         // Hedge mode is documented as unsupported for placement; anything else would be
         // rejected by the venue.
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(item.position_side, PositionSide::Both);
     }
 
-    #[test]
+    #[rstest]
     fn venue_statuses_map_onto_nautilus_equivalents() {
         use nautilus_model::enums::OrderStatus as N;
 
@@ -477,14 +477,14 @@ mod tests {
         assert_eq!(map_order_status(OrderStatus::Expired), Some(N::Expired));
     }
 
-    #[test]
+    #[rstest]
     fn triggered_has_no_direct_equivalent() {
         // Deliberately unmapped: a triggered stop becomes an ordinary working order in
         // Nautilus, and guessing which event to emit belongs to the caller.
         assert_eq!(map_order_status(OrderStatus::Triggered), None);
     }
 
-    #[test]
+    #[rstest]
     fn only_fill_execution_types_count_as_fills() {
         assert!(is_fill(ExecutionType::Filled));
         assert!(is_fill(ExecutionType::PartiallyFilled));

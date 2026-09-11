@@ -3,7 +3,7 @@
 //! # Signing and the request body differ on purpose
 //!
 //! The signature commits to `keccak256` over `{"type": …, "params": …}`, but the HTTP body
-//! carries **only the `params` object** — the venue documents this explicitly:
+//! carries **only the `params` object** - the venue documents this explicitly:
 //!
 //! > the HTTP request body contains only the params object (without the type wrapper),
 //! > using the same field order and types as the signing payload.
@@ -55,7 +55,7 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Ceiling on requests per second, as a backstop against a runaway loop.
 ///
-/// Not the venue's limit — the venue meters weight and order counts, neither of which is a
+/// Not the venue's limit - the venue meters weight and order counts, neither of which is a
 /// request rate. This only stops this client from flooding a single endpoint faster than any
 /// legitimate use would; the real budgets are enforced by
 /// [`WeightBudget`] and [`await_order_quota`].
@@ -227,7 +227,7 @@ impl SodexHttpClient {
     /// The address the venue will recover from this client's signatures.
     ///
     /// Not cosmetic: it is what proves a configured wallet address is the account this client
-    /// actually signs for, which the account reads cannot establish on their own — a wrong
+    /// actually signs for, which the account reads cannot establish on their own - a wrong
     /// address answers with an empty account rather than an error.
     ///
     /// # Errors
@@ -333,7 +333,8 @@ impl SodexHttpClient {
         &self,
         request: SignedRequest,
     ) -> Result<T, ClientError> {
-        self.send_weighted(request, DEFAULT_ENDPOINT_WEIGHT, 0).await
+        self.send_weighted(request, DEFAULT_ENDPOINT_WEIGHT, 0)
+            .await
     }
 
     /// Sends a prepared write, declaring its cost on both metered axes.
@@ -346,8 +347,8 @@ impl SodexHttpClient {
     /// # Errors
     ///
     /// Returns [`ClientError::Status`] for a non-success HTTP status, or a transport, decoding
-    /// or venue-level error. Transient failures are not retried here — see
-    /// [`Self::write_is_retryable`] for why a write whose outcome is unknown must not be
+    /// or venue-level error. Transient failures are not retried here - see
+    /// `write_is_retryable` for why a write whose outcome is unknown must not be
     /// repeated.
     pub async fn send_weighted<T: serde::de::DeserializeOwned>(
         &self,
@@ -365,8 +366,8 @@ impl SodexHttpClient {
 
     /// Sends a prepared request against an endpoint that may return no payload.
     ///
-    /// Several trading endpoints — `scheduleCancel`, `updateLeverage`, `updateMargin`,
-    /// `modifyOrder` — document "no endpoint-specific data". For those, an absent `data` is
+    /// Several trading endpoints - `scheduleCancel`, `updateLeverage`, `updateMargin`,
+    /// `modifyOrder` - document "no endpoint-specific data". For those, an absent `data` is
     /// the success case, not the missing-payload error [`send`](Self::send) reports.
     ///
     /// # Errors
@@ -495,9 +496,7 @@ impl SodexHttpClient {
             .await
     }
 
-    fn decode<T: serde::de::DeserializeOwned>(
-        response: HttpResponse,
-    ) -> Result<T, ClientError> {
+    fn decode<T: serde::de::DeserializeOwned>(response: HttpResponse) -> Result<T, ClientError> {
         let status = response.status.as_u16();
         let body = response.body;
 
@@ -523,10 +522,7 @@ impl SodexHttpClient {
         HttpClient::builder()
             .headers(HashMap::from([
                 ("Accept".to_string(), "application/json".to_string()),
-                (
-                    "User-Agent".to_string(),
-                    NAUTILUS_USER_AGENT.to_string(),
-                ),
+                ("User-Agent".to_string(), NAUTILUS_USER_AGENT.to_string()),
             ]))
             .default_quota(backstop)
             .timeout_secs(timeout_secs)
@@ -539,8 +535,8 @@ impl SodexHttpClient {
     ///
     /// A reset connection or a gateway 5xx is not a decision the venue made about the order,
     /// so giving up on the first one turns a network hiccup into a missed trade. What must
-    /// *not* be retried is anything the venue answered deliberately — a rejection, a bad
-    /// signature, an unknown symbol — because repeating those only burns the weight budget.
+    /// *not* be retried is anything the venue answered deliberately - a rejection, a bad
+    /// signature, an unknown symbol - because repeating those only burns the weight budget.
     /// [`Self::is_transient`] draws that line.
     fn build_retry() -> RetryManager<ClientError> {
         RetryManager::new(RetryConfig {
@@ -578,7 +574,7 @@ impl SodexHttpClient {
     /// on a write does not say whether the venue received it: the request may have been
     /// processed and only the response lost. Repeating it could place a second order.
     ///
-    /// The only safe repeat is a failure raised **before anything was sent** — the weight
+    /// The only safe repeat is a failure raised **before anything was sent** - the weight
     /// budget refusing to let the request out. Everything else is left to the caller, which
     /// knows whether its action is safe to repeat.
     ///
@@ -624,6 +620,8 @@ impl SodexHttpClient {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::{
         common::enums::OrderSide,
@@ -649,7 +647,7 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
+    #[rstest]
     fn body_carries_params_only_without_the_signing_envelope() {
         // The venue hashes {type, params} but expects only params on the wire. Sending the
         // envelope would fail verification with an unhelpful message.
@@ -662,12 +660,15 @@ mod tests {
         // Note the assertion is on the envelope's own keys, not on `"type"` alone: an order
         // item legitimately carries a `type` field, so a bare substring check would fail on
         // correct output.
-        assert!(!body.contains(r#""type":"newOrder""#), "envelope leaked: {body}");
+        assert!(
+            !body.contains(r#""type":"newOrder""#),
+            "envelope leaked: {body}"
+        );
         assert!(!body.contains(r#""params":"#), "envelope leaked: {body}");
         assert!(body.starts_with(r#"{"accountID":12345"#), "{body}");
     }
 
-    #[test]
+    #[rstest]
     fn body_matches_the_signed_params_byte_for_byte() {
         let request = client()
             .build_signed(Method::POST, "/trade/orders", "newOrder", &order())
@@ -677,7 +678,7 @@ mod tests {
         assert_eq!(request.body, serde_json::to_vec(&order()).unwrap());
     }
 
-    #[test]
+    #[rstest]
     fn api_key_header_carries_the_name_not_the_address() {
         // The venue lists this confusion as the most common integration error.
         let request = client()
@@ -688,7 +689,7 @@ mod tests {
         assert!(!request.headers[HEADER_API_KEY].starts_with("0x"));
     }
 
-    #[test]
+    #[rstest]
     fn signature_header_is_hex_with_the_exchange_prefix() {
         let request = client()
             .build_signed(Method::POST, "/trade/orders", "newOrder", &order())
@@ -700,7 +701,7 @@ mod tests {
         assert_eq!(signature.len(), 2 + 66 * 2);
     }
 
-    #[test]
+    #[rstest]
     fn every_request_draws_a_fresh_nonce() {
         let client = client();
 
@@ -716,7 +717,7 @@ mod tests {
         assert!(b > a, "nonces must advance: {a} then {b}");
     }
 
-    #[test]
+    #[rstest]
     fn identical_payloads_produce_different_signatures_via_the_nonce() {
         // The nonce is inside the signed struct, so replaying a body is not enough.
         let client = client();
@@ -734,7 +735,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn public_client_refuses_to_sign() {
         let public = SodexHttpClient::new_public(Network::Testnet, Market::Perps).unwrap();
 
@@ -745,7 +746,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn urls_are_scoped_to_the_configured_network_and_market() {
         assert_eq!(
             client().url_for("/trade/orders"),
@@ -753,7 +754,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn weight_budget_is_shared_across_calls() {
         let client = client();
 
@@ -764,7 +765,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn after_the_fact_weight_is_recorded_against_the_same_budget() {
         let client = client();
 
@@ -780,6 +781,8 @@ mod tests {
 
 #[cfg(test)]
 mod transport_policy_tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn limited() -> ClientError {
@@ -791,7 +794,7 @@ mod transport_policy_tests {
         })
     }
 
-    #[test]
+    #[rstest]
     fn a_read_retries_what_never_reached_a_venue_decision() {
         assert!(SodexHttpClient::read_is_retryable(&ClientError::Transport(
             "connection reset".to_string()
@@ -806,7 +809,7 @@ mod transport_policy_tests {
         }));
     }
 
-    #[test]
+    #[rstest]
     fn a_read_does_not_retry_a_decision_the_venue_made() {
         // Repeating a rejection cannot change it and burns the weight budget doing so.
         assert!(!SodexHttpClient::read_is_retryable(&ClientError::Status {
@@ -818,11 +821,11 @@ mod transport_policy_tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn a_write_does_not_retry_an_ambiguous_transport_failure() {
         // This is the whole point of splitting the predicates. A transport failure on a write
         // does not say whether the venue received it, so repeating it could place a second
-        // order — and there is no order-status query yet to find out which happened.
+        // order - and there is no order-status query yet to find out which happened.
         assert!(!SodexHttpClient::write_is_retryable(
             &ClientError::Transport("connection reset".to_string())
         ));
@@ -832,14 +835,14 @@ mod transport_policy_tests {
         }));
     }
 
-    #[test]
+    #[rstest]
     fn a_write_retries_only_a_refusal_raised_before_anything_was_sent() {
         // The weight budget rejects locally, so nothing reached the venue and the repeat is
         // provably free of side effects.
         assert!(SodexHttpClient::write_is_retryable(&limited()));
     }
 
-    #[test]
+    #[rstest]
     fn a_rate_limited_failure_carries_its_own_wait() {
         // The budget knows exactly when capacity returns; the backoff curve does not. Waking
         // early would spend another rejection, waking late would lose the slot.
@@ -853,7 +856,7 @@ mod transport_policy_tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn rate_limit_keys_ignore_the_host_and_the_market_segment() {
         // Spot and perps must share one bucket per logical endpoint: they are one venue behind
         // one IP budget, and splitting the key would let the pair double the rate.
@@ -864,7 +867,10 @@ mod transport_policy_tests {
             "https://mainnet-gw.sodex.dev/api/v1/perps/trade/orders",
         );
 
-        assert_eq!(spot, vec!["spot/trade/orders".to_string(), "spot".to_string()]);
+        assert_eq!(
+            spot,
+            vec!["spot/trade/orders".to_string(), "spot".to_string()]
+        );
         assert_eq!(
             perps,
             vec!["perps/trade/orders".to_string(), "perps".to_string()]
@@ -872,7 +878,7 @@ mod transport_policy_tests {
         assert_ne!(spot, perps);
     }
 
-    #[test]
+    #[rstest]
     fn the_configured_timeout_reaches_the_transport() {
         // It previously did not: the builder hardcoded 30 seconds and the config field was
         // dead, so a deployment asking for a shorter timeout silently got the default.

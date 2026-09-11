@@ -13,7 +13,9 @@ pub const CHAIN_ID_TESTNET: u64 = 138565;
 /// Which orderbook an action targets. Also selects the EIP-712 domain name, which is why
 /// this is not merely cosmetic: signing a perps action under the `spot` domain produces a
 /// signature the gateway will reject.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(
     feature = "python",

@@ -106,7 +106,7 @@ impl CandleParams {
 ///
 /// `trade` and `ticker` take `symbols` as an array, unlike [`CandleParams`], which takes a
 /// single `symbol` plus an interval. The venue's acknowledgement echoes one `symbol` per
-/// subscription regardless, so the request shape and the reply shape do not match — which is
+/// subscription regardless, so the request shape and the reply shape do not match - which is
 /// why acknowledgements are correlated by request id rather than by their echoed selector.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolsParams {
@@ -190,7 +190,7 @@ pub struct Trade {
 ///
 /// The venue publishes no dedicated quote channel; `a`/`A` and `b`/`B` here are the only
 /// top-of-book this adapter has, and they arrive on the ticker's own cadence rather than on
-/// every book change — the acknowledgement reports that cadence as `pushInterval`.
+/// every book change - the acknowledgement reports that cadence as `pushInterval`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Ticker {
     /// Time the venue produced this frame, milliseconds.
@@ -289,7 +289,7 @@ pub struct Candle {
     /// Whether the bar has closed.
     ///
     /// **Only `true` bars are safe to trade on.** The channel republishes the forming bar on
-    /// every block, so acting on `false` means deciding from an OHLC that can still move —
+    /// every block, so acting on `false` means deciding from an OHLC that can still move -
     /// a bar whose high, low and close are not yet final. Strategies driven by closed bars
     /// must filter on this flag; a backtest that used closed bars and a live run that did
     /// not are not comparable.
@@ -307,6 +307,8 @@ impl Candle {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     /// The venue's worked example, verbatim.
@@ -320,7 +322,7 @@ mod tests {
         }
     }"#;
 
-    #[test]
+    #[rstest]
     fn parses_the_venue_candle_example() {
         let update: WsUpdate<Candle> = serde_json::from_str(CANDLE_UPDATE).unwrap();
 
@@ -333,7 +335,7 @@ mod tests {
         assert_eq!(update.data.trade_count, 0);
     }
 
-    #[test]
+    #[rstest]
     fn lowercase_t_and_uppercase_t_are_distinct_fields() {
         // The two timestamps differ only by case. Mapping both to one field would look
         // harmless and silently mislabel every bar's open time as its update time.
@@ -343,7 +345,7 @@ mod tests {
         assert!(update.data.update_time_ms > update.data.open_time_ms);
     }
 
-    #[test]
+    #[rstest]
     fn forming_bar_is_not_final() {
         let update: WsUpdate<Candle> = serde_json::from_str(CANDLE_UPDATE).unwrap();
 
@@ -352,7 +354,7 @@ mod tests {
         assert!(!update.data.is_final());
     }
 
-    #[test]
+    #[rstest]
     fn closed_bar_is_final() {
         let raw = CANDLE_UPDATE.replace(r#""x": false"#, r#""x": true"#);
         let update: WsUpdate<Candle> = serde_json::from_str(&raw).unwrap();
@@ -360,7 +362,7 @@ mod tests {
         assert!(update.data.is_final());
     }
 
-    #[test]
+    #[rstest]
     fn prices_stay_as_strings() {
         let update: WsUpdate<Candle> = serde_json::from_str(CANDLE_UPDATE).unwrap();
 
@@ -368,10 +370,13 @@ mod tests {
         // mean a lossy numeric hop happened somewhere in between.
         assert_eq!(update.data.quote_volume, "379148.6798");
         let reserialized = serde_json::to_string(&update.data).unwrap();
-        assert!(reserialized.contains(r#""q":"379148.6798""#), "{reserialized}");
+        assert!(
+            reserialized.contains(r#""q":"379148.6798""#),
+            "{reserialized}"
+        );
     }
 
-    #[test]
+    #[rstest]
     fn subscribe_request_serializes_to_the_documented_shape() {
         let request = WsRequest {
             op: Op::Subscribe,
@@ -387,7 +392,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn request_id_is_omitted_when_absent_and_present_when_set() {
         let without = serde_json::to_string(&WsRequest {
             op: Op::Unsubscribe,
@@ -406,7 +411,7 @@ mod tests {
         assert!(with.contains(r#""id":7"#));
     }
 
-    #[test]
+    #[rstest]
     fn unsubscribe_params_match_subscribe_params_exactly() {
         // The venue identifies the feed to drop by matching the original params, so the two
         // must serialize identically. Divergence would leave a subscription alive.
@@ -416,7 +421,7 @@ mod tests {
         assert_eq!(subscribe, unsubscribe);
     }
 
-    #[test]
+    #[rstest]
     fn successful_ack_yields_the_echoed_selector() {
         let raw = r#"{
             "op":"subscribe",
@@ -427,14 +432,17 @@ mod tests {
         }"#;
         let ack: WsAck<CandleParams> = serde_json::from_str(raw).unwrap();
 
-        assert_eq!(ack.conn_id.as_deref(), Some("0xb0922dfe2b14dadb1195ea4db2b45508"));
+        assert_eq!(
+            ack.conn_id.as_deref(),
+            Some("0xb0922dfe2b14dadb1195ea4db2b45508")
+        );
         assert_eq!(
             ack.into_result().unwrap(),
             Some(CandleParams::new("BTC-USD", "1m"))
         );
     }
 
-    #[test]
+    #[rstest]
     fn failed_ack_surfaces_the_error_text() {
         let raw = r#"{"op":"subscribe","result":null,"success":false,"error":"unknown symbol","time_in":1,"time_out":2}"#;
         let ack: WsAck<CandleParams> = serde_json::from_str(raw).unwrap();
@@ -442,7 +450,7 @@ mod tests {
         assert_eq!(ack.into_result().unwrap_err(), "unknown symbol");
     }
 
-    #[test]
+    #[rstest]
     fn failure_without_message_still_reports_an_error() {
         // Defensive: success=false with a null error must not be mistaken for success.
         let raw = r#"{"op":"subscribe","result":null,"success":false,"error":null,"time_in":1,"time_out":2}"#;
@@ -451,7 +459,7 @@ mod tests {
         assert!(ack.into_result().is_err());
     }
 
-    #[test]
+    #[rstest]
     fn ping_frame_carries_no_params() {
         let json = serde_json::to_string(&Heartbeat::ping()).unwrap();
 

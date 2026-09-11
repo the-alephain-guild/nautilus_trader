@@ -5,8 +5,8 @@
 //! body through its own Go structs to verify. Reordering a field silently invalidates every
 //! signature. The declaration order mirrors the venue's schema tables exactly.
 //!
-//! Constructors enforce the venue's placement rules up front — market orders must be IOC,
-//! `funds` is market-buy only, a cancel names an order one way or the other — so an invalid
+//! Constructors enforce the venue's placement rules up front - market orders must be IOC,
+//! `funds` is market-buy only, a cancel names an order one way or the other - so an invalid
 //! combination fails locally instead of costing a round trip and a rejection.
 
 use serde::Serialize;
@@ -21,11 +21,11 @@ pub const MAX_BATCH: usize = 100;
 /// Errors raised while building a request.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RequestError {
-    #[error("client order id must match ^[0-9a-zA-Z_-]{{1,36}}$, got {0:?}")]
+    #[error("client order id must match ^[0-9a-zA-Z_-]{{1,36}}$, received {0:?}")]
     ClientOrderId(String),
-    #[error("batch must contain between 1 and {MAX_BATCH} items, got {0}")]
+    #[error("batch must contain between 1 and {MAX_BATCH} items, received {0}")]
     BatchSize(usize),
-    #[error("market orders must use IOC time in force, got {0}")]
+    #[error("market orders must use IOC time in force, received {0}")]
     MarketTimeInForce(TimeInForce),
     #[error("{0} is not accepted by the venue for order placement")]
     Unsupported(&'static str),
@@ -79,7 +79,7 @@ pub struct BuilderParams {
 
 /// One order in a batch.
 ///
-/// Prefer the constructors over building this literally — they encode the venue's rules
+/// Prefer the constructors over building this literally - they encode the venue's rules
 /// about which fields may appear together.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OrderItem {
@@ -303,7 +303,7 @@ impl NewOrderRequest {
 ///
 /// A dead-man switch: at the scheduled time the venue cancels every open order. Omitting the
 /// timestamp clears any pending schedule, which makes that form a harmless idempotent
-/// no-op — useful as a probe that exercises the full trading-domain signing path without
+/// no-op - useful as a probe that exercises the full trading-domain signing path without
 /// placing or touching an order.
 ///
 /// The venue requires a scheduled time at least 5 seconds out, and counts triggers against a
@@ -418,6 +418,8 @@ impl CancelOrderRequest {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn id(value: &str) -> ClientOrderId {
@@ -429,7 +431,7 @@ mod tests {
     /// This is the field-order contract: key order, omitted optionals, quoted decimals, and
     /// non-optional fields present at their zero value. A reordered field or a dropped
     /// `skip_serializing_if` fails here rather than as an opaque signature rejection.
-    #[test]
+    #[rstest]
     fn new_order_request_matches_the_venue_signing_example_byte_for_byte() {
         let expected = r#"{"accountID":12345,"symbolID":1,"orders":[{"clOrdID":"my-order-1","modifier":1,"side":1,"type":2,"timeInForce":3,"quantity":"0.001","reduceOnly":false,"positionSide":1}]}"#;
 
@@ -443,18 +445,18 @@ mod tests {
         assert_eq!(serde_json::to_string(&request).unwrap(), expected);
     }
 
-    #[test]
+    #[rstest]
     fn client_order_id_enforces_the_documented_pattern() {
         assert!(ClientOrderId::parse("my-order_1").is_ok());
-        assert!(ClientOrderId::parse(&"a".repeat(36)).is_ok());
+        assert!(ClientOrderId::parse("a".repeat(36)).is_ok());
 
         assert!(ClientOrderId::parse("").is_err());
-        assert!(ClientOrderId::parse(&"a".repeat(37)).is_err());
+        assert!(ClientOrderId::parse("a".repeat(37)).is_err());
         assert!(ClientOrderId::parse("BTC-USD:1").is_err(), "colon");
         assert!(ClientOrderId::parse("order 1").is_err(), "space");
     }
 
-    #[test]
+    #[rstest]
     fn market_orders_are_ioc_and_carry_no_price() {
         let order = OrderItem::market(id("m1"), OrderSide::Sell, "1.5");
 
@@ -463,15 +465,15 @@ mod tests {
         order.validate().unwrap();
     }
 
-    #[test]
+    #[rstest]
     fn limit_order_rejects_unsupported_time_in_force() {
-        let err = OrderItem::limit(id("l1"), OrderSide::Buy, TimeInForce::Fok, "100", "1")
-            .unwrap_err();
+        let err =
+            OrderItem::limit(id("l1"), OrderSide::Buy, TimeInForce::Fok, "100", "1").unwrap_err();
 
         assert_eq!(err, RequestError::Unsupported("FOK time in force"));
     }
 
-    #[test]
+    #[rstest]
     fn funds_is_refused_outside_market_buy() {
         let mut sell = OrderItem::market(id("f1"), OrderSide::Sell, "1");
         sell.quantity = None;
@@ -485,7 +487,7 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
+    #[rstest]
     fn market_order_with_non_ioc_tif_is_refused() {
         let mut order = OrderItem::market(id("m2"), OrderSide::Buy, "1");
         order.time_in_force = TimeInForce::Gtc;
@@ -496,7 +498,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn hedge_mode_position_side_is_refused() {
         let mut order = OrderItem::market(id("h1"), OrderSide::Buy, "1");
         order.position_side = PositionSide::Long;
@@ -507,7 +509,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn unsupported_trigger_types_are_refused() {
         let mut order = OrderItem::market(id("t1"), OrderSide::Buy, "1");
         order.trigger_type = Some(TriggerType::LastPrice);
@@ -521,7 +523,7 @@ mod tests {
         order.validate().unwrap();
     }
 
-    #[test]
+    #[rstest]
     fn batch_bounds_are_enforced() {
         assert_eq!(
             NewOrderRequest::new(1, 1, vec![]).unwrap_err(),
@@ -542,7 +544,7 @@ mod tests {
         assert!(NewOrderRequest::new(1, 1, exactly_max).is_ok());
     }
 
-    #[test]
+    #[rstest]
     fn client_order_ids_come_back_in_submission_order() {
         // These feed align_batch, so the order has to survive intact.
         let request = NewOrderRequest::new(
@@ -558,7 +560,7 @@ mod tests {
         assert_eq!(request.client_order_ids(), vec!["first", "second"]);
     }
 
-    #[test]
+    #[rstest]
     fn clearing_a_scheduled_cancel_omits_the_timestamp() {
         // Presence of the field is what distinguishes arming from clearing, so an
         // always-serialized `null` would arm the dead-man switch instead of clearing it.
@@ -573,10 +575,12 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn cancel_must_name_the_order_exactly_one_way() {
         CancelItem::by_order_id(1, 99).validate().unwrap();
-        CancelItem::by_client_order_id(1, id("c1")).validate().unwrap();
+        CancelItem::by_client_order_id(1, id("c1"))
+            .validate()
+            .unwrap();
 
         let both = CancelItem {
             symbol_id: 1,
@@ -593,7 +597,7 @@ mod tests {
         assert_eq!(neither.validate(), Err(RequestError::CancelIdentification));
     }
 
-    #[test]
+    #[rstest]
     fn cancel_request_omits_the_unused_identifier() {
         let request = CancelOrderRequest::new(7, vec![CancelItem::by_order_id(1, 99)]).unwrap();
         let json = serde_json::to_string(&request).unwrap();
@@ -605,7 +609,7 @@ mod tests {
         assert!(!json.contains("clOrdID"));
     }
 
-    #[test]
+    #[rstest]
     fn builder_is_omitted_unless_attached() {
         let plain =
             NewOrderRequest::new(1, 1, vec![OrderItem::market(id("b1"), OrderSide::Buy, "1")])
@@ -617,7 +621,7 @@ mod tests {
         assert!(json.contains(r#""builder":{"id":1234,"fee":10}"#), "{json}");
     }
 
-    #[test]
+    #[rstest]
     fn reduce_only_and_price_bound_compose_onto_a_market_order() {
         let order = OrderItem::market(id("r1"), OrderSide::Sell, "1")
             .reduce_only()

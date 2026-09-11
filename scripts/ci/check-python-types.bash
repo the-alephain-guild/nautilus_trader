@@ -14,5 +14,6 @@ VIRTUAL_ENV="" uv run --project "$project_dir" --no-sync python -m ty check \
   --extra-search-path "$examples_dir/live/architect_ax" \
   --extra-search-path "$examples_dir/live/interactive_brokers" \
   --extra-search-path "$examples_dir/live/interactive_brokers/notebooks" \
+  --extra-search-path "$examples_dir/live/sodex" \
   --extra-search-path "$examples_dir/other/minimal_reproducible_example" \
   "$examples_dir"

@@ -1,8 +1,8 @@
 //! Enumerates the venue's own subscription struct by provoking type errors.
 //!
 //! The account stream is the one thing standing between this adapter and unattended running:
-//! without it the execution client never learns that an order filled. The channel exists —
-//! `probe_channels` found `accountUpdate` — but eighteen guessed parameter shapes were all
+//! without it the execution client never learns that an order filled. The channel exists -
+//! `probe_channels` found `accountUpdate` - but eighteen guessed parameter shapes were all
 //! refused as `invalid params`, which says nothing about *which* parameters it wants.
 //!
 //! This asks the venue instead of guessing again. Its gateway unmarshals into Go structs and
@@ -261,12 +261,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if subsets {
         println!();
         if accepted.is_empty() {
-            println!(
-                "== no subset of SubscriptionParams selects `{channel}` =="
-            );
+            println!("== no subset of SubscriptionParams selects `{channel}` ==");
             println!(
                 "   The field set is closed, so this is not an exhausted guess list: it is proof\n   \
-                 that the selector needs something outside that struct — a different op, an\n   \
+                 that the selector needs something outside that struct - a different op, an\n   \
                  authenticated subscribe, or a field the gateway reads elsewhere."
             );
         } else {
@@ -284,8 +282,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("    {field:<16} {detail}");
         }
     }
+
     if found.is_empty() {
-        println!("  none — the technique did not work here, so nothing below means 'absent'");
+        println!("  none - the technique did not work here, so nothing below means 'absent'");
     }
     println!();
     println!("== other replies, by error text ==");

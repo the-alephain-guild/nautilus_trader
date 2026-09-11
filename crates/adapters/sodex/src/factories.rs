@@ -81,13 +81,16 @@ impl DataClientFactory for SodexDataClientFactory {
             .downcast_ref::<SodexDataClientConfig>()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "expected a SodexDataClientConfig for {}, got {config:?}",
+                    "expected a SodexDataClientConfig for {}, was {config:?}",
                     self.name()
                 )
             })?
             .clone();
 
-        Ok(Box::new(SodexDataClient::new(ClientId::from(name), config)?))
+        Ok(Box::new(SodexDataClient::new(
+            ClientId::from(name),
+            config,
+        )?))
     }
 
     fn name(&self) -> &'static str {
@@ -131,7 +134,7 @@ impl ExecutionClientFactory for SodexExecutionClientFactory {
             .downcast_ref::<SodexExecClientConfig>()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "expected a SodexExecClientConfig for {}, got {config:?}",
+                    "expected a SodexExecClientConfig for {}, was {config:?}",
                     self.name()
                 )
             })?
@@ -172,9 +175,11 @@ impl ExecutionClientFactory for SodexExecutionClientFactory {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn spot_settles_in_cash_and_perps_on_margin() {
         // Spot holds coin balances with nothing to margin; perps posts collateral. Declaring
         // the wrong one would have the engine computing account state it cannot back.
@@ -182,7 +187,7 @@ mod tests {
         assert_eq!(account_type_for(Market::Perps), AccountType::Margin);
     }
 
-    #[test]
+    #[rstest]
     fn both_factories_register_under_one_key() {
         // The engine is chosen by the config's market field, not by which factory was
         // registered, so a node wires this adapter once and gets both venues.
@@ -190,7 +195,7 @@ mod tests {
         assert_eq!(SodexExecutionClientFactory::new().name(), SODEX);
     }
 
-    #[test]
+    #[rstest]
     fn each_factory_names_the_config_it_accepts() {
         assert_eq!(
             SodexDataClientFactory::new().config_type(),

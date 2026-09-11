@@ -80,6 +80,7 @@ NETWORK_PACKAGE_FEATURES = {
     "nautilus-okx": frozenset({"transport-sockudo"}),
     "nautilus-polymarket": frozenset({"transport-sockudo"}),
     "nautilus-pyo3": frozenset({"python", "transport-sockudo"}),
+    "nautilus-sodex": frozenset(),
     "nautilus-tardis": frozenset(),
     "nautilus-testkit": frozenset(),
 }
@@ -91,6 +92,7 @@ ALLOY_PACKAGE_FEATURES = {
     "nautilus-polymarket": frozenset(
         {"contract", "provider-http", "reqwest", "reqwest-rustls-tls", "signer-local"},
     ),
+    "nautilus-sodex": frozenset({"signer-local", "sol-types"}),
 }
 
 TEST_SUPPORT_DEV_PACKAGES = frozenset(

@@ -19,12 +19,12 @@ Exercise SoDEX order submission with the built-in ExecTester strategy.
 program against ``Network.MAINNET`` would spend real funds. Start with DRY_RUN = True, which
 connects and subscribes without submitting anything.
 
-Credentials come from the environment — ``SODEX_ACCOUNT_ID``, ``SODEX_API_KEY_NAME``,
-``SODEX_API_PRIVATE_KEY`` — rather than being written here. The key must be a registered API
+Credentials come from the environment - ``SODEX_ACCOUNT_ID``, ``SODEX_API_KEY_NAME``,
+``SODEX_API_PRIVATE_KEY`` - rather than being written here. The key must be a registered API
 key, never the master wallet: the master key can authorize withdrawals and belongs offline.
 
 Reconciliation is **on**. The adapter reads the account's balances, open orders and order
-history, and Nautilus infers fills from those reports — so positions, average prices and fees do
+history, and Nautilus infers fills from those reports - so positions, average prices and fees do
 get reconciled, including orders this client did not place.
 
 One limit remains, and it is granularity rather than capability: the venue's per-fill endpoint
@@ -98,7 +98,7 @@ def main() -> None:
             enable_limit_buys=True,
             enable_limit_sells=True,
             # The venue expresses post-only as its GTX time-in-force, which the adapter maps
-            # by name rather than by value — the two numbering schemes disagree on IOC and FOK.
+            # by name rather than by value - the two numbering schemes disagree on IOC and FOK.
             use_post_only=True,
             cancel_orders_on_stop=True,
             # Works now that fills are accounted for through reconciliation, though a position

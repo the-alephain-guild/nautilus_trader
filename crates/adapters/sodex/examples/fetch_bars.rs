@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if closed.len() < bars.len() {
         println!(
-            "dropped {} still-forming bar(s) — the venue does not flag them",
+            "dropped {} still-forming bar(s) - the venue does not flag them",
             bars.len() - closed.len()
         );
     }
@@ -114,11 +114,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("read path verified: symbols, instrument, interval mapping, klines, bars");
 
-    // A sanity check the venue cannot get wrong but a mapping bug easily could.
+    // A sanity check the venue cannot get wrong but a mapping bug easily could. Reported as an
+    // error rather than asserted: this is a probe, and a named failure reads better than a panic.
     for bar in &closed {
-        assert!(bar.high >= bar.low, "high below low at {}", bar.ts_event);
-        assert!(bar.high >= bar.open && bar.high >= bar.close, "high not the max");
-        assert!(bar.low <= bar.open && bar.low <= bar.close, "low not the min");
+        let broken = if bar.high < bar.low {
+            Some("high below low")
+        } else if bar.high < bar.open || bar.high < bar.close {
+            Some("high is not the maximum")
+        } else if bar.low > bar.open || bar.low > bar.close {
+            Some("low is not the minimum")
+        } else {
+            None
+        };
+
+        if let Some(reason) = broken {
+            return Err(format!(
+                "OHLC invariant violated at {}: {reason} (o={} h={} l={} c={})",
+                bar.ts_event, bar.open, bar.high, bar.low, bar.close
+            )
+            .into());
+        }
     }
     println!("OHLC invariants hold across all {} bars", closed.len());
 

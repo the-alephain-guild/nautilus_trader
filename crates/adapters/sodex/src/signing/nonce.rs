@@ -65,7 +65,7 @@ impl NonceGenerator {
         let now = now_ms();
         // `fetch_update` hands back the value *before* the update, so the issued nonce has
         // to be recomputed from it. Returning the previous value directly would hand out a
-        // stale nonce after an idle period — outside the acceptance window, and already used.
+        // stale nonce after an idle period - outside the acceptance window, and already used.
         let previous = self
             .last
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
@@ -106,9 +106,11 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn successive_nonces_strictly_increase_within_one_millisecond() {
         // Seeding far in the future keeps the clock from advancing past the counter, which
         // is exactly the burst case: many nonces drawn inside a single millisecond.
@@ -122,7 +124,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn nonce_fast_forwards_to_wall_clock_after_idling() {
         // A generator seeded in the distant past must jump to now rather than creeping up
         // one increment at a time, otherwise it would sit outside the acceptance window.
@@ -137,7 +139,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn window_bounds_are_exclusive() {
         let t = 1_760_373_925_000_u64;
 
@@ -148,21 +150,25 @@ mod tests {
         assert!(is_within_window(t, t));
     }
 
-    #[test]
+    #[rstest]
     fn window_rejects_values_outside_the_bounds() {
         let t = 1_760_373_925_000_u64;
 
         assert!(!is_within_window(t - WINDOW_BEHIND_MS - 1, t), "too old");
-        assert!(!is_within_window(t + WINDOW_AHEAD_MS + 1, t), "too far ahead");
+        assert!(
+            !is_within_window(t + WINDOW_AHEAD_MS + 1, t),
+            "too far ahead"
+        );
     }
 
-    #[test]
+    #[rstest]
     fn concurrent_draws_never_collide() {
         use std::{sync::Arc, thread};
 
         let future = now_ms() + 60_000;
         let nonces = Arc::new(NonceGenerator::starting_at(future));
 
+        #[allow(clippy::needless_collect)] // Collecting is what starts all eight threads
         let handles: Vec<_> = (0..8)
             .map(|_| {
                 let nonces = Arc::clone(&nonces);

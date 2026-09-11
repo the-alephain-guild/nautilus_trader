@@ -5,7 +5,7 @@
 //! distinct types even though both wrap a secp256k1 key, so signing a trading action with
 //! the master wallet fails to compile rather than failing at the gateway.
 
-use std::fmt::{Debug, Formatter, Result as FmtResult};
+use std::fmt::Debug;
 
 /// Placeholder shown instead of key material in debug output.
 const REDACTED: &str = "<redacted>";
@@ -13,12 +13,12 @@ const REDACTED: &str = "<redacted>";
 /// Errors raised while constructing credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
-    #[error("private key must be 32 bytes of hex (64 hex chars, optional 0x prefix), got {0}")]
+    #[error("private key must be 32 bytes of hex (64 hex chars, optional 0x prefix), received {0}")]
     KeyLength(usize),
     #[error("private key contains non-hex characters")]
     KeyEncoding,
     #[error(
-        "API key name must match ^[0-9a-zA-Z_-]{{1,36}}$ and must not be `default`, got {0:?}"
+        "API key name must match ^[0-9a-zA-Z_-]{{1,36}}$ and must not be `default`, received {0:?}"
     )]
     KeyName(String),
 }
@@ -41,7 +41,7 @@ impl PrivateKeyHex {
 }
 
 impl Debug for PrivateKeyHex {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(REDACTED)
     }
 }
@@ -66,7 +66,7 @@ impl MasterPrivateKey {
     }
 }
 
-/// The key registered via `addAPIKey`. Signs trading actions and nothing else — it cannot
+/// The key registered via `addAPIKey`. Signs trading actions and nothing else - it cannot
 /// query account data, and it can be revoked without moving funds.
 #[derive(Clone, Debug)]
 pub struct ApiPrivateKey(PrivateKeyHex);
@@ -87,7 +87,7 @@ impl ApiPrivateKey {
 
 /// The human-readable name of a registered API key.
 ///
-/// This is what travels in the `X-API-Key` header — despite the header's name it carries
+/// This is what travels in the `X-API-Key` header - despite the header's name it carries
 /// the *name*, not the public key. Getting this wrong is listed by the venue as the most
 /// common integration mistake, so the distinction is encoded as its own type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,9 +117,11 @@ impl ApiKeyName {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn parses_key_with_and_without_prefix() {
         let bare = "2".repeat(64);
         let prefixed = format!("0x{bare}");
@@ -129,7 +131,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn rejects_wrong_length_key() {
         assert!(matches!(
             ApiPrivateKey::parse("0xdeadbeef"),
@@ -137,7 +139,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn rejects_non_hex_key() {
         let bad = "z".repeat(64);
         assert!(matches!(
@@ -146,7 +148,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn debug_output_hides_key_material() {
         let key = ApiPrivateKey::parse(&"2".repeat(64)).unwrap();
         let rendered = format!("{key:?}");
@@ -154,7 +156,7 @@ mod tests {
         assert!(!rendered.contains("22222"), "{rendered}");
     }
 
-    #[test]
+    #[rstest]
     fn rejects_reserved_and_malformed_key_names() {
         assert!(ApiKeyName::parse("default").is_err());
         assert!(ApiKeyName::parse("").is_err());

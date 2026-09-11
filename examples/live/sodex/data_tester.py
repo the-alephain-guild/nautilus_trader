@@ -16,7 +16,7 @@
 Stream SoDEX market data with the built-in DataTester actor.
 
 Connects to the SoDEX testnet and subscribes for the configured instrument, logging everything
-received. Needs no credentials — the venue serves market data unsigned — and places no orders.
+received. Needs no credentials - the venue serves market data unsigned - and places no orders.
 
 Two details are specific to this venue and worth noticing in the output:
 

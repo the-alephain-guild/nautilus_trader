@@ -7,7 +7,7 @@
 //!
 //! **This places a real order.** On testnet that is play money, but the same program against
 //! `SODEX_NETWORK=mainnet` would place a real one. The price bound below is what keeps it
-//! from filling — do not raise it toward the market to "make sure it works".
+//! from filling - do not raise it toward the market to "make sure it works".
 //!
 //! # Usage
 //!
@@ -50,7 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("mainnet") => Network::Mainnet,
         _ => Network::Testnet,
     };
-    let symbol_id: u64 = env::var("SODEX_SYMBOL_ID").unwrap_or_else(|_| "1".into()).parse()?;
+    let symbol_id: u64 = env::var("SODEX_SYMBOL_ID")
+        .unwrap_or_else(|_| "1".into())
+        .parse()?;
     let price = env::var("SODEX_LIMIT_PRICE").unwrap_or_else(|_| "40000".into());
     let quantity = env::var("SODEX_QUANTITY").unwrap_or_else(|_| "0.001".into());
 
@@ -94,11 +96,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let placed = match aligned.first() {
         Some(ack) if ack.is_success() => {
-            println!("PLACED — venue order id {:?}", ack.order_id);
+            println!("PLACED - venue order id {:?}", ack.order_id);
             ack.clone()
         }
         Some(ack) => {
-            println!("REJECTED — code {} : {:?}", ack.code, ack.error);
+            println!("REJECTED - code {} : {:?}", ack.code, ack.error);
             return Err(format!("order rejected: {:?}", ack.error).into());
         }
         None => return Err("venue returned no acknowledgement".into()),
@@ -134,22 +136,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match client.send::<Vec<OrderAck>>(signed).await {
         Ok(acks) => match acks.first() {
             Some(ack) if ack.is_success() => {
-                println!("CANCELLED — order {venue_order_id} removed");
+                println!("CANCELLED - order {venue_order_id} removed");
                 println!();
                 println!("Full order contract verified: place, acknowledge, cancel.");
             }
             Some(ack) => {
-                println!("CANCEL REJECTED — code {} : {:?}", ack.code, ack.error);
+                println!("CANCEL REJECTED - code {} : {:?}", ack.code, ack.error);
                 println!();
-                println!("!! ORDER {venue_order_id} MAY STILL BE RESTING — cancel it in the UI !!");
+                println!("!! ORDER {venue_order_id} MAY STILL BE RESTING - cancel it in the UI !!");
             }
-            None => println!("!! no cancel acknowledgement; check order {venue_order_id} in the UI !!"),
+            None => {
+                println!("!! no cancel acknowledgement; check order {venue_order_id} in the UI !!");
+            }
         },
-        Err(error) => {
-            println!("CANCEL FAILED: {error}");
+        Err(e) => {
+            println!("CANCEL FAILED: {e}");
             println!();
-            println!("!! ORDER {venue_order_id} MAY STILL BE RESTING — cancel it in the UI !!");
-            return Err(error.into());
+            println!("!! ORDER {venue_order_id} MAY STILL BE RESTING - cancel it in the UI !!");
+            return Err(e.into());
         }
     }
 

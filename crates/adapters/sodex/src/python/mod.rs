@@ -5,8 +5,8 @@
 //!
 //! Two things are registered: the classes a Python config names directly, and the extractors
 //! the node uses to turn those Python objects back into the Rust trait objects it runs. The
-//! second half is easy to forget — the classes import fine without it, and the failure only
-//! appears when the node tries to build a client and cannot recognise the factory it was
+//! second half is easy to forget - the classes import fine without it, and the failure only
+//! appears when the node tries to build a client and cannot recognize the factory it was
 //! handed.
 
 pub mod config;
@@ -122,9 +122,10 @@ pub fn sodex(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         )));
     }
 
-    if let Err(e) = registry
-        .register_config_extractor("SodexExecClientConfig".to_string(), extract_sodex_exec_config)
-    {
+    if let Err(e) = registry.register_config_extractor(
+        "SodexExecClientConfig".to_string(),
+        extract_sodex_exec_config,
+    ) {
         return Err(to_pyruntime_err(format!(
             "Failed to register SoDEX exec config extractor: {e}"
         )));
