@@ -144,8 +144,10 @@ impl BacktestEngine {
         let mut cache_config = config.cache.unwrap_or_default();
         cache_config.drop_instruments_on_reset = false;
         config.cache = Some(cache_config);
+
         let kernel = NautilusKernel::new("BacktestEngine".to_string(), config.clone())?;
         let instance_id = kernel.instance_id;
+
         #[cfg(feature = "python")]
         if let Some(controller) = config.controller.as_ref() {
             Trader::add_controller_from_importable_config(&kernel.trader, controller)?;
@@ -2066,14 +2068,14 @@ impl BacktestEngine {
         accumulator.advance_clock(test_clock, to_time_ns, set_time);
     }
 
-    fn set_all_clocks_time(clocks: &[Rc<RefCell<dyn Clock>>], ts: UnixNanos) {
+    fn set_all_clocks_time(clocks: &[Rc<RefCell<dyn Clock>>], time_ns: UnixNanos) {
         for clock in clocks {
             let mut clock_ref = clock.borrow_mut();
             let test_clock = clock_ref
                 .as_any_mut()
                 .downcast_mut::<TestClock>()
                 .expect("BacktestEngine requires TestClock");
-            test_clock.set_time(ts);
+            test_clock.set_time(time_ns);
         }
     }
 

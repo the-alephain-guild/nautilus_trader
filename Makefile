@@ -234,8 +234,8 @@ CARGO_BUILD_JOB_TARGETS := install install-debug build build-debug build-wheel p
 	cargo-test-debug cargo-test-coverage cargo-test-crate-% \
 	cargo-test-coverage-crate-% cargo-test-coverage-html \
 	cargo-test-coverage-crate-html-% cargo-miri-core cargo-miri-model \
-	cargo-miri-plugin cargo-miri cargo-ci-benches cargo-codspeed-build \
-	install-cli
+	cargo-miri-plugin cargo-miri-core-ffi cargo-miri cargo-ci-benches cargo-codspeed-build \
+	install-cli check-capnp-schemas regen-capnp
 
 # Apple ld can emit compact-unwind size warnings for large Rust binaries
 # Rust source warnings remain denied by -Dwarnings in .cargo/config.toml
@@ -324,17 +324,17 @@ install-debug: build-debug  #-- Install the package in debug mode
 .PHONY: build
 build: py-stubs  #-- Build and install the package in release mode
 	$(info $(M) Building the Python extension in release mode...)
-	$Q cd python && VIRTUAL_ENV= CARGO_TARGET_DIR=$(TARGET_DIR) uv run --no-sync maturin develop --release
+	$Q cd python && VIRTUAL_ENV= CARGO_TARGET_DIR=$(TARGET_DIR) uv run --no-sync maturin develop --release --locked
 
 .PHONY: build-debug
 build-debug: py-stubs  #-- Build and install the package in debug mode
 	$(info $(M) Building the Python extension in debug mode...)
-	$Q cd python && VIRTUAL_ENV= CARGO_TARGET_DIR=$(TARGET_DIR) uv run --no-sync maturin develop --profile $(CARGO_CI_PROFILE)
+	$Q cd python && VIRTUAL_ENV= CARGO_TARGET_DIR=$(TARGET_DIR) uv run --no-sync maturin develop --profile $(CARGO_CI_PROFILE) --locked
 
 .PHONY: build-wheel
 build-wheel: sync  #-- Build a wheel distribution in release mode
 	$(info $(M) Building the Python wheel in release mode...)
-	$Q cd python && VIRTUAL_ENV= CARGO_TARGET_DIR=$(TARGET_DIR) uv run --no-sync maturin build --release --out ../dist
+	$Q cd python && VIRTUAL_ENV= CARGO_TARGET_DIR=$(TARGET_DIR) uv run --no-sync maturin build --release --locked --out ../dist
 
 .PHONY: py-stub-input-list-force
 py-stub-input-list-force:
@@ -430,34 +430,36 @@ format:  #-- Format Rust (with nightly) and Python code
 
 .PHONY: pre-commit
 pre-commit:  #-- Run all pre-commit hooks on all files
-	prek run --all-files
+	@$(timer_start) \
+		prek run --all-files \
+	$(call timer_end,Pre-commit)
 
 # The check-code target uses CARGO_FEATURES which is controlled by the HYPERSYNC flag.
 # By default, hypersync is excluded to speed up checks. Override with: make check-code HYPERSYNC=true
 .PHONY: check-code
 check-code:  #-- Run clippy on lib/test targets and ruff --fix (use HYPERSYNC=true to include hypersync feature)
 	$(info $(M) Running code quality checks...)
-	@cargo clippy --workspace --lib --tests --features "$(CARGO_FEATURES)" --profile nextest -- -D warnings
+	@cargo clippy --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" --profile nextest -- -D warnings
 	@VIRTUAL_ENV= uv run --project python --no-sync ruff check . --config python/pyproject.toml --fix --force-exclude
 	@printf "$(GREEN)Checks passed$(RESET)\n"
 
 .PHONY: check-code-standard-precision
 check-code-standard-precision:  #-- Run clippy on lib/test targets with standard precision
 	$(info $(M) Running standard-precision code quality checks...)
-	@cargo clippy $(STANDARD_PRECISION_ARGS) --profile nextest -- -D warnings
+	@cargo clippy --locked $(STANDARD_PRECISION_ARGS) --profile nextest -- -D warnings
 	@printf "$(GREEN)Standard-precision checks passed$(RESET)\n"
 
 .PHONY: check-code-sim
 check-code-sim:  #-- Run clippy on DST simulation lib/test targets
 	$(info $(M) Running DST simulation code quality checks...)
-	@cargo clippy $(SIM_CARGO_CONFIG) $(SIM_PACKAGES) --lib --tests --features simulation --profile nextest -- -D warnings
-	@cargo clippy $(SIM_CARGO_CONFIG) $(SIM_ADAPTER_PACKAGES) --lib --tests --no-default-features --features simulation --profile nextest -- -D warnings
+	@cargo clippy --locked $(SIM_CARGO_CONFIG) $(SIM_PACKAGES) --lib --tests --features simulation --profile nextest -- -D warnings
+	@cargo clippy --locked $(SIM_CARGO_CONFIG) $(SIM_ADAPTER_PACKAGES) --lib --tests --no-default-features --features simulation --profile nextest -- -D warnings
 	@printf "$(GREEN)DST simulation checks passed$(RESET)\n"
 
 .PHONY: check-all-targets
 check-all-targets:  #-- Run clippy on all targets including bins and examples (nightly)
 	$(info $(M) Running full clippy on all targets...)
-	@cargo clippy --workspace --all-targets --features "$(CARGO_FEATURES),examples" --profile nextest -- -D warnings
+	@cargo clippy --locked --workspace --all-targets --features "$(CARGO_FEATURES),examples" --profile nextest -- -D warnings
 	@printf "$(GREEN)All-targets check passed$(RESET)\n"
 
 # Time a block of make sub-targets. Use as:
@@ -513,16 +515,16 @@ ruff:  #-- Run ruff linter with automatic fixes
 
 .PHONY: clippy
 clippy:  #-- Run clippy linter (check only, workspace lints)
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --locked --all-targets --all-features -- -D warnings
 
 .PHONY: clippy-fix
 clippy-fix:  #-- Run clippy linter with automatic fixes (workspace lints)
-	cargo clippy --fix --all-targets --all-features --allow-dirty --allow-staged -- -D warnings
+	cargo clippy --locked --fix --all-targets --all-features --allow-dirty --allow-staged -- -D warnings
 
 .PHONY: clippy-fix-nightly
 clippy-fix-nightly:  #-- Run clippy linter with the pinned nightly toolchain and automatic fixes (workspace lints + additional strictness)
 	# Work around rust-lang/rust#161495 in nightly-2026-08-23
-	cargo +$(NIGHTLY_TOOLCHAIN) clippy \
+	cargo +$(NIGHTLY_TOOLCHAIN) clippy --locked \
 		--config 'target."cfg(all())".rustflags=["-Znext-solver=coherence"]' \
 		--fix --all-targets --all-features --allow-dirty --allow-staged -- -D warnings
 
@@ -534,7 +536,7 @@ clippy-strict-audit:  #-- Report candidate strict Clippy lints without failing o
 
 .PHONY: clippy-pedantic-crate-%
 clippy-pedantic-crate-%:  #-- Audit pedantic and panic-prone lints for one crate (usage: make clippy-pedantic-crate-<crate_name>)
-	cargo clippy --all-targets --all-features -p $* -- -D warnings \
+	cargo clippy --locked --all-targets --all-features -p $* -- -D warnings \
 		-W clippy::pedantic \
 		-W clippy::todo \
 		-W clippy::unwrap_used \
@@ -625,7 +627,7 @@ RUSTDOC_EXTRA_HEAD ?=
 .PHONY: docs-rust
 docs-rust: export RUSTDOCFLAGS=--enable-index-page -Zunstable-options $(if $(RUSTDOC_EXTRA_HEAD),--html-in-header $(RUSTDOC_EXTRA_HEAD))
 docs-rust:  #-- Build Rust documentation with cargo doc
-	cargo +nightly doc --all-features --no-deps --workspace
+	cargo +nightly doc --locked --all-features --no-deps --workspace
 
 .PHONY: docsrs-check
 docsrs-check: export DOCS_RS=1
@@ -637,7 +639,7 @@ docsrs-check: check-hack-installed #-- Check documentation builds for docs.rs co
 		--features hypersync,indicators,live,node,persistence,plugin \
 		--features postgres,redis,replay,sbe,simulation,streaming,test-support \
 		--features tracing-bridge,transport-sockudo,turmoil \
-		doc --no-deps
+		doc --locked --no-deps
 
 # markdownlint-cli2 version comes from the pre-commit hook rev so both agree.
 MARKDOWNLINT_VERSION := $(shell awk '\
@@ -694,7 +696,11 @@ docs-check-links:  #-- Check for broken links in documentation (periodic audit)
 
 .PHONY: cargo-build
 cargo-build:  #-- Build Rust crates in release mode
-	cargo build --release --all-features
+	cargo build --locked --release --all-features
+
+.PHONY:
+check-cargo-cooldown:  #-- Check all resolved registry versions on demand
+	$Q bash scripts/check-cargo-cooldown.sh --all --cache "$(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(TARGET_DIR))/.cargo-cooldown.json"
 
 .PHONY: cargo-update
 cargo-update:  #-- Update Rust dependencies (versions from Cargo.toml)
@@ -702,7 +708,7 @@ cargo-update:  #-- Update Rust dependencies (versions from Cargo.toml)
 
 .PHONY: cargo-check
 cargo-check:  #-- Check Rust code without building
-	cargo check --workspace --all-features
+	cargo check --locked --workspace --all-features
 
 # Security tool checks
 .PHONY: check-deny-installed
@@ -787,7 +793,7 @@ check-hawk-installed:  #-- Verify the pinned cargo-hawk version is installed
 
 .PHONY: check-features
 check-features: check-hack-installed  #-- Verify crate feature combinations compile correctly
-	cargo hack --workspace check --each-feature --all-targets
+	cargo hack --workspace check --locked --each-feature --all-targets
 
 .PHONY: check-cbindgen-abi
 check-cbindgen-abi:  #-- Verify generated C headers preserve the public ABI names
@@ -846,6 +852,7 @@ check-dependency-features:  #-- Check dependency feature policy
 	$Q python3 -B .pre-commit-hooks/check_dependency_features.py
 
 .PHONY: test-scripts
+test-scripts: export CI = true
 test-scripts:  #-- Run repository script tests
 	$(info $(M) Running script tests...)
 	$Q bash .pre-commit-hooks/test_cargo_machete.sh
@@ -858,6 +865,7 @@ test-scripts:  #-- Run repository script tests
 	$Q bash .pre-commit-hooks/test_check_jiff_features.sh
 	$Q bash .pre-commit-hooks/test_check_logging_conventions.sh
 	$Q bash .pre-commit-hooks/test_check_pyo3_conventions.sh
+	$Q bash .pre-commit-hooks/test_check_typos.sh
 	$Q bash .pre-commit-hooks/test_check_unicode_typography.sh
 	$Q bash .pre-commit-hooks/test_check_ustr_conventions.sh
 	$Q bash scripts/ci/test-build-artifact-reuse.bash
@@ -910,10 +918,10 @@ cargo-test: check-nextest-installed
 cargo-test:  #-- Run all Rust tests (use EXTRA_FEATURES="feature1 feature2" or HYPERSYNC=true)
 ifeq ($(NEXTEST_VERBOSE),true)
 	$(info $(M) Running Rust tests with verbose output...)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 else
 	$(info $(M) Running Rust tests (showing summary and failures only)...)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 endif
 
 .PHONY: cargo-test-extras
@@ -956,7 +964,7 @@ cargo-test-doc:  #-- Run Rust doctests (examples in `///` and `//!` comments)
 	$(info $(M) Running Rust doctests...)
 	@doctest_log="$$(mktemp "$${TMPDIR:-/tmp}/nautilus-doctest.XXXXXX")"; \
 	trap 'rm -f "$$doctest_log"' EXIT; \
-	if cargo test --quiet --doc --workspace --features "$(CARGO_FEATURES)" --profile $(CARGO_CI_PROFILE) $(FAIL_FAST_FLAG) $(DOCTEST_HARNESS_ARGS) >"$$doctest_log" 2>&1; then \
+	if cargo test --locked --quiet --doc --workspace --features "$(CARGO_FEATURES)" --profile $(CARGO_CI_PROFILE) $(FAIL_FAST_FLAG) $(DOCTEST_HARNESS_ARGS) >"$$doctest_log" 2>&1; then \
 		:; \
 	else \
 		status=$$?; \
@@ -976,10 +984,10 @@ cargo-test-core-local: check-nextest-installed
 cargo-test-core-local:  #-- Run Rust tests for core crates only with direct package selection (fast local compile)
 ifeq ($(NEXTEST_VERBOSE),true)
 	$(info $(M) Running Rust tests for core crates with direct package selection...)
-	cargo nextest run $(foreach crate,$(CORE_CRATES),-p $(crate)) --lib --tests --features "$(CORE_SELECTED_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked $(foreach crate,$(CORE_CRATES),-p $(crate)) --lib --tests --features "$(CORE_SELECTED_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 else
 	$(info $(M) Running Rust tests for core crates with direct package selection (showing summary and failures only)...)
-	cargo nextest run $(foreach crate,$(CORE_CRATES),-p $(crate)) --lib --tests --features "$(CORE_SELECTED_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked $(foreach crate,$(CORE_CRATES),-p $(crate)) --lib --tests --features "$(CORE_SELECTED_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 endif
 
 .PHONY: cargo-test-core-selected
@@ -993,10 +1001,10 @@ cargo-test-core: check-nextest-installed
 cargo-test-core:  #-- Run Rust tests for core crates with workspace compilation
 ifeq ($(NEXTEST_VERBOSE),true)
 	$(info $(M) Running Rust tests for core crates...)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(CORE_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(CORE_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 else
 	$(info $(M) Running Rust tests for core crates (showing summary and failures only)...)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(CORE_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(CORE_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 endif
 
 .PHONY: cargo-test-adapters
@@ -1005,10 +1013,10 @@ cargo-test-adapters: check-nextest-installed
 cargo-test-adapters:  #-- Run Rust tests for the workspace-compiled adapter lane
 ifeq ($(NEXTEST_VERBOSE),true)
 	$(info $(M) Running Rust tests for the workspace-compiled adapter lane...)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(ADAPTER_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(ADAPTER_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 else
 	$(info $(M) Running Rust tests for the workspace-compiled adapter lane (showing summary and failures only)...)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(ADAPTER_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(ADAPTER_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 endif
 
 # DST simulation smoke test. Nextest compiles every selected lib/test target
@@ -1028,44 +1036,44 @@ cargo-test-sim: export RUST_BACKTRACE=1
 cargo-test-sim: check-nextest-installed
 cargo-test-sim:  #-- Run DST simulation smoke tests (cfg madsim + simulation feature)
 	$(info $(M) Running in-scope DST tests under simulation...)
-	cargo nextest run $(SIM_CARGO_CONFIG) $(SIM_PACKAGES) --lib --tests --features simulation -E '$(SIM_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked $(SIM_CARGO_CONFIG) $(SIM_PACKAGES) --lib --tests --features simulation -E '$(SIM_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 	$(info $(M) Running precision-sensitive DST tests under simulation + high-precision...)
-	cargo nextest run $(SIM_CARGO_CONFIG) $(SIM_HIGH_PRECISION_PACKAGES) --lib --tests --features "simulation,high-precision" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked $(SIM_CARGO_CONFIG) $(SIM_HIGH_PRECISION_PACKAGES) --lib --tests --features "simulation,high-precision" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-core-debug
 cargo-test-core-debug: export RUST_BACKTRACE=1
 cargo-test-core-debug: check-nextest-installed
 cargo-test-core-debug:  #-- Run Rust tests for core crates (debug profile)
-	cargo nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(CORE_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" -E '$(CORE_FILTERSET)' $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-core-local-debug
 cargo-test-core-local-debug: export RUST_BACKTRACE=1
 cargo-test-core-local-debug: check-nextest-installed
 cargo-test-core-local-debug:  #-- Run Rust tests for core crates with direct package selection (debug profile)
-	cargo nextest run $(foreach crate,$(CORE_CRATES),-p $(crate)) --lib --tests --features "$(CORE_SELECTED_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked $(foreach crate,$(CORE_CRATES),-p $(crate)) --lib --tests --features "$(CORE_SELECTED_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-lib
 cargo-test-lib: export RUST_BACKTRACE=1
 cargo-test-lib: check-nextest-installed
 cargo-test-lib:  #-- Run Rust library tests only with high precision
-	cargo nextest run --lib --workspace --no-default-features --features "$(BASE_FEATURES),test-support" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --lib --workspace --no-default-features --features "$(BASE_FEATURES),test-support" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-standard-precision
 cargo-test-standard-precision: export RUST_BACKTRACE=1
 cargo-test-standard-precision: check-nextest-installed
 cargo-test-standard-precision:  #-- Run Rust tests with standard precision (debug profile)
-	cargo nextest run $(STANDARD_PRECISION_ARGS) $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked $(STANDARD_PRECISION_ARGS) $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-debug
 cargo-test-debug: export RUST_BACKTRACE=1
 cargo-test-debug: check-nextest-installed
 cargo-test-debug:  #-- Run Rust tests with high precision (debug profile)
-	cargo nextest run --workspace --lib --tests --features "$(BASE_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --workspace --lib --tests --features "$(BASE_FEATURES)" $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-coverage
 cargo-test-coverage: check-nextest-installed check-llvm-cov-installed
 cargo-test-coverage:  #-- Run Rust tests with coverage reporting
-	cargo llvm-cov nextest run --workspace --lib --tests --features "$(CARGO_FEATURES)"
+	cargo llvm-cov nextest run --locked --workspace --lib --tests --features "$(CARGO_FEATURES)"
 
 # -----------------------------------------------------------------------------
 # Library tests for a single crate
@@ -1084,24 +1092,24 @@ cargo-test-coverage:  #-- Run Rust tests with coverage reporting
 cargo-test-crate-%: export RUST_BACKTRACE=1
 cargo-test-crate-%: check-nextest-installed
 cargo-test-crate-%:  #-- Run Rust tests for a specific crate (usage: make cargo-test-crate-<crate_name>)
-	cargo nextest run --lib $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) -p $* --features "$$(./scripts/crate-test-features.sh $*)" $(NEXTEST_OUTPUT_ARGS)
+	cargo nextest run --locked --lib $(FAIL_FAST_FLAG) --profile $(NEXTEST_PROFILE) --cargo-profile $(CARGO_CI_PROFILE) -p $* --features "$$(./scripts/crate-test-features.sh $*)" $(NEXTEST_OUTPUT_ARGS)
 
 .PHONY: cargo-test-coverage-crate-%
 cargo-test-coverage-crate-%: export RUST_BACKTRACE=1
 cargo-test-coverage-crate-%: check-nextest-installed check-llvm-cov-installed
 cargo-test-coverage-crate-%:  #-- Run Rust tests with coverage reporting for a specific crate (usage: make cargo-test-coverage-crate-<crate_name>)
-	cargo llvm-cov nextest --lib $(FAIL_FAST_FLAG) --cargo-profile nextest -p $* $(if $(FEATURES),--features "$(FEATURES)")
+	cargo llvm-cov nextest --locked --lib $(FAIL_FAST_FLAG) --cargo-profile nextest -p $* $(if $(FEATURES),--features "$(FEATURES)")
 
 .PHONY: cargo-test-coverage-html
 cargo-test-coverage-html: check-nextest-installed check-llvm-cov-installed
 cargo-test-coverage-html:  #-- Run Rust tests with HTML coverage report (opens in browser)
-	cargo llvm-cov nextest --workspace --lib --tests --features "$(CARGO_FEATURES)" --html --open
+	cargo llvm-cov nextest --locked --workspace --lib --tests --features "$(CARGO_FEATURES)" --html --open
 
 .PHONY: cargo-test-coverage-crate-html-%
 cargo-test-coverage-crate-html-%: export RUST_BACKTRACE=1
 cargo-test-coverage-crate-html-%: check-nextest-installed check-llvm-cov-installed
 cargo-test-coverage-crate-html-%:  #-- Run coverage for specific crate with HTML report (usage: make cargo-test-coverage-crate-html-<crate_name>)
-	cargo llvm-cov nextest --lib $(FAIL_FAST_FLAG) --cargo-profile nextest -p $* $(if $(FEATURES),--features "$(FEATURES)") --html --open
+	cargo llvm-cov nextest --locked --lib $(FAIL_FAST_FLAG) --cargo-profile nextest -p $* $(if $(FEATURES),--features "$(FEATURES)") --html --open
 
 # -----------------------------------------------------------------------------
 # Miri (UB detection)
@@ -1180,18 +1188,18 @@ cargo-miri-core: export PROPTEST_CASES=$(MIRI_PROPTEST_CASES)
 cargo-miri-core: check-miri-installed check-nextest-installed
 cargo-miri-core:  #-- Run nautilus-core library tests under Miri to detect UB
 	$(info $(M) Running nautilus-core tests under Miri with strict provenance (filter: $(MIRI_CORE_FILTER))...)
-	MIRIFLAGS="$(MIRI_FLAGS)" cargo +$(MIRI_TOOLCHAIN) miri nextest run -p nautilus-core --no-default-features --lib $(MIRI_CORE_FILTER)
+	MIRIFLAGS="$(MIRI_FLAGS)" cargo +$(MIRI_TOOLCHAIN) miri nextest run --locked -p nautilus-core --no-default-features --lib $(MIRI_CORE_FILTER)
 	$(info $(M) Running nautilus-core collections tests under Miri with permissive provenance (filter: $(MIRI_CORE_ARC_SWAP_FILTER))...)
-	MIRIFLAGS="$(MIRI_CORE_ARC_SWAP_FLAGS)" cargo +$(MIRI_TOOLCHAIN) miri nextest run -p nautilus-core --no-default-features --lib $(MIRI_CORE_ARC_SWAP_FILTER)
+	MIRIFLAGS="$(MIRI_CORE_ARC_SWAP_FLAGS)" cargo +$(MIRI_TOOLCHAIN) miri nextest run --locked -p nautilus-core --no-default-features --lib $(MIRI_CORE_ARC_SWAP_FILTER)
 	$(info $(M) Running nautilus-core CVec FFI tests under Miri (filter: $(MIRI_CORE_FFI_FILTER))...)
-	MIRIFLAGS="$(MIRI_FLAGS)" cargo +$(MIRI_TOOLCHAIN) miri test -p nautilus-core --lib --features ffi $(MIRI_CORE_FFI_FILTER)
+	MIRIFLAGS="$(MIRI_FLAGS)" cargo +$(MIRI_TOOLCHAIN) miri test --locked -p nautilus-core --lib --features ffi $(MIRI_CORE_FFI_FILTER)
 
 .PHONY: cargo-miri-core-ffi
 cargo-miri-core-ffi: export RUST_BACKTRACE=1
 cargo-miri-core-ffi: export MIRIFLAGS=$(MIRI_FLAGS)
 cargo-miri-core-ffi: check-miri-installed
 cargo-miri-core-ffi:  #-- Run CVec FFI tests under Miri
-	cargo +$(MIRI_TOOLCHAIN) miri test -p nautilus-core --lib --features ffi $(MIRI_CORE_FFI_FILTER)
+	cargo +$(MIRI_TOOLCHAIN) miri test --locked -p nautilus-core --lib --features ffi $(MIRI_CORE_FFI_FILTER)
 
 .PHONY: cargo-miri-model
 cargo-miri-model: export RUST_BACKTRACE=1
@@ -1200,7 +1208,7 @@ cargo-miri-model: export PROPTEST_CASES=$(MIRI_PROPTEST_CASES)
 cargo-miri-model: check-miri-installed check-nextest-installed
 cargo-miri-model:  #-- Run nautilus-model library tests under Miri to detect UB
 	$(info $(M) Running nautilus-model tests under Miri (filter: $(MIRI_MODEL_FILTER))...)
-	cargo +$(MIRI_TOOLCHAIN) miri nextest run -p nautilus-model --no-default-features --lib $(MIRI_MODEL_FILTER)
+	cargo +$(MIRI_TOOLCHAIN) miri nextest run --locked -p nautilus-model --no-default-features --lib $(MIRI_MODEL_FILTER)
 
 .PHONY: cargo-miri-plugin
 cargo-miri-plugin: export RUST_BACKTRACE=1
@@ -1209,7 +1217,7 @@ cargo-miri-plugin: check-miri-installed check-nextest-installed
 cargo-miri-plugin:  #-- Run nautilus-plugin boundary and manifest tests under Miri
 	$(info $(M) Running nautilus-plugin library tests under Miri (filter: $(MIRI_PLUGIN_FILTER))...)
 	MIRIFLAGS="$(MIRI_FLAGS)" \
-		cargo +$(MIRI_TOOLCHAIN) miri nextest run \
+		cargo +$(MIRI_TOOLCHAIN) miri nextest run --locked \
 		-p nautilus-plugin \
 		--no-default-features \
 		--lib \
@@ -1217,14 +1225,14 @@ cargo-miri-plugin:  #-- Run nautilus-plugin boundary and manifest tests under Mi
 	$(info $(M) Running nautilus-plugin panicking payload tests under Miri (filter: $(MIRI_PLUGIN_PANIC_FILTER))...)
 	# Nextest isolates each test; run the logger child directly because Miri cannot spawn it
 	NAUTILUS_TEST_PANIC_LOGGER_CHILD=1 MIRIFLAGS="$(MIRI_PLUGIN_PANIC_FLAGS)" \
-		cargo +$(MIRI_TOOLCHAIN) miri nextest run \
+		cargo +$(MIRI_TOOLCHAIN) miri nextest run --locked \
 		-p nautilus-plugin \
 		--no-default-features \
 		--lib \
 		$(MIRI_PLUGIN_PANIC_FILTER)
 	$(info $(M) Running nautilus-plugin manifest tests under Miri (filter: $(MIRI_PLUGIN_MANIFEST_FILTER))...)
 	MIRIFLAGS="$(MIRI_PLUGIN_MANIFEST_FLAGS)" \
-		cargo +$(MIRI_TOOLCHAIN) miri nextest run \
+		cargo +$(MIRI_TOOLCHAIN) miri nextest run --locked \
 		-p nautilus-plugin \
 		--no-default-features \
 		--lib \
@@ -1269,7 +1277,7 @@ CODSPEED_BENCH_ARGS := $(addprefix --package ,$(CODSPEED_BENCH_CRATES)) \
 cargo-ci-benches:  #-- Run Rust benches for the crates included in the CI performance workflow
 	@for crate in $(CI_BENCH_CRATES); do \
 	  echo "Running benches for $$crate"; \
-	  cargo bench -p $$crate --profile bench --benches --no-fail-fast; \
+	  cargo bench --locked -p $$crate --profile bench --benches --no-fail-fast; \
 	done
 
 .PHONY: cargo-codspeed-build

@@ -63,8 +63,6 @@ use nautilus_execution::{
 };
 #[cfg(feature = "node")]
 use nautilus_model::position::PositionReplayEvent;
-#[cfg(feature = "node")]
-use nautilus_model::types::{money::MoneyRaw, quantity::QuantityRaw};
 use nautilus_model::{
     enums::{LiquiditySide, OmsType, OrderSide, OrderStatus, OrderType, TimeInForce},
     events::{OrderCanceled, OrderEventAny, OrderFilled, OrderInitialized},
@@ -705,6 +703,7 @@ impl ExecutionManager {
             .fill_reports()
             .values()
             .flatten()
+            .filter(|fill| !fill.last_qty.is_zero())
             .map(|fill| (fill.account_id, fill.instrument_id, fill.trade_id))
             .collect();
         let (adjusted_order_reports, adjusted_fill_reports) =
@@ -1195,7 +1194,7 @@ impl ExecutionManager {
                 .fill_reports()
                 .values()
                 .flatten()
-                .filter(|f| f.venue_position_id.is_none())
+                .filter(|f| !f.last_qty.is_zero() && f.venue_position_id.is_none())
                 .map(|f| f.instrument_id)
                 .chain(
                     mass_status
@@ -2979,8 +2978,8 @@ impl ExecutionManager {
             None,
         );
         let mut matched = false;
-        let mut quantity_raw: QuantityRaw = 0;
-        let mut commission_raw: MoneyRaw = 0;
+        let mut quantity = Quantity::zero(report.last_qty.precision);
+        let mut commission = Money::zero(report.commission.currency);
 
         for position in positions {
             if report
@@ -3017,20 +3016,21 @@ impl ExecutionManager {
                 if fill_commission.currency != report.commission.currency {
                     return false;
                 }
-                let Some(next_quantity_raw) = quantity_raw.checked_add(fill.last_qty.raw) else {
+
+                let Some(next_quantity) = quantity.checked_add(fill.last_qty) else {
                     return false;
                 };
-                let Some(next_commission_raw) = commission_raw.checked_add(fill_commission.raw)
-                else {
+
+                let Some(next_commission) = commission.checked_add(fill_commission) else {
                     return false;
                 };
                 matched = true;
-                quantity_raw = next_quantity_raw;
-                commission_raw = next_commission_raw;
+                quantity = next_quantity;
+                commission = next_commission;
             }
         }
 
-        matched && quantity_raw == report.last_qty.raw && commission_raw == report.commission.raw
+        matched && quantity == report.last_qty && commission == report.commission
     }
 
     fn resolve_position_report_client_coverage(
@@ -5288,6 +5288,19 @@ impl ExecutionManager {
             mass_status.order_reports();
         let mut final_fills: IndexMap<VenueOrderId, Vec<FillReport>> = mass_status.fill_reports();
 
+        final_fills.retain(|_, fills| {
+            fills.retain(|fill| {
+                if fill.last_qty.is_zero() {
+                    log::warn!("Skipping zero-quantity fill report: {fill}");
+                    return false;
+                }
+
+                true
+            });
+
+            !fills.is_empty()
+        });
+
         if mass_status.lookback_start().is_some() {
             return (final_orders, final_fills);
         }
@@ -5454,6 +5467,10 @@ impl ExecutionManager {
     }
 
     fn is_fill_applied(&self, fill: &OrderFilled, fill_key: FillKey) -> bool {
+        if fill.last_qty.is_zero() {
+            return false;
+        }
+
         self.get_order(fill.client_order_id)
             .or_else(|| self.get_order_by_venue_order_id(fill.venue_order_id))
             .is_some_and(|order| {
@@ -5470,6 +5487,11 @@ impl ExecutionManager {
         instrument: &InstrumentAny,
         pending_fill_keys: &IndexSet<FillKey>,
     ) -> Option<(OrderEventAny, FillKey)> {
+        if fill.last_qty.is_zero() {
+            log::warn!("Skipping zero-quantity fill report: {fill}");
+            return None;
+        }
+
         let fill_key = (fill.account_id, fill.instrument_id, fill.trade_id);
         if self.processed_fills.contains_key(&fill_key) || pending_fill_keys.contains(&fill_key) {
             return None;

@@ -101,7 +101,9 @@ pub struct Position {
     pub realized_pnl: Option<Money>,
     #[serde(with = "nautilus_core::serialization::sorted_hashset")]
     pub trade_ids: AHashSet<TradeId>,
+    /// Total buy quantity in the current position episode.
     pub buy_qty: Quantity,
+    /// Total sell quantity in the current position episode.
     pub sell_qty: Quantity,
     pub commissions: IndexMap<Currency, Money>,
 }
@@ -554,12 +556,21 @@ impl Position {
         let last_px = fill.last_px.as_f64();
         let last_qty = fill.last_qty.as_f64();
         let last_qty_object = fill.last_qty;
+        let was_short = self.signed_qty < 0.0;
+        let is_reversal = was_short && last_qty_object > self.quantity;
+        let closing_qty_object = if is_reversal {
+            self.quantity
+        } else {
+            last_qty_object
+        };
+        let opening_qty_object = last_qty_object - closing_qty_object;
+        let closing_qty = closing_qty_object.as_f64();
 
         if self.signed_qty > 0.0 {
             self.avg_px_open = self.calculate_avg_px_open_px(last_px, last_qty);
-        } else if self.signed_qty < 0.0 {
+        } else if was_short {
             // Closing short position
-            let avg_px_close = self.calculate_avg_px_close_px(last_px, last_qty);
+            let avg_px_close = self.calculate_avg_px_close_px(last_px, closing_qty);
             self.avg_px_close = Some(avg_px_close);
             self.realized_return = self
                 .calculate_return(self.avg_px_open, avg_px_close)
@@ -568,7 +579,7 @@ impl Position {
                     0.0
                 });
             realized_pnl += self
-                .calculate_pnl_raw(self.avg_px_open, last_px, last_qty)
+                .calculate_pnl_raw(self.avg_px_open, last_px, closing_qty)
                 .unwrap_or_else(|e| {
                     log::error!("Error calculating PnL: {e}");
                     0.0
@@ -581,13 +592,16 @@ impl Position {
             self.settlement_currency,
         ));
 
-        let was_short = self.signed_qty < 0.0;
         self.signed_qty += last_qty;
         self.buy_qty = self.buy_qty + last_qty_object;
 
-        // Position reversed from short to long
-        if was_short && last_qty_object > self.quantity {
+        // Start a new accounting episode after a short-to-long reversal
+        if is_reversal {
             self.avg_px_open = last_px;
+            self.avg_px_close = None;
+            self.realized_return = 0.0;
+            self.buy_qty = opening_qty_object;
+            self.sell_qty = Quantity::zero(self.size_precision);
         }
     }
 
@@ -606,12 +620,21 @@ impl Position {
         let last_px = fill.last_px.as_f64();
         let last_qty = fill.last_qty.as_f64();
         let last_qty_object = fill.last_qty;
+        let was_long = self.signed_qty > 0.0;
+        let is_reversal = was_long && last_qty_object > self.quantity;
+        let closing_qty_object = if is_reversal {
+            self.quantity
+        } else {
+            last_qty_object
+        };
+        let opening_qty_object = last_qty_object - closing_qty_object;
+        let closing_qty = closing_qty_object.as_f64();
 
         if self.signed_qty < 0.0 {
             self.avg_px_open = self.calculate_avg_px_open_px(last_px, last_qty);
-        } else if self.signed_qty > 0.0 {
+        } else if was_long {
             // Closing long position
-            let avg_px_close = self.calculate_avg_px_close_px(last_px, last_qty);
+            let avg_px_close = self.calculate_avg_px_close_px(last_px, closing_qty);
             self.avg_px_close = Some(avg_px_close);
             self.realized_return = self
                 .calculate_return(self.avg_px_open, avg_px_close)
@@ -620,7 +643,7 @@ impl Position {
                     0.0
                 });
             realized_pnl += self
-                .calculate_pnl_raw(self.avg_px_open, last_px, last_qty)
+                .calculate_pnl_raw(self.avg_px_open, last_px, closing_qty)
                 .unwrap_or_else(|e| {
                     log::error!("Error calculating PnL: {e}");
                     0.0
@@ -633,13 +656,16 @@ impl Position {
             self.settlement_currency,
         ));
 
-        let was_long = self.signed_qty > 0.0;
         self.signed_qty -= last_qty;
         self.sell_qty = self.sell_qty + last_qty_object;
 
-        // Position reversed from long to short
-        if was_long && last_qty_object > self.quantity {
+        // Start a new accounting episode after a long-to-short reversal
+        if is_reversal {
             self.avg_px_open = last_px;
+            self.avg_px_close = None;
+            self.realized_return = 0.0;
+            self.buy_qty = Quantity::zero(self.size_precision);
+            self.sell_qty = opening_qty_object;
         }
     }
 
@@ -732,15 +758,17 @@ impl Position {
     ///
     /// # Errors
     ///
-    /// Returns an error when the allocation is stale, duplicated, or exceeds known fragments.
+    /// Returns an error when the allocation is stale, duplicated, exceeds known fragments,
+    /// or has a commission currency that differs from those fragments.
     pub fn apply_fill_void(
         &mut self,
         event: OrderFillVoided,
         voided_qty: Quantity,
         commission_voided: Option<Money>,
     ) -> anyhow::Result<Option<Money>> {
-        let fragment_qty = self
-            .fill_fragments(event.client_order_id, event.trade_id)
+        let fragments = self.fill_fragments(event.client_order_id, event.trade_id);
+
+        let fragment_qty = fragments
             .iter()
             .fold(Quantity::zero(self.size_precision), |total, fill| {
                 total + fill.last_qty
@@ -750,6 +778,16 @@ impl Position {
             "position fill void exceeds known fragments for {}",
             event.trade_id,
         );
+
+        if let Some(commission_voided) = commission_voided {
+            for commission in fragments.iter().filter_map(|fill| fill.commission) {
+                anyhow::ensure!(
+                    commission.currency == commission_voided.currency,
+                    "position commission currency differs for fill {}",
+                    event.trade_id,
+                );
+            }
+        }
 
         if let Some(previous) = self.fill_voids.iter().rev().find(|record| {
             record.event.client_order_id == event.client_order_id
@@ -828,9 +866,14 @@ impl Position {
 
                 if let (Some(remaining), Some(commission)) = (remaining_commission, fill.commission)
                 {
-                    let removed_raw = remaining.raw.abs().min(commission.raw.abs());
-                    let removed =
-                        Money::from_raw(removed_raw * remaining.raw.signum(), remaining.currency);
+                    let magnitude = remaining.abs().min(commission.abs());
+
+                    let removed = if remaining.is_negative() {
+                        -magnitude
+                    } else {
+                        magnitude
+                    };
+
                     commission_removed.insert(index, removed);
                     let next = remaining - removed;
                     remaining_commission = (!next.is_zero()).then_some(next);
@@ -2758,6 +2801,36 @@ mod tests {
     }
 
     #[rstest]
+    fn test_apply_fill_void_rejects_currency_mismatch_without_mutation(audusd_sim: CurrencyPair) {
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+        let fill = OrderFilledSpec::builder()
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-VOID-CURRENCY"))
+            .trade_id(TradeId::from("T-VOID-CURRENCY"))
+            .order_side(OrderSide::Buy)
+            .last_qty(Quantity::from(10))
+            .last_px(Price::from("1.00000"))
+            .currency(Currency::USD())
+            .position_id(PositionId::from("P-VOID-CURRENCY"))
+            .commission(Money::from("1.00 USD"))
+            .build();
+        let commission_voided = Some(Money::from("0.50 EUR"));
+        let voided_qty = Quantity::from(5);
+        let fill_voided = matching_fill_void(&fill, voided_qty, commission_voided);
+
+        let mut position = Position::new(&instrument, fill);
+        let before = serde_json::to_value(&position).unwrap();
+        let error = position
+            .apply_fill_void(fill_voided, voided_qty, commission_voided)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "position commission currency differs for fill T-VOID-CURRENCY"
+        );
+        assert_eq!(serde_json::to_value(&position).unwrap(), before);
+    }
+
+    #[rstest]
     fn test_apply_fill_void_uses_latest_cumulative_commission(audusd_sim: CurrencyPair) {
         let instrument = InstrumentAny::CurrencyPair(audusd_sim);
         let position_id = PositionId::from("P-VOID-LATEST");
@@ -3354,13 +3427,68 @@ mod tests {
 
         assert_eq!(position.side, PositionSide::Long);
         assert_eq!(position.quantity, Quantity::from(593));
-        assert_eq!(position.buy_qty, Quantity::from(625));
-        assert_eq!(position.sell_qty, Quantity::from(32));
+        // The reversal starts a new episode with only the opening residual
+        assert_eq!(position.buy_qty, Quantity::from(593));
+        assert_eq!(position.sell_qty, Quantity::from(0));
         assert_eq!(position.events.len(), 4);
         assert_eq!(position.replay_events.len(), 4);
         assert_eq!(position.fill_voids.len(), 1);
         assert_eq!(position.trade_ids.len(), 3);
         assert!(position.trade_ids.contains(&TradeId::from("T-FLIP")));
+    }
+
+    #[rstest]
+    fn test_fill_void_replays_partially_voided_reversal(audusd_sim: CurrencyPair) {
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+        let position_id = PositionId::from("P-REVERSAL-PARTIAL-VOID");
+        let opening = OrderFilledSpec::builder()
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-OPEN"))
+            .trade_id(TradeId::from("T-OPEN"))
+            .order_side(OrderSide::Sell)
+            .last_qty(Quantity::from(10))
+            .last_px(Price::from("1.00000"))
+            .currency(Currency::USD())
+            .position_id(position_id)
+            .build();
+        let partial_close = OrderFilledSpec::builder()
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-CLOSE"))
+            .trade_id(TradeId::from("T-CLOSE"))
+            .order_side(OrderSide::Buy)
+            .last_qty(Quantity::from(4))
+            .last_px(Price::from("0.90000"))
+            .currency(Currency::USD())
+            .position_id(position_id)
+            .build();
+        let reversal = OrderFilledSpec::builder()
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-REVERSE"))
+            .trade_id(TradeId::from("T-REVERSE"))
+            .order_side(OrderSide::Buy)
+            .last_qty(Quantity::from(11))
+            .last_px(Price::from("1.10000"))
+            .currency(Currency::USD())
+            .position_id(position_id)
+            .build();
+        let fill_voided = matching_fill_void(&reversal, Quantity::from(2), None);
+        let mut position = Position::new(&instrument, opening);
+        position.apply(&partial_close);
+        position.apply(&reversal);
+
+        position
+            .apply_fill_void(fill_voided, Quantity::from(2), None)
+            .unwrap();
+
+        assert_eq!(position.side, PositionSide::Long);
+        assert_eq!(position.quantity, Quantity::from(3));
+        assert_eq!(position.avg_px_open, 1.1);
+        assert_eq!(position.avg_px_close, None);
+        assert_eq!(position.realized_return, 0.0);
+        assert_eq!(position.buy_qty, Quantity::from(3));
+        assert_eq!(position.sell_qty, Quantity::from(0));
+        assert_eq!(position.realized_pnl, Some(Money::from("-0.20 USD")));
+        assert_eq!(position.fill_voids.len(), 1);
     }
 
     #[rstest]
@@ -5528,6 +5656,153 @@ mod tests {
         assert_eq!(position.duration_ns, DurationNanos::default());
         assert_eq!(position.event_count(), 3);
         assert!(position.is_open());
+    }
+
+    #[rstest]
+    #[case(OrderSide::Buy, OrderSide::Sell)]
+    #[case(OrderSide::Sell, OrderSide::Buy)]
+    fn test_position_reversal_starts_new_close_episode(
+        #[case] entry: OrderSide,
+        #[case] exit: OrderSide,
+    ) {
+        let (
+            open_px,
+            first_close_px,
+            reversal_px,
+            expected_side,
+            new_first_close_px,
+            new_final_close_px,
+            expected_avg_close,
+            expected_return,
+        ) = if entry == OrderSide::Buy {
+            (
+                "100.00",
+                "110.00",
+                "120.00",
+                PositionSide::Short,
+                "110.00",
+                "90.00",
+                95.0,
+                0.208_333_333_333_333_34,
+            )
+        } else {
+            (
+                "120.00",
+                "110.00",
+                "100.00",
+                PositionSide::Long,
+                "110.00",
+                "130.00",
+                125.0,
+                0.25,
+            )
+        };
+        let instrument = InstrumentAny::CurrencyPair(currency_pair_btcusdt());
+        let position_id = PositionId::new("P-REVERSAL-EPISODE");
+        let open_order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::new("O-OPEN"))
+            .side(entry)
+            .quantity(Quantity::from("10"))
+            .build();
+        let open_fill = TestOrderEventStubs::filled(
+            &open_order,
+            &instrument,
+            Some(TradeId::new("T-OPEN")),
+            Some(position_id),
+            Some(Price::from(open_px)),
+            None,
+            None,
+            Some(Money::from("1 USDT")),
+            Some(UnixNanos::from(3_000)),
+            None,
+        );
+        let mut position = Position::new(&instrument, open_fill.into());
+
+        for (client_order_id, trade_id, quantity, price, ts_event) in [
+            ("O-CLOSE", "T-CLOSE", "4", first_close_px, 3_100),
+            ("O-REVERSE", "T-REVERSE", "8", reversal_px, 3_200),
+        ] {
+            let order = OrderTestBuilder::new(OrderType::Market)
+                .instrument_id(instrument.id())
+                .client_order_id(ClientOrderId::new(client_order_id))
+                .side(exit)
+                .quantity(Quantity::from(quantity))
+                .build();
+            let fill = TestOrderEventStubs::filled(
+                &order,
+                &instrument,
+                Some(TradeId::new(trade_id)),
+                Some(position_id),
+                Some(Price::from(price)),
+                None,
+                None,
+                Some(Money::from("1 USDT")),
+                Some(UnixNanos::from(ts_event)),
+                None,
+            );
+            position.apply(&fill.into());
+        }
+
+        assert_eq!(position.side, expected_side);
+        assert_eq!(position.quantity, Quantity::from("2"));
+        assert_eq!(position.avg_px_open, Price::from(reversal_px).as_f64());
+        assert_eq!(position.avg_px_close, None);
+        assert_eq!(position.realized_return, 0.0);
+        if expected_side == PositionSide::Long {
+            assert_eq!(position.buy_qty, Quantity::from("2"));
+            assert_eq!(position.sell_qty, Quantity::from("0"));
+        } else {
+            assert_eq!(position.buy_qty, Quantity::from("0"));
+            assert_eq!(position.sell_qty, Quantity::from("2"));
+        }
+        assert_eq!(position.realized_pnl, Some(Money::from("157 USDT")));
+
+        for (client_order_id, trade_id, quantity, price, ts_event) in [
+            (
+                "O-NEW-CLOSE-1",
+                "T-NEW-CLOSE-1",
+                "0.5",
+                new_first_close_px,
+                3_300,
+            ),
+            (
+                "O-NEW-CLOSE-2",
+                "T-NEW-CLOSE-2",
+                "1.5",
+                new_final_close_px,
+                3_400,
+            ),
+        ] {
+            let order = OrderTestBuilder::new(OrderType::Market)
+                .instrument_id(instrument.id())
+                .client_order_id(ClientOrderId::new(client_order_id))
+                .side(entry)
+                .quantity(Quantity::from(quantity))
+                .build();
+            let fill = TestOrderEventStubs::filled(
+                &order,
+                &instrument,
+                Some(TradeId::new(trade_id)),
+                Some(position_id),
+                Some(Price::from(price)),
+                None,
+                None,
+                Some(Money::from("1 USDT")),
+                Some(UnixNanos::from(ts_event)),
+                None,
+            );
+            position.apply(&fill.into());
+        }
+
+        assert_eq!(position.side, PositionSide::Flat);
+        assert_eq!(position.quantity, Quantity::zero(6));
+        assert_eq!(position.buy_qty, Quantity::from("2"));
+        assert_eq!(position.sell_qty, Quantity::from("2"));
+        assert_eq!(position.avg_px_close, Some(expected_avg_close));
+        assert_eq!(position.realized_return, expected_return);
+        assert_eq!(position.realized_pnl, Some(Money::from("205 USDT")));
+        assert_eq!(position.commissions(), vec![Money::from("5 USDT")]);
     }
 
     #[rstest]

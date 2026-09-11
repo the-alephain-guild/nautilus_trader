@@ -1,6 +1,6 @@
 version = 1
 repository = "https://github.com/nautechsystems/nautilus_engineering"
-revision = "f47207a7c6a1906c01bbd0844b3092b133e15ae1"
+revision = "2d855175e82edf7bda4a77e4053198359d8c9cdd"
 manifest_sha256 = "591f89f0394dfd8a02a4c3bda884dbdc02298d2da3a1cb4861ed8d4c6d67e97e"
 marker_file = ".nautilus-engineering.syncing"
 profiles = ["sync"]
@@ -44,7 +44,7 @@ executable = false
 [[file]]
 artifact = "shared-tool-catalog"
 path = ".nautilus-engineering/tools.toml"
-sha256 = "d947d4a3ba1a2af495fbbe5682ef6cfee63775ad947a693b8521cf54cb1a1974"
+sha256 = "e350c79fbb9c20ad154bce54263d6e1c6bdf90a7c40e54f2268b367579d14eae"
 executable = false
 
 [[file]]
@@ -80,7 +80,7 @@ executable = true
 [[file]]
 artifact = "cargo-cooldown-check"
 path = "scripts/check-cargo-cooldown.sh"
-sha256 = "912f107a46182479dcf3e2db81b34e8e47583c96be6bb13fc438993b51bbb991"
+sha256 = "1191ea85fc5ed82fcdef145a2d5b99da8bf64a5a0543ada798fa57ed326b1f38"
 executable = true
 
 [[file]]

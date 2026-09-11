@@ -158,6 +158,11 @@ For L2 books and aggregate L3 updates:
 
 - A DELETE clears the price level and its queue.
 - An UPDATE caps quantity ahead at the level's new displayed size.
+- A completed book snapshot rebases each tracked queue position against the new visible
+  quantity at its price: quantity ahead is capped at the snapshot size, while newly added
+  liquidity does not move an existing simulated order further back. Snapshot batches may start
+  with a `F_SNAPSHOT` clear and finish with a later `F_LAST` delta.
+- A `BookDepth10` replacement applies the same rebase rule after the full depth replacement.
 
 For L3 MBO books:
 
@@ -165,6 +170,8 @@ For L3 MBO books:
 - A size decrease advances the queue by the difference.
 - A size increase keeps the larger order ahead.
 - A price change removes the book order from the tracked queue.
+- A completed book snapshot retains only surviving tracked order IDs ahead, each capped at
+  its previous quantity.
 
 Changing a simulated order's price resets its queue position at the new level. A quantity-only
 change retains the progress already made.

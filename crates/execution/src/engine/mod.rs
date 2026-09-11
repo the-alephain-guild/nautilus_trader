@@ -1414,6 +1414,11 @@ impl ExecutionEngine {
             report,
         );
 
+        if report.last_qty.is_zero() {
+            log::warn!("Skipping zero-quantity fill report: {report}");
+            return;
+        }
+
         let cache = self.cache.borrow();
 
         let order = report
@@ -2772,6 +2777,13 @@ impl ExecutionEngine {
         event: &OrderEventAny,
         apply_position: bool,
     ) {
+        if let OrderEventAny::Filled(fill) = event
+            && fill.last_qty.is_zero()
+        {
+            log::warn!("Skipping zero-quantity fill event: {fill}");
+            return;
+        }
+
         self.event_count += 1;
 
         if self.config.debug {
@@ -3944,11 +3956,14 @@ impl ExecutionEngine {
                     "position commission currency differs for fill {}",
                     event.trade_id
                 );
-                let removed_raw = remaining_commission.raw.abs().min(commission.raw.abs());
-                let removed = Money::from_raw(
-                    removed_raw * remaining_commission.raw.signum(),
-                    remaining_commission.currency,
-                );
+                let magnitude = remaining_commission.abs().min(commission.abs());
+
+                let removed = if remaining_commission.is_negative() {
+                    -magnitude
+                } else {
+                    magnitude
+                };
+
                 allocations
                     .entry(*position_id)
                     .and_modify(|allocation| {
@@ -4393,7 +4408,7 @@ impl ExecutionEngine {
     }
 
     fn will_flip_position(&self, position: &Position, fill: &OrderFilled) -> bool {
-        position.is_opposite_side(fill.order_side) && (fill.last_qty.raw > position.quantity.raw)
+        position.is_opposite_side(fill.order_side) && (fill.last_qty > position.quantity)
     }
 
     fn position_signed_decimal_qty(position: &Position) -> Decimal {

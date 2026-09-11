@@ -1316,7 +1316,7 @@ fn matching_option_quote(
     instrument: &InstrumentAny,
     bid: &str,
     ask: &str,
-    ts: UnixNanos,
+    ts_init: UnixNanos,
 ) -> QuoteTick {
     QuoteTick::new(
         instrument.id(),
@@ -1324,8 +1324,8 @@ fn matching_option_quote(
         Price::from(ask),
         matching_option_quantity(instrument),
         matching_option_quantity(instrument),
-        ts,
-        ts,
+        ts_init,
+        ts_init,
     )
 }
 
@@ -2432,6 +2432,7 @@ fn build_exchange_with_options(
         .starting_balances(vec![Money::new(1000.0, Currency::USD())])
         .default_leverage(Decimal::ONE)
         .fee_model(FeeModelAny::MakerTaker(MakerTakerFeeModel).into())
+        .defer_option_settlement(false)
         .frozen_account(frozen_account)
         .allow_cash_borrowing(allow_cash_borrowing)
         .build()
