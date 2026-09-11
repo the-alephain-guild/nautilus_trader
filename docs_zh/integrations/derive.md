@@ -55,8 +55,8 @@ Derive 合约使用场所原生符号加上场所后缀 `.DERIVE`：
 
 通过任一客户端配置上的 `DeriveEnvironment` 枚举来配置环境。
 
-| 环境    | 配置                         | REST                            | WebSocket                        |
-|---------|------------------------------|---------------------------------|----------------------------------|
+| 环境      | 配置                           | REST                            | WebSocket                        |
+| ------- | ---------------------------- | ------------------------------- | -------------------------------- |
 | Mainnet | `DeriveEnvironment::Mainnet` | `https://api.lyra.finance`      | `wss://api.lyra.finance/ws`      |
 | Testnet | `DeriveEnvironment::Testnet` | `https://api-demo.lyra.finance` | `wss://api-demo.lyra.finance/ws` |
 
@@ -114,31 +114,31 @@ Mainnet 接入与 testnet 类似，但针对生产仪表盘进行。使用真实
 
 ### 市场数据 (Market data)
 
-| 能力                            | 是否支持 | 说明                                                                    |
-|---------------------------------|----------|-------------------------------------------------------------------------|
-| 请求单个合约（REST）            | ✓        | `public/get_instrument`；将一个合约加载到本地缓存。                      |
-| 请求全部合约（REST）            | ✓        | `public/get_instruments`；为 `currencies` 中的每个币种拉取。             |
-| 合约订阅                        | -        | *不支持。* 改用所配置的 REST 刷新间隔。                                  |
-| 订单簿增量（L2_MBP）            | ✓        | 频道：`orderbook.{instrument}.{group}.{depth}`。                         |
-| 订单簿 depth10（L2_MBP）        | ✓        | 同一订单簿频道，使用 `depth=10`。                                        |
-| 按固定间隔的订单簿              | -        | *不支持。* 在本地从增量维护按间隔的订单簿。                              |
-| 订单簿快照（REST）              | -        | *不支持。* 适配器未暴露。                                                |
-| 历史订单簿增量（REST）          | -        | *不支持。* 适配器未暴露。                                                |
-| 报价（`ticker_slim`）           | ✓        | 频道：`ticker_slim.{instrument}.{interval}`。                            |
-| 报价快照（REST）                | ✓        | 一次性的 `public/get_tickers`；发出单个 `QuoteTick`。                    |
-| 历史报价（REST）                | -        | *不支持。* 场所仅暴露 ticker 快照。                                      |
-| 成交                            | ✓        | 频道：`trades.{instrument_type}.{currency}`。                            |
-| 历史成交（REST）                | ✓        | `public/get_trade_history`；遵循 `start`、`end` 和 `limit`。             |
-| K 线 / OHLC（REST）             | ✓        | `public/get_tradingview_chart_data`；分钟、小时、日和周线。             |
-| K 线 / OHLC（WS）               | -        | *不支持。* 场所没有 K 线订阅频道。                                       |
-| 标记价格流                      | ✓        | 从 `ticker_slim` 派生；与报价订阅共享。                                  |
-| 指数价格流                      | ✓        | 从 `ticker_slim` 派生；与报价订阅共享。                                  |
-| 资金费率流                      | ✓        | 从永续 ticker 上的 `perp_details.funding_rate` 派生。                    |
-| 资金费率历史（REST）            | ✓        | 永续合约的 `public/get_funding_rate_history`。                          |
-| 合约状态                        | -        | *不支持。* Ticker 载荷包含 `is_active`。                                 |
-| 合约收盘                        | -        | *不支持。* 期权结算仅通过 REST。                                         |
-| 期权希腊值                      | ✓        | 从期权 ticker 上的 `option_pricing` 派生。                              |
-| 期权链                          | ✓        | 由报价和希腊值聚合；`public/get_tickers` 引导出平值（ATM）。            |
+| 能力                  | 是否支持 | 说明                                                     |
+| ------------------- | ---- | ------------------------------------------------------ |
+| 请求单个合约（REST）        | ✓    | `public/get_instrument`；将一个合约加载到本地缓存。                  |
+| 请求全部合约（REST）        | ✓    | `public/get_instruments`；为 `currencies` 中的每个币种拉取。      |
+| 合约订阅                | -    | *不支持。* 改用所配置的 REST 刷新间隔。                               |
+| 订单簿增量（L2_MBP）       | ✓    | 频道：`orderbook.{instrument}.{group}.{depth}`。           |
+| 订单簿 depth10（L2_MBP） | ✓    | 同一订单簿频道，使用 `depth=10`。                                 |
+| 按固定间隔的订单簿           | -    | *不支持。* 在本地从增量维护按间隔的订单簿。                                |
+| 订单簿快照（REST）         | -    | *不支持。* 适配器未暴露。                                         |
+| 历史订单簿增量（REST）       | -    | *不支持。* 适配器未暴露。                                         |
+| 报价（`ticker_slim`）   | ✓    | 频道：`ticker_slim.{instrument}.{interval}`。              |
+| 报价快照（REST）          | ✓    | 一次性的 `public/get_tickers`；发出单个 `QuoteTick`。            |
+| 历史报价（REST）          | -    | *不支持。* 场所仅暴露 ticker 快照。                                |
+| 成交                  | ✓    | 频道：`trades.{instrument_type}.{currency}`。              |
+| 历史成交（REST）          | ✓    | `public/get_trade_history`；遵循 `start`、`end` 和 `limit`。 |
+| K 线 / OHLC（REST）    | ✓    | `public/get_tradingview_chart_data`；分钟、小时、日和周线。        |
+| K 线 / OHLC（WS）      | -    | *不支持。* 场所没有 K 线订阅频道。                                   |
+| 标记价格流               | ✓    | 从 `ticker_slim` 派生；与报价订阅共享。                            |
+| 指数价格流               | ✓    | 从 `ticker_slim` 派生；与报价订阅共享。                            |
+| 资金费率流               | ✓    | 从永续 ticker 上的 `perp_details.funding_rate` 派生。          |
+| 资金费率历史（REST）        | ✓    | 永续合约的 `public/get_funding_rate_history`。               |
+| 合约状态                | -    | *不支持。* Ticker 载荷包含 `is_active`。                        |
+| 合约收盘                | -    | *不支持。* 期权结算仅通过 REST。                                   |
+| 期权希腊值               | ✓    | 从期权 ticker 上的 `option_pricing` 派生。                     |
+| 期权链                 | ✓    | 由报价和希腊值聚合；`public/get_tickers` 引导出平值（ATM）。             |
 
 `request_instrument` 针对所请求的 `InstrumentId` 调用 `public/get_instrument`，并在发出响应之前缓存返回的定义。缓存的合约携带了后续报价、成交、订单簿和 K 线解析所使用的精度和最小变动单位字段。
 
@@ -164,15 +164,15 @@ Derive 触发订单使用仅限 WebSocket 的 `private/trigger_order` 端点，�
 
 Derive mainnet 要求触发订单的签名在场所时间起 30 至 90 天后过期。适配器以固定的 31 天有效期为触发订单签名；`signature_expiry_secs` 仍然控制普通的 `private/order` 和 `private/replace` 写操作，且必须大于场所规定的 300 秒最小值。
 
-| Nautilus 订单类型   | 是否支持 | Derive `order_type` | Derive `trigger_type` | 说明                          |
-|---------------------|----------|---------------------|-----------------------|-------------------------------|
-| `StopMarket`        | ✓        | `market`            | `stoploss`            | 使用触发价格作为边界。        |
-| `StopLimit`         | ✓        | `limit`             | `stoploss`            | 发送限价和触发价格。          |
-| `MarketIfTouched`   | ✓        | `market`            | `takeprofit`          | 使用触发价格作为边界。        |
-| `LimitIfTouched`    | ✓        | `limit`             | `takeprofit`          | 发送限价和触发价格。          |
-| `MarketToLimit`     | -        | -                   | -                     | *Derive 不支持*。             |
-| 追踪止损            | -        | -                   | -                     | *Derive 不支持*。             |
-| TWAP / algo / RFQ   | -        | -                   | -                     | *本适配器未暴露*。            |
+| Nautilus 订单类型     | 是否支持 | Derive `order_type` | Derive `trigger_type` | 说明            |
+| ----------------- | ---- | ------------------- | --------------------- | ------------- |
+| `StopMarket`      | ✓    | `market`            | `stoploss`            | 使用触发价格作为边界。   |
+| `StopLimit`       | ✓    | `limit`             | `stoploss`            | 发送限价和触发价格。    |
+| `MarketIfTouched` | ✓    | `market`            | `takeprofit`          | 使用触发价格作为边界。   |
+| `LimitIfTouched`  | ✓    | `limit`             | `takeprofit`          | 发送限价和触发价格。    |
+| `MarketToLimit`   | -    | -                   | -                     | *Derive 不支持*。 |
+| 追踪止损              | -    | -                   | -                     | *Derive 不支持*。 |
+| TWAP / algo / RFQ | -    | -                   | -                     | *本适配器未暴露*。    |
 
 适配器将 Nautilus 的 `TriggerType::Default` 和 `TriggerType::MarkPrice` 映射为 Derive 的 `trigger_price_type=mark`。Derive 当前的错误码参考说明指数价格和最新成交价（last-trade）触发价格类型尚不受支持，因此 `IndexPrice`、`LastPrice`、`BidAsk` 以及其他触发价格类型会在签名之前于本地被拒绝。
 
@@ -180,24 +180,24 @@ Derive 错误 `11054` 说明触发订单不能替换其他订单，也不能被�
 
 #### 执行指令 (Execution instructions)
 
-| 指令          | 是否支持 | Derive 值     | 说明                                                         |
-|---------------|----------|---------------|---------------------------------------------------------------|
-| `post_only`   | ✓        | `post_only`   | 需要 `GTC`；若订单会吃掉流动性则拒绝。                        |
-| `reduce_only` | ✓        | `reduce_only` | 永续和期权支持。现货在本地被拒绝。                            |
+| 指令            | 是否支持 | Derive 值      | 说明                     |
+| ------------- | ---- | ------------- | ---------------------- |
+| `post_only`   | ✓    | `post_only`   | 需要 `GTC`；若订单会吃掉流动性则拒绝。 |
+| `reduce_only` | ✓    | `reduce_only` | 永续和期权支持。现货在本地被拒绝。      |
 
 #### 有效期 (Time in force)
 
 Derive 将 `gtc`、`post_only`、`fok` 和 `ioc` 记录为其 `time_in_force` 取值。适配器会在签名之前拒绝没有 Derive 对应项的 Nautilus 取值。Derive 将 post-only 作为一个 `time_in_force` 取值暴露，因此 `post_only` 不能与 `IOC` 或 `FOK` 组合使用。
 
-| 有效期         | 是否支持 | Derive 值    | 说明                       |
-|----------------|----------|--------------|----------------------------|
-| `GTC`          | ✓        | `gtc`        | 撤单前一直有效。           |
-| `IOC`          | ✓        | `ioc`        | 立即成交否则取消。         |
-| `FOK`          | ✓        | `fok`        | 全部成交否则取消。         |
-| `GTD`          | -        | -            | *Derive 不支持*。          |
-| `DAY`          | -        | -            | *Derive 不支持*。          |
-| `AT_THE_OPEN`  | -        | -            | *Derive 不支持*。          |
-| `AT_THE_CLOSE` | -        | -            | *Derive 不支持*。          |
+| 有效期            | 是否支持 | Derive 值 | 说明            |
+| -------------- | ---- | -------- | ------------- |
+| `GTC`          | ✓    | `gtc`    | 撤单前一直有效。      |
+| `IOC`          | ✓    | `ioc`    | 立即成交否则取消。     |
+| `FOK`          | ✓    | `fok`    | 全部成交否则取消。     |
+| `GTD`          | -    | -        | *Derive 不支持*。 |
+| `DAY`          | -    | -        | *Derive 不支持*。 |
+| `AT_THE_OPEN`  | -    | -        | *Derive 不支持*。 |
+| `AT_THE_CLOSE` | -    | -        | *Derive 不支持*。 |
 
 #### 现货 reduce-only 订单 (Spot reduce-only orders)
 
@@ -228,15 +228,15 @@ Derive 现货没有持仓（position）概念，因此 reduce-only 现货订单�
 
 `subscribe_book_deltas` 和 `subscribe_book_depth10` 接受下列 `subscribe_params` 键：
 
-| 键       | 类型   | 默认值  | 允许值               |
-|----------|--------|---------|----------------------|
-| `group`  | string | `"1"`   | `"1"`、`"10"`、`"100"` |
-| `depth`  | string | `"10"`  | `"1"`、`"10"`、`"20"`、`"100"` |
+| 键       | 类型     | 默认值    | 允许值                         |
+| ------- | ------ | ------ | --------------------------- |
+| `group` | string | `"1"`  | `"1"`、`"10"`、`"100"`        |
+| `depth` | string | `"10"` | `"1"`、`"10"`、`"20"`、`"100"` |
 
 `subscribe_quotes` 接受：
 
-| 键         | 类型   | 默认值   | 允许值            |
-|------------|--------|----------|-------------------|
+| 键          | 类型     | 默认值      | 允许值              |
+| ---------- | ------ | -------- | ---------------- |
 | `interval` | string | `"1000"` | `"100"`、`"1000"` |
 
 未知取值会在订阅时被拒绝。
@@ -255,51 +255,51 @@ Derive 现货没有持仓（position）概念，因此 reduce-only 现货订单�
 
 类/结构体：`DeriveDataClientConfig`。
 
-| 选项                               | 默认值    | 说明 |
-|------------------------------------|-----------|-------------|
-| `base_url_rest`                    | `None`    | 覆盖 REST 基础 URL。 |
-| `base_url_ws`                      | `None`    | 覆盖 WebSocket 基础 URL。 |
-| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。 |
+| 选项                                 | 默认值       | 说明                                        |
+| ---------------------------------- | --------- | ----------------------------------------- |
+| `base_url_rest`                    | `None`    | 覆盖 REST 基础 URL。                           |
+| `base_url_ws`                      | `None`    | 覆盖 WebSocket 基础 URL。                      |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。             |
 | `environment`                      | `Mainnet` | 网络选择器（在 Python 中为 `MAINNET` 或 `TESTNET`）。 |
-| `http_timeout_secs`                | `10`      | REST 请求超时（秒）。 |
-| `ws_timeout_secs`                  | `30`      | WebSocket 连接和空闲超时（秒）。 |
-| `update_instruments_interval_mins` | `60`      | 合约刷新之间的间隔（分钟）。 |
-| `currencies`                       | `[]`      | 连接时批量加载的币种。为空表示按需惰性加载。 |
-| `include_expired`                  | `false`   | 在 `public/get_instruments` 中包含已过期的期权行。 |
-| `auto_load_missing_instruments`    | `true`    | 在 subscribe 或 request 命令之前惰性加载未知合约。 |
+| `http_timeout_secs`                | `10`      | REST 请求超时（秒）。                             |
+| `ws_timeout_secs`                  | `30`      | WebSocket 连接和空闲超时（秒）。                     |
+| `update_instruments_interval_mins` | `60`      | 合约刷新之间的间隔（分钟）。                            |
+| `currencies`                       | `[]`      | 连接时批量加载的币种。为空表示按需惰性加载。                    |
+| `include_expired`                  | `false`   | 在 `public/get_instruments` 中包含已过期的期权行。    |
+| `auto_load_missing_instruments`    | `true`    | 在 subscribe 或 request 命令之前惰性加载未知合约。       |
 | `transport_backend`                | `Sockudo` | 启用 `transport-sockudo` 时使用的 WebSocket 传输。 |
 
 ### 执行客户端配置选项 (Execution client configuration options)
 
 类/结构体：`DeriveExecClientConfig`。
 
-| 选项                        | 默认值    | 说明 |
-|-----------------------------|-----------|-------------|
-| `wallet_address`            | `None`    | Derive Chain 智能合约钱包地址。回退到下方的环境变量。 |
-| `session_key`               | `None`    | secp256k1 会话密钥私钥。回退到下方的环境变量。 |
-| `subaccount_id`             | `None`    | Derive 子账户 id。回退到下方的环境变量。 |
-| `base_url_rest`             | `None`    | 覆盖 REST 基础 URL。 |
-| `base_url_ws`               | `None`    | 覆盖 WebSocket 基础 URL。 |
-| `proxy_url`                 | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `environment`               | `Mainnet` | 网络选择器（在 Python 中为 `MAINNET` 或 `TESTNET`）。 |
-| `http_timeout_secs`         | `10`      | REST 请求超时（秒）。 |
-| `max_retries`               | `3`       | 对可恢复的读操作和明确的非写路径的重试次数。 |
-| `retry_delay_initial_ms`    | `100`     | 初始重试延迟（毫秒）。 |
-| `retry_delay_max_ms`        | `5000`    | 最大重试延迟（毫秒）。 |
-| `max_fee_per_contract`      | `None`    | 签入每笔订单的每合约 USDC 费用上限。 |
-| `domain_separator`          | `None`    | 可选的 EIP-712 domain separator 覆盖值。 |
-| `action_typehash`           | `None`    | 可选的 EIP-712 action typehash 覆盖值。 |
-| `trade_module_address`      | `None`    | 可选的 Trade 模块合约地址覆盖值。 |
+| 选项                          | 默认值       | 说明                                            |
+| --------------------------- | --------- | --------------------------------------------- |
+| `wallet_address`            | `None`    | Derive Chain 智能合约钱包地址。回退到下方的环境变量。             |
+| `session_key`               | `None`    | secp256k1 会话密钥私钥。回退到下方的环境变量。                  |
+| `subaccount_id`             | `None`    | Derive 子账户 id。回退到下方的环境变量。                     |
+| `base_url_rest`             | `None`    | 覆盖 REST 基础 URL。                               |
+| `base_url_ws`               | `None`    | 覆盖 WebSocket 基础 URL。                          |
+| `proxy_url`                 | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                 |
+| `environment`               | `Mainnet` | 网络选择器（在 Python 中为 `MAINNET` 或 `TESTNET`）。     |
+| `http_timeout_secs`         | `10`      | REST 请求超时（秒）。                                 |
+| `max_retries`               | `3`       | 对可恢复的读操作和明确的非写路径的重试次数。                        |
+| `retry_delay_initial_ms`    | `100`     | 初始重试延迟（毫秒）。                                   |
+| `retry_delay_max_ms`        | `5000`    | 最大重试延迟（毫秒）。                                   |
+| `max_fee_per_contract`      | `None`    | 签入每笔订单的每合约 USDC 费用上限。                         |
+| `domain_separator`          | `None`    | 可选的 EIP-712 domain separator 覆盖值。             |
+| `action_typehash`           | `None`    | 可选的 EIP-712 action typehash 覆盖值。              |
+| `trade_module_address`      | `None`    | 可选的 Trade 模块合约地址覆盖值。                          |
 | `signature_expiry_secs`     | `600`     | 订单/replace 的 TTL；必须 >300s。触发订单使用固定的 31 天 TTL。 |
-| `market_order_slippage_bps` | `50`      | 市价单限价的滑点边界。 |
-| `transport_backend`         | `Sockudo` | 启用 `transport-sockudo` 时使用的 WebSocket 传输。 |
+| `market_order_slippage_bps` | `50`      | 市价单限价的滑点边界。                                   |
+| `transport_backend`         | `Sockudo` | 启用 `transport-sockudo` 时使用的 WebSocket 传输。     |
 
 当构建禁用了 `transport-sockudo` 特性时，默认传输回退到 `Tungstenite`。
 
 当未设置时，`wallet_address`、`session_key` 和 `subaccount_id` 会回退到环境变量：
 
-| 字段             | Mainnet 变量                 | Testnet 变量                         |
-|------------------|------------------------------|--------------------------------------|
+| 字段               | Mainnet 变量                   | Testnet 变量                           |
+| ---------------- | ---------------------------- | ------------------------------------ |
 | `wallet_address` | `DERIVE_WALLET_ADDRESS`      | `DERIVE_TESTNET_WALLET_ADDRESS`      |
 | `session_key`    | `DERIVE_SESSION_PRIVATE_KEY` | `DERIVE_TESTNET_SESSION_PRIVATE_KEY` |
 | `subaccount_id`  | `DERIVE_SUBACCOUNT_ID`       | `DERIVE_TESTNET_SUBACCOUNT_ID`       |

@@ -8,11 +8,11 @@
 
 当你为实盘交易或回测把某个交易场所挂接到引擎时，需要通过 `account_type` 在三种账务模式中选择一种：
 
-| 账户类型 | 典型用例                              | 引擎锁定的内容                                                       |
-| -------- | ------------------------------------- | ------------------------------------------------------------------- |
-| Cash     | 现货交易（如 BTC/USDT、股票）         | 待成交订单将开仓的每一个持仓的名义价值（notional value）。           |
-| Margin   | 衍生品或任何允许使用杠杆的产品        | 每个订单的初始保证金，加上未平仓持仓的维持保证金。                   |
-| Betting  | 体育博彩、做市庄家                    | 交易场所要求的下注额（stake）；无杠杆。                              |
+| 账户类型    | 典型用例                | 引擎锁定的内容                              |
+| ------- | ------------------- | ------------------------------------ |
+| Cash    | 现货交易（如 BTC/USDT、股票） | 待成交订单将开仓的每一个持仓的名义价值（notional value）。 |
+| Margin  | 衍生品或任何允许使用杠杆的产品     | 每个订单的初始保证金，加上未平仓持仓的维持保证金。            |
+| Betting | 体育博彩、做市庄家           | 交易场所要求的下注额（stake）；无杠杆。               |
 
 ### 现金账户 (Cash accounts)
 
@@ -49,11 +49,11 @@
 
 Python 的 `AccountBalance(total, locked, free)` 构造函数要求一次性提供全部三个字段。用 Rust 编写的适配器代码另有两个派生构造函数，能集中强制执行该不变式；当交易场所只报告三个数值中的两个时，应优先使用它们，而非 `AccountBalance::new`：
 
-| Rust 辅助方法                           | 何时使用                                                                          |
-| --------------------------------------- | --------------------------------------------------------------------------------- |
-| `AccountBalance::from_total_and_locked` | 交易场所报告 total 和 locked；`free` 被推导并钳制到 `[0, total]` 区间。            |
-| `AccountBalance::from_total_and_free`   | 交易场所报告 total 和 free；`locked` 被推导并钳制。                                |
-| `AccountBalance::new`                   | 三个数值都已知且一致（测试、透传场景）。                                           |
+| Rust 辅助方法                               | 何时使用                                                  |
+| --------------------------------------- | ----------------------------------------------------- |
+| `AccountBalance::from_total_and_locked` | 交易场所报告 total 和 locked；`free` 被推导并钳制到 `[0, total]` 区间。 |
+| `AccountBalance::from_total_and_free`   | 交易场所报告 total 和 free；`locked` 被推导并钳制。                  |
+| `AccountBalance::new`                   | 三个数值都已知且一致（测试、透传场景）。                                  |
 
 当 `total >= 0` 时，这些辅助方法会把推导出的字段钳制到 `[0, total]` 区间，因此交易场所舍入造成的瞬时溢出绝不会让账户陷入损坏状态。
 
@@ -82,11 +82,11 @@ Python 的 `AccountBalance(total, locked, free)` 构造函数要求一次性提�
 
 使用与交易场所报告形态相匹配的查询。如果交易场所按金融工具报告保证金，就用 `InstrumentId` 查询。如果它按账户级报告保证金，就用 `Currency` 查询。
 
-| 你想要的数值的作用域                   | 使用                                                                                            |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 单金融工具保证金（逐仓）               | `margin(id)` / `margin_init(id)` / `margin_maint(id)`                                            |
-| 单一抵押品的账户级保证金               | `margin_for_currency(ccy)` / `margin_init_for_currency(ccy)` / `margin_maint_for_currency(ccy)` |
-| 跨两种作用域的合计总额                 | `total_margin_init(ccy)` / `total_margin_maint(ccy)`                                             |
+| 你想要的数值的作用域   | 使用                                                                                              |
+| ------------ | ----------------------------------------------------------------------------------------------- |
+| 单金融工具保证金（逐仓） | `margin(id)` / `margin_init(id)` / `margin_maint(id)`                                           |
+| 单一抵押品的账户级保证金 | `margin_for_currency(ccy)` / `margin_init_for_currency(ccy)` / `margin_maint_for_currency(ccy)` |
+| 跨两种作用域的合计总额  | `total_margin_init(ccy)` / `total_margin_maint(ccy)`                                            |
 
 点查询在条目不存在时返回 `None`；总额查询始终返回一个 `Money`（若无匹配则为该币种的零值）。
 
@@ -245,10 +245,10 @@ account.set_margin_model(LeveragedMarginModel())
 - **杠杆**：50x
 - **`instrument.margin_init`**：3%
 
-| 模型      | 计算                   | 结果   | 百分比     |
-| --------- | ---------------------- | ------ | ---------- |
-| Standard  | $110,000 × 0.03        | $3,300 | 3.00%      |
-| Leveraged | ($110,000 ÷ 50) × 0.03 | $66    | 0.06%      |
+| 模型        | 计算                     | 结果     | 百分比   |
+| --------- | ---------------------- | ------ | ----- |
+| Standard  | $110,000 × 0.03        | $3,300 | 3.00% |
+| Leveraged | ($110,000 ÷ 50) × 0.03 | $66    | 0.06% |
 
 在一个 $10,000 的账户上：标准模型会阻止这笔交易，而杠杆模型则允许它。
 
@@ -269,7 +269,9 @@ class RiskAdjustedMarginModel(MarginModel):
         self.risk_multiplier = Decimal(str(config.config.get("risk_multiplier", 1.0)))
         self.use_leverage = config.config.get("use_leverage", False)
 
-    def calculate_margin_init(self, instrument, quantity, price, leverage, use_quote_for_inverse=False):
+    def calculate_margin_init(
+        self, instrument, quantity, price, leverage, use_quote_for_inverse=False
+    ):
         notional = instrument.notional_value(quantity, price, use_quote_for_inverse)
 
         if self.use_leverage:
@@ -280,8 +282,12 @@ class RiskAdjustedMarginModel(MarginModel):
         margin = adjusted * instrument.margin_init * self.risk_multiplier
         return Money(margin, instrument.quote_currency)
 
-    def calculate_margin_maint(self, instrument, side, quantity, price, leverage, use_quote_for_inverse=False):
-        return self.calculate_margin_init(instrument, quantity, price, leverage, use_quote_for_inverse)
+    def calculate_margin_maint(
+        self, instrument, side, quantity, price, leverage, use_quote_for_inverse=False
+    ):
+        return self.calculate_margin_init(
+            instrument, quantity, price, leverage, use_quote_for_inverse
+        )
 ```
 
 关于通过 `BacktestVenueConfig` 和 `MarginModelConfig` 对保证金模型进行回测级配置，请参阅 [回测](backtesting.md#margin-models) 的保证金模型一节。
@@ -298,11 +304,11 @@ class RiskAdjustedMarginModel(MarginModel):
 
 选择与交易场所所报告内容相匹配的作用域：
 
-| 交易场所报告                                   | 作用域         | 发出方式                                                   |
-| ---------------------------------------------- | -------------- | ---------------------------------------------------------- |
-| 单金融工具（逐仓持仓）                         | 单金融工具     | `MarginBalance::new(initial, maint, Some(id))`             |
-| 按抵押品的单一聚合（全仓）                     | 账户级         | `MarginBalance::new(initial, maint, None)`                 |
-| 多个聚合，每种抵押品一个                       | 账户级         | 每种币种一个 `MarginBalance`，且 `instrument_id=None`      |
+| 交易场所报告        | 作用域   | 发出方式                                           |
+| ------------- | ----- | ---------------------------------------------- |
+| 单金融工具（逐仓持仓）   | 单金融工具 | `MarginBalance::new(initial, maint, Some(id))` |
+| 按抵押品的单一聚合（全仓） | 账户级   | `MarginBalance::new(initial, maint, None)`     |
+| 多个聚合，每种抵押品一个  | 账户级   | 每种币种一个 `MarginBalance`，且 `instrument_id=None`  |
 
 :::note
 不使用合成的 `ACCOUNT.{VENUE}` 或 `ACCOUNT-{COIN}.{VENUE}` 形式的 `InstrumentId` 占位符。账户级条目携带 `instrument_id=None`，并以 `currency` 为键。

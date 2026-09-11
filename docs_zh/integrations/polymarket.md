@@ -73,17 +73,17 @@ Polymarket 集成适配器包含多个组件，可以根据使用场景一起使
 当前文档同时覆盖 Python 适配器和 Rust 原生适配器层。
 下表展示了当前影响行为的主要差异。
 
-| 方面                | Python 适配器                                                                 | Rust 适配器                                                   | 备注 |
-|---------------------|-------------------------------------------------------------------------------|---------------------------------------------------------------|-------|
-| 公开包路径          | `nautilus_trader.adapters.polymarket`                                         | `nautilus_trader.adapters.polymarket`                         | Rust 是收敛目标。 |
-| 订单签名            | 使用 `py-clob-client-v2`                                                      | 原生 Rust 签名                                               | Python 签名较慢。 |
-| Post‑only 订单      | 仅支持 `GTC` 和 `GTD`                                                          | 仅支持 `GTC` 和 `GTD`                                         | 两者均拒绝带市价 TIF（`IOC` 或 `FOK`）的 post‑only。 |
-| 批量提交            | 对可批处理的 `SubmitOrderList` 请求使用 `POST /orders`                         | 对可批处理的 `SubmitOrderList` 请求使用 `POST /orders`        | 两者均仅批处理独立的限价单，每次请求上限 15 个。 |
-| 批量取消            | 使用 `DELETE /orders`                                                          | 使用 `DELETE /orders`                                         | 两者均与 Polymarket 官方文档保持一致。 |
-| 市场取消订阅        | 发送动态 WebSocket `unsubscribe` 消息                                          | 发送动态 WebSocket `unsubscribe` 消息                        | 两者均支持订阅和取消订阅。 |
-| 自动加载重试        | `auto_load_max_retries`（12）、`auto_load_retry_delay_*`（5.0/15.0 秒）        | 相同的旋钮，相同的默认值                                      | 两者均以有界指数退避加抖动重试 CLOB 水化 / 索引滞后导致的未命中。 |
-| 数据客户端配置      | 凭证、订阅缓冲、报价处理、provider 配置                                        | 基础 URL、超时、过滤器、新市场发现                           | 除自动加载系列外，配置项差异显著。 |
-| 执行客户端配置      | 凭证、重试、原始 WS 日志、实验性的基于交易的订单恢复                           | 凭证、重试、账户 ID、原生超时                               | Rust 并未暴露每一个仅 Python 才有的选项。 |
+| 方面           | Python 适配器                                                        | Rust 适配器                                     | 备注                                      |
+| ------------ | ----------------------------------------------------------------- | -------------------------------------------- | --------------------------------------- |
+| 公开包路径        | `nautilus_trader.adapters.polymarket`                             | `nautilus_trader.adapters.polymarket`        | Rust 是收敛目标。                             |
+| 订单签名         | 使用 `py-clob-client-v2`                                            | 原生 Rust 签名                                   | Python 签名较慢。                            |
+| Post‑only 订单 | 仅支持 `GTC` 和 `GTD`                                                 | 仅支持 `GTC` 和 `GTD`                            | 两者均拒绝带市价 TIF（`IOC` 或 `FOK`）的 post‑only。 |
+| 批量提交         | 对可批处理的 `SubmitOrderList` 请求使用 `POST /orders`                      | 对可批处理的 `SubmitOrderList` 请求使用 `POST /orders` | 两者均仅批处理独立的限价单，每次请求上限 15 个。              |
+| 批量取消         | 使用 `DELETE /orders`                                               | 使用 `DELETE /orders`                          | 两者均与 Polymarket 官方文档保持一致。               |
+| 市场取消订阅       | 发送动态 WebSocket `unsubscribe` 消息                                   | 发送动态 WebSocket `unsubscribe` 消息              | 两者均支持订阅和取消订阅。                           |
+| 自动加载重试       | `auto_load_max_retries`（12）、`auto_load_retry_delay_*`（5.0/15.0 秒） | 相同的旋钮，相同的默认值                                 | 两者均以有界指数退避加抖动重试 CLOB 水化 / 索引滞后导致的未命中。   |
+| 数据客户端配置      | 凭证、订阅缓冲、报价处理、provider 配置                                          | 基础 URL、超时、过滤器、新市场发现                          | 除自动加载系列外，配置项差异显著。                       |
+| 执行客户端配置      | 凭证、重试、原始 WS 日志、实验性的基于交易的订单恢复                                      | 凭证、重试、账户 ID、原生超时                             | Rust 并未暴露每一个仅 Python 才有的选项。             |
 
 ## pUSD
 
@@ -103,12 +103,12 @@ Bridge API 也可以从其他链充入受支持的资产，并在转换后记入
 
 Polymarket 支持多种签名类型用于订单签名和验证：
 
-| 签名类型 | 钱包类型                       | 描述                                                                     | 使用场景                                                                                                   |
-|----------------|--------------------------------|--------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-| `0`            | EOA（外部拥有账户）            | 来自具有直接私钥控制的钱包的标准 EIP712 签名。                            | **默认。**直接钱包连接（MetaMask、硬件钱包等）。                                                            |
-| `1`            | 邮件/Magic 钱包代理            | 用于基于邮件账户（Magic Link）的智能合约钱包。                            | 与邮件/Magic 账户关联的 Polymarket 代理。需要 `funder` 地址。                                               |
-| `2`            | 浏览器钱包代理                 | 用于浏览器钱包的修改版 Gnosis Safe（1-of-1 多签）。                       | 与浏览器钱包关联的 Polymarket 代理。支持 UI 验证。需要 `funder` 地址。                                      |
-| `3`            | 充值钱包                       | 用于新 API 用户的 ERC-1271 充值钱包流程。                                 | 需要充值钱包 `funder`；API 凭证仍绑定到签名者。                                                             |
+| 签名类型 | 钱包类型          | 描述                                  | 使用场景                                             |
+| ---- | ------------- | ----------------------------------- | ------------------------------------------------ |
+| `0`  | EOA（外部拥有账户）   | 来自具有直接私钥控制的钱包的标准 EIP712 签名。         | **默认。**直接钱包连接（MetaMask、硬件钱包等）。                   |
+| `1`  | 邮件/Magic 钱包代理 | 用于基于邮件账户（Magic Link）的智能合约钱包。        | 与邮件/Magic 账户关联的 Polymarket 代理。需要 `funder` 地址。    |
+| `2`  | 浏览器钱包代理       | 用于浏览器钱包的修改版 Gnosis Safe（1-of-1 多签）。 | 与浏览器钱包关联的 Polymarket 代理。支持 UI 验证。需要 `funder` 地址。 |
+| `3`  | 充值钱包          | 用于新 API 用户的 ERC-1271 充值钱包流程。        | 需要充值钱包 `funder`；API 凭证仍绑定到签名者。                   |
 
 :::note
 另请参阅 Polymarket 文档中的 [Proxy wallet](https://docs.polymarket.com/developers/proxy-wallet)，了解更多关于签名类型和代理钱包基础设施的详情。
@@ -231,15 +231,15 @@ Polymarket 作为预测市场运营，与传统交易所相比，其订单类型
 
 ### 订单类型
 
-| 订单类型                 | 二元期权 | 备注                                                                      |
-|------------------------|----------------|---------------------------------------------------------------------------|
-| `MARKET`               | ✓              | **买单需要报价数量（quote quantity）**，卖单需要基础数量。                  |
-| `LIMIT`                | ✓              |                                                                           |
-| `STOP_MARKET`          | -              | *Polymarket 不支持*。                                                      |
-| `STOP_LIMIT`           | -              | *Polymarket 不支持*。                                                      |
-| `MARKET_IF_TOUCHED`    | -              | *Polymarket 不支持*。                                                      |
-| `LIMIT_IF_TOUCHED`     | -              | *Polymarket 不支持*。                                                      |
-| `TRAILING_STOP_MARKET` | -              | *Polymarket 不支持*。                                                      |
+| 订单类型                   | 二元期权 | 备注                                     |
+| ---------------------- | ---- | -------------------------------------- |
+| `MARKET`               | ✓    | **买单需要报价数量（quote quantity）**，卖单需要基础数量。 |
+| `LIMIT`                | ✓    |                                        |
+| `STOP_MARKET`          | -    | *Polymarket 不支持*。                      |
+| `STOP_LIMIT`           | -    | *Polymarket 不支持*。                      |
+| `MARKET_IF_TOUCHED`    | -    | *Polymarket 不支持*。                      |
+| `LIMIT_IF_TOUCHED`     | -    | *Polymarket 不支持*。                      |
+| `TRAILING_STOP_MARKET` | -    | *Polymarket 不支持*。                      |
 
 ### 数量语义
 
@@ -269,22 +269,22 @@ strategy.submit_order(order)
 
 ### 执行指令
 
-| 指令          | 二元期权 | 备注                                                 |
-|---------------|----------------|------------------------------------------------------|
-| `post_only`   | ✓              | 仅支持 `GTC` 或 `GTD` 的限价单。                      |
-| `reduce_only` | -              | *Polymarket 不支持*。                                 |
+| 指令            | 二元期权 | 备注                      |
+| ------------- | ---- | ----------------------- |
+| `post_only`   | ✓    | 仅支持 `GTC` 或 `GTD` 的限价单。 |
+| `reduce_only` | -    | *Polymarket 不支持*。       |
 
 ### 有效期选项
 
 Polymarket 将 `POST /order` 字段称为 `orderType`。在 NautilusTrader 中，这映射到
 `TimeInForce`。有效的组合取决于 Nautilus 订单类型：
 
-| Nautilus TIF | Polymarket `orderType` | Nautilus 订单适用范围 | 备注 |
-|--------------|------------------------|----------------------|-------|
-| `GTC`        | `GTC`                  | 仅 `LIMIT`           | 撤销前有效（Good‑Til‑Cancelled）；挂在订单簿上。 |
-| `GTD`        | `GTD`                  | 仅 `LIMIT`           | 指定日期前有效（Good‑Til‑Date）；挂单直到到期、成交或取消。 |
-| `FOK`        | `FOK`                  | `LIMIT` 或 `MARKET`  | 立即全部成交否则取消整个订单。 |
-| `IOC`        | `FAK`                  | `LIMIT` 或 `MARKET`  | 立即成交可用部分并取消剩余部分。 |
+| Nautilus TIF | Polymarket `orderType` | Nautilus 订单适用范围    | 备注                                   |
+| ------------ | ---------------------- | ------------------ | ------------------------------------ |
+| `GTC`        | `GTC`                  | 仅 `LIMIT`          | 撤销前有效（Good‑Til‑Cancelled）；挂在订单簿上。    |
+| `GTD`        | `GTD`                  | 仅 `LIMIT`          | 指定日期前有效（Good‑Til‑Date）；挂单直到到期、成交或取消。 |
+| `FOK`        | `FOK`                  | `LIMIT` 或 `MARKET` | 立即全部成交否则取消整个订单。                      |
+| `IOC`        | `FAK`                  | `LIMIT` 或 `MARKET` | 立即成交可用部分并取消剩余部分。                     |
 
 :::note
 Polymarket 用 `FAK`（Fill-And-Kill）表示 NautilusTrader 所称的
@@ -296,19 +296,19 @@ Polymarket 用 `FAK`（Fill-And-Kill）表示 NautilusTrader 所称的
 
 ### 高级订单功能
 
-| 功能             | 二元期权 | 备注                              |
-|--------------------|----------------|------------------------------------|
-| 订单修改           | -              | 仅有取消功能。                     |
-| 括号/OCO 订单      | -              | *Polymarket 不支持。*              |
-| 冰山订单           | -              | *Polymarket 不支持。*              |
+| 功能        | 二元期权 | 备注                |
+| --------- | ---- | ----------------- |
+| 订单修改      | -    | 仅有取消功能。           |
+| 括号/OCO 订单 | -    | *Polymarket 不支持。* |
+| 冰山订单      | -    | *Polymarket 不支持。* |
 
 ### 批量操作
 
-| 操作         | 二元期权 | 备注                                                                                                                          |
-|--------------|----------------|---------------------------------------------------------------------------------------------------------------------------------|
-| 批量提交     | ✓              | 两套适配器均对独立的限价单批次使用 `POST /orders`（每次请求最多 15 个订单）。参见[批量提交](#批量提交)。 |
-| 批量修改     | -              | *Polymarket 不支持*。                                                                                                            |
-| 批量取消     | ✓              | 两套适配器均使用 `DELETE /orders`。                                                                                              |
+| 操作   | 二元期权 | 备注                                                               |
+| ---- | ---- | ---------------------------------------------------------------- |
+| 批量提交 | ✓    | 两套适配器均对独立的限价单批次使用 `POST /orders`（每次请求最多 15 个订单）。参见[批量提交](#批量提交)。 |
+| 批量修改 | -    | *Polymarket 不支持*。                                                |
+| 批量取消 | ✓    | 两套适配器均使用 `DELETE /orders`。                                       |
 
 #### 批量提交
 
@@ -349,30 +349,30 @@ EIP-712 订单推导出预期的 Polymarket 订单哈希，并将其缓存为 `V
 
 ### 持仓管理
 
-| 功能             | 二元期权 | 备注                              |
-|------------------|----------------|-----------------------------------|
-| 查询持仓         | ✓              | 来自 Polymarket Data API 的当前用户持仓。 |
-| 持仓模式         | -              | 仅二元结果持仓。                  |
-| 杠杆控制         | -              | 无杠杆可用。                      |
-| 保证金模式       | -              | 无保证金交易。                    |
+| 功能    | 二元期权 | 备注                              |
+| ----- | ---- | ------------------------------- |
+| 查询持仓  | ✓    | 来自 Polymarket Data API 的当前用户持仓。 |
+| 持仓模式  | -    | 仅二元结果持仓。                        |
+| 杠杆控制  | -    | 无杠杆可用。                          |
+| 保证金模式 | -    | 无保证金交易。                         |
 
 ### 订单查询
 
-| 功能             | 二元期权 | 备注                           |
-|----------------------|----------------|--------------------------------|
-| 查询未成交订单       | ✓              | 仅活跃订单。                   |
-| 查询订单历史         | ✓              | 有限的历史数据。               |
-| 订单状态更新         | ✓              | 实时订单状态变更。             |
-| 交易历史             | ✓              | 执行和成交报告。               |
+| 功能      | 二元期权 | 备注        |
+| ------- | ---- | --------- |
+| 查询未成交订单 | ✓    | 仅活跃订单。    |
+| 查询订单历史  | ✓    | 有限的历史数据。  |
+| 订单状态更新  | ✓    | 实时订单状态变更。 |
+| 交易历史    | ✓    | 执行和成交报告。  |
 
 ### 条件订单
 
-| 功能             | 二元期权 | 备注                                |
-|--------------------|----------------|-------------------------------------|
-| 订单列表           | -              | 存在独立的订单批次，但不存在链接的条件依赖语义。 |
-| OCO 订单           | -              | *Polymarket 不支持*。               |
-| 括号订单           | -              | *Polymarket 不支持*。               |
-| 条件订单           | -              | *Polymarket 不支持*。               |
+| 功能     | 二元期权 | 备注                       |
+| ------ | ---- | ------------------------ |
+| 订单列表   | -    | 存在独立的订单批次，但不存在链接的条件依赖语义。 |
+| OCO 订单 | -    | *Polymarket 不支持*。        |
+| 括号订单   | -    | *Polymarket 不支持*。        |
+| 条件订单   | -    | *Polymarket 不支持*。        |
 
 ### 精度限制
 
@@ -393,11 +393,11 @@ Polymarket 根据最小变动价位和 `orderType` 强制执行不同的精度�
 ### 最小变动价位精度层级
 
 | 最小变动价位 | 价格小数位 | 数量小数位 | 金额小数位 |
-|-----------|----------------|---------------|-----------------|
-| 0.1       | 1              | 2             | 3               |
-| 0.01      | 2              | 2             | 4               |
-| 0.001     | 3              | 2             | 5               |
-| 0.0001    | 4              | 2             | 6               |
+| ------ | ----- | ----- | ----- |
+| 0.1    | 1     | 2     | 3     |
+| 0.01   | 2     | 2     | 4     |
+| 0.001  | 3     | 2     | 5     |
+| 0.0001 | 4     | 2     | 6     |
 
 :::note
 
@@ -461,19 +461,19 @@ Polymarket 使用公式 `fee = C * feeRate * p * (1 - p)`，其中 C 是
 交易的份额数，p 是份额价格。费用在 p = 0.50 时达到峰值，并向
 两端对称递减。只有 taker 支付费用；maker 支付为零。
 
-| 类别            | Taker `feeRate` | Maker `feeRate` | Maker 返佣 |
-|-----------------|-----------------|-----------------|--------------|
-| Crypto          | 0.072           | 0               | 20%          |
-| Sports          | 0.03            | 0               | 25%          |
-| Finance         | 0.04            | 0               | 25%          |
-| Politics        | 0.04            | 0               | 25%          |
-| Economics       | 0.05            | 0               | 25%          |
-| Culture         | 0.05            | 0               | 25%          |
-| Weather         | 0.05            | 0               | 25%          |
-| Other / General | 0.05            | 0               | 25%          |
-| Mentions        | 0.04            | 0               | 25%          |
-| Tech            | 0.04            | 0               | 25%          |
-| Geopolitics     | 0               | 0               | -            |
+| 类别              | Taker `feeRate` | Maker `feeRate` | Maker 返佣 |
+| --------------- | --------------- | --------------- | -------- |
+| Crypto          | 0.072           | 0               | 20%      |
+| Sports          | 0.03            | 0               | 25%      |
+| Finance         | 0.04            | 0               | 25%      |
+| Politics        | 0.04            | 0               | 25%      |
+| Economics       | 0.05            | 0               | 25%      |
+| Culture         | 0.05            | 0               | 25%      |
+| Weather         | 0.05            | 0               | 25%      |
+| Other / General | 0.05            | 0               | 25%      |
+| Mentions        | 0.04            | 0               | 25%      |
+| Tech            | 0.04            | 0               | 25%      |
+| Geopolitics     | 0               | 0               | -        |
 
 费用以 USDC 计算，四舍五入到 5 位小数，并由协议在撮合时
 应用。收取的最小费用为 0.00001 USDC；更小的费用会舍入为零。
@@ -566,10 +566,10 @@ Python 适配器暴露了一个实验性的 `generate_order_history_from_trades`
 份额对它们进行归一化。超出该范围的任何部分都会作为真实的部分成交或
 过成交呈现给引擎。
 
-| 方向     | 来源                                   | 适配器行为                                |
-|-----------|----------------------------------------|-------------------------------------------|
-| 过成交   | V2 USDC 刻度截断（微份额）             | 将成交向下吸附到 `submitted_qty`          |
-| 欠成交   | CLOB 分位最小变动价位截断（≤ `0.01`）  | 保留；在 MATCHED 时合成尘埃成交           |
+| 方向  | 来源                        | 适配器行为                    |
+| --- | ------------------------- | ------------------------ |
+| 过成交 | V2 USDC 刻度截断（微份额）         | 将成交向下吸附到 `submitted_qty` |
+| 欠成交 | CLOB 分位最小变动价位截断（≤ `0.01`） | 保留；在 MATCHED 时合成尘埃成交     |
 
 `FillReport.commission` 始终反映场所报告的数量，而非
 吸附后的数量。几个最低单位（ulp）的差异在 pUSD 中小于微分。
@@ -652,10 +652,10 @@ YES 和 NO 两条腿一起平仓。持仓事件会将未平仓的 Polymarket 二
 使用 `request_data()` 配合数据类型 `PolymarketResolveRequest` 来强制进行一次解析检查。该
 请求接受以下任意参数：
 
-| 参数             | 类型                 | 描述 |
-|------------------|----------------------|-------------|
-| `condition_id`   | `str`                | 解析一个 Polymarket 条件。 |
-| `condition_ids`  | `str` 或 `list[str]` | 解析一个或多个 Polymarket 条件。 |
+| 参数               | 类型                  | 描述                              |
+| ---------------- | ------------------- | ------------------------------- |
+| `condition_id`   | `str`               | 解析一个 Polymarket 条件。             |
+| `condition_ids`  | `str` 或 `list[str]` | 解析一个或多个 Polymarket 条件。          |
 | `instrument_ids` | `str` 或 `list[str]` | 解析 Polymarket 金融工具 ID；其他场所会被忽略。 |
 
 如果请求省略了所有选择器，客户端会使用观察列表。启用自动轮询时，
@@ -664,18 +664,18 @@ YES 和 NO 两条腿一起平仓。持仓事件会将未平仓的 Polymarket 二
 
 响应载荷是具有以下字典形态的自定义数据：
 
-| 键                           | 含义 |
-|------------------------------|---------|
-| `requested_condition_ids`    | 请求检查的去重后的条件 ID。 |
-| `fetched_markets`            | 在批量查找中返回的 Gamma 市场。 |
+| 键                            | 含义                             |
+| ---------------------------- | ------------------------------ |
+| `requested_condition_ids`    | 请求检查的去重后的条件 ID。                |
+| `fetched_markets`            | 在批量查找中返回的 Gamma 市场。            |
 | `resolved_markets`           | 具有严格 Gamma 结果或成功 CLOB 回退结果的条件。 |
-| `skipped_non_binary_markets` | 因非二元或模糊解析形态而被跳过的 Gamma 市场。 |
-| `clob_fallback_successes`    | 通过 CLOB 回退路径解析的条件。 |
+| `skipped_non_binary_markets` | 因非二元或模糊解析形态而被跳过的 Gamma 市场。     |
+| `clob_fallback_successes`    | 通过 CLOB 回退路径解析的条件。             |
 | `emitted_condition_ids`      | 发出了至少一个 `InstrumentClose` 的条件。 |
-| `failed_condition_ids`       | Gamma 和 CLOB 查找都失败的条件。 |
-| `used_watchlist_fallback`    | 请求是否从观察列表中选择了条件。 |
-| `timed_out_watchlist`        | 在回退选择期间看到的已超时观察列表条目。 |
-| `error`                      | 第一个汇总错误（如果发生了的话）。 |
+| `failed_condition_ids`       | Gamma 和 CLOB 查找都失败的条件。         |
+| `used_watchlist_fallback`    | 请求是否从观察列表中选择了条件。               |
+| `timed_out_watchlist`        | 在回退选择期间看到的已超时观察列表条目。           |
+| `error`                      | 第一个汇总错误（如果发生了的话）。              |
 
 赎回是单独的账户或执行工作流。不要扩展数据客户端的解析
 路径去领取资金；它只将市场结果关闭事件发布到 Nautilus。
@@ -759,23 +759,23 @@ Polymarket 通过 Cloudflare 节流来强制执行速率限制。
 
 Polymarket 会随时间更改这些配额。截至 2026-05-06，官方限制如下：
 
-| 端点                          | 突发（10s） | 持续（10 分钟） | 备注 |
-|-------------------------------|-------------|--------------------|-------|
-| 通用速率限制                  | 15,000      | -                  | 全局有记录的速率限制。 |
-| 健康检查（`/ok`）             | 100         | -                  | 健康端点。 |
-| CLOB 通用                     | 9,000       | -                  | 跨 CLOB 端点的总和。 |
-| CLOB `POST /order`            | 3,500       | 36,000             | 单订单提交。 |
-| CLOB `POST /orders`           | 1,000       | 15,000             | 批量提交（每次请求最多 15 个订单）。 |
-| CLOB `DELETE /order`          | 3,000       | 30,000             | 单订单取消。 |
-| CLOB `DELETE /orders`         | 1,000       | 15,000             | 批量取消。 |
-| CLOB `GET /balance-allowance` | 200         | -                  | 余额和授权额度查询。 |
-| CLOB API 密钥端点             | 100         | -                  | 密钥管理。 |
-| Gamma 通用                    | 4,000       | -                  | 跨 Gamma 端点的总和。 |
-| Gamma `/markets`              | 300         | -                  | 市场元数据。 |
-| Gamma `/events`               | 500         | -                  | 事件元数据。 |
-| Data 通用                     | 1,000       | -                  | 跨 Data API 端点的总和。 |
-| Data `/trades`                | 200         | -                  | 交易历史。 |
-| Data `/positions`             | 150         | -                  | 当前持仓。 |
+| 端点                            | 突发（10s） | 持续（10 分钟） | 备注                   |
+| ----------------------------- | ------- | --------- | -------------------- |
+| 通用速率限制                        | 15,000  | -         | 全局有记录的速率限制。          |
+| 健康检查（`/ok`）                   | 100     | -         | 健康端点。                |
+| CLOB 通用                       | 9,000   | -         | 跨 CLOB 端点的总和。        |
+| CLOB `POST /order`            | 3,500   | 36,000    | 单订单提交。               |
+| CLOB `POST /orders`           | 1,000   | 15,000    | 批量提交（每次请求最多 15 个订单）。 |
+| CLOB `DELETE /order`          | 3,000   | 30,000    | 单订单取消。               |
+| CLOB `DELETE /orders`         | 1,000   | 15,000    | 批量取消。                |
+| CLOB `GET /balance-allowance` | 200     | -         | 余额和授权额度查询。           |
+| CLOB API 密钥端点                 | 100     | -         | 密钥管理。                |
+| Gamma 通用                      | 4,000   | -         | 跨 Gamma 端点的总和。       |
+| Gamma `/markets`              | 300     | -         | 市场元数据。               |
+| Gamma `/events`               | 500     | -         | 事件元数据。               |
+| Data 通用                       | 1,000   | -         | 跨 Data API 端点的总和。    |
+| Data `/trades`                | 200     | -         | 交易历史。                |
+| Data `/positions`             | 150     | -         | 当前持仓。                |
 
 ### WebSocket 限制
 
@@ -826,84 +826,84 @@ Python 适配器和 Rust 原生适配器暴露了不同的配置项。下面的�
 
 类：`nautilus_trader.adapters.polymarket.config` 中的 `PolymarketDataClientConfig`。
 
-| 选项                                  | 默认值       | 描述 |
-|---------------------------------------|--------------|-------------|
-| `venue`                               | `POLYMARKET` | 为数据客户端注册的交易场所标识符。 |
-| `private_key`                         | `None`       | 钱包私钥；省略时从 `POLYMARKET_PK` 读取。 |
-| `signature_type`                      | `0`          | 签名方案（0 = EOA，1 = 邮件代理，2 = 浏览器钱包代理）。 |
-| `funder`                              | `None`       | pUSD 资金钱包；省略时从 `POLYMARKET_FUNDER` 读取。 |
-| `api_key`                             | `None`       | API 密钥；省略时从 `POLYMARKET_API_KEY` 读取。 |
-| `api_secret`                          | `None`       | API 密钥；省略时从 `POLYMARKET_API_SECRET` 读取。 |
-| `passphrase`                          | `None`       | API 口令；省略时从 `POLYMARKET_PASSPHRASE` 读取。 |
-| `base_url_http`                       | `None`       | REST 基础 URL 覆盖。 |
-| `base_url_ws`                         | `None`       | WebSocket 基础 URL 覆盖。 |
-| `proxy_url`                           | `None`       | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `ws_connection_initial_delay_secs`    | `5`          | 第一次 WebSocket 连接前的延迟（秒），用于缓冲订阅。 |
-| `ws_connection_delay_secs`            | `0.1`        | 后续 WebSocket 连接尝试之间的延迟（秒）。 |
-| `ws_max_subscriptions_per_connection` | `200`        | 每个 WebSocket 连接的最大金融工具订阅数（Polymarket 限制为 500）。 |
-| `update_instruments_interval_mins`    | `60`         | 金融工具目录刷新间隔（分钟）。 |
-| `compute_effective_deltas`            | `False`      | 计算有效订单簿增量以节省带宽。 |
-| `drop_quotes_missing_side`            | `True`       | 丢弃缺少买/卖价的报价，而不是替换为边界值。 |
-| `auto_load_missing_instruments`       | `True`       | 当订阅或请求命令引用未缓存的金融工具时，按需加载金融工具。 |
-| `auto_load_debounce_ms`               | `100`        | 合并并发运行时金融工具加载的去抖窗口（毫秒）。 |
+| 选项                                    | 默认值          | 描述                                                        |
+| ------------------------------------- | ------------ | --------------------------------------------------------- |
+| `venue`                               | `POLYMARKET` | 为数据客户端注册的交易场所标识符。                                         |
+| `private_key`                         | `None`       | 钱包私钥；省略时从 `POLYMARKET_PK` 读取。                             |
+| `signature_type`                      | `0`          | 签名方案（0 = EOA，1 = 邮件代理，2 = 浏览器钱包代理）。                       |
+| `funder`                              | `None`       | pUSD 资金钱包；省略时从 `POLYMARKET_FUNDER` 读取。                    |
+| `api_key`                             | `None`       | API 密钥；省略时从 `POLYMARKET_API_KEY` 读取。                      |
+| `api_secret`                          | `None`       | API 密钥；省略时从 `POLYMARKET_API_SECRET` 读取。                   |
+| `passphrase`                          | `None`       | API 口令；省略时从 `POLYMARKET_PASSPHRASE` 读取。                   |
+| `base_url_http`                       | `None`       | REST 基础 URL 覆盖。                                           |
+| `base_url_ws`                         | `None`       | WebSocket 基础 URL 覆盖。                                      |
+| `proxy_url`                           | `None`       | HTTP 和 WebSocket 传输的可选代理 URL。                             |
+| `ws_connection_initial_delay_secs`    | `5`          | 第一次 WebSocket 连接前的延迟（秒），用于缓冲订阅。                           |
+| `ws_connection_delay_secs`            | `0.1`        | 后续 WebSocket 连接尝试之间的延迟（秒）。                                |
+| `ws_max_subscriptions_per_connection` | `200`        | 每个 WebSocket 连接的最大金融工具订阅数（Polymarket 限制为 500）。            |
+| `update_instruments_interval_mins`    | `60`         | 金融工具目录刷新间隔（分钟）。                                           |
+| `compute_effective_deltas`            | `False`      | 计算有效订单簿增量以节省带宽。                                           |
+| `drop_quotes_missing_side`            | `True`       | 丢弃缺少买/卖价的报价，而不是替换为边界值。                                    |
+| `auto_load_missing_instruments`       | `True`       | 当订阅或请求命令引用未缓存的金融工具时，按需加载金融工具。                             |
+| `auto_load_debounce_ms`               | `100`        | 合并并发运行时金融工具加载的去抖窗口（毫秒）。                                   |
 | `auto_load_max_retries`               | `12`         | 瞬态自动加载失败（CLOB 水化期间的 404 或空 `token_id`）的最大重试次数。设为 `0` 可禁用。 |
-| `auto_load_retry_delay_initial_secs`  | `5.0`        | 瞬态自动加载重试之间的初始延迟（秒）。 |
-| `auto_load_retry_delay_max_secs`      | `15.0`       | 瞬态自动加载重试之间的最大延迟（秒）。 |
-| `instrument_config`                   | `None`       | 用于金融工具加载的可选 `PolymarketInstrumentProviderConfig`。 |
+| `auto_load_retry_delay_initial_secs`  | `5.0`        | 瞬态自动加载重试之间的初始延迟（秒）。                                       |
+| `auto_load_retry_delay_max_secs`      | `15.0`       | 瞬态自动加载重试之间的最大延迟（秒）。                                       |
+| `instrument_config`                   | `None`       | 用于金融工具加载的可选 `PolymarketInstrumentProviderConfig`。         |
 
 ### 执行客户端选项（Python v2）
 
 类：`nautilus_trader.adapters.polymarket.config` 中的 `PolymarketExecClientConfig`。
 
-| 选项                                  | 默认值       | 描述 |
-|---------------------------------------|--------------|-------------|
-| `venue`                               | `POLYMARKET` | 为执行客户端注册的交易场所标识符。 |
-| `private_key`                         | `None`       | 钱包私钥；省略时从 `POLYMARKET_PK` 读取。 |
-| `signature_type`                      | `0`          | 签名方案（0 = EOA，1 = 邮件代理，2 = 浏览器钱包代理）。 |
-| `funder`                              | `None`       | pUSD 资金钱包；省略时从 `POLYMARKET_FUNDER` 读取。 |
-| `api_key`                             | `None`       | API 密钥；省略时从 `POLYMARKET_API_KEY` 读取。 |
-| `api_secret`                          | `None`       | API 密钥；省略时从 `POLYMARKET_API_SECRET` 读取。 |
-| `passphrase`                          | `None`       | API 口令；省略时从 `POLYMARKET_PASSPHRASE` 读取。 |
-| `base_url_http`                       | `None`       | REST 基础 URL 覆盖。 |
-| `base_url_ws`                         | `None`       | WebSocket 基础 URL 覆盖。 |
+| 选项                                    | 默认值          | 描述                                                        |
+| ------------------------------------- | ------------ | --------------------------------------------------------- |
+| `venue`                               | `POLYMARKET` | 为执行客户端注册的交易场所标识符。                                         |
+| `private_key`                         | `None`       | 钱包私钥；省略时从 `POLYMARKET_PK` 读取。                             |
+| `signature_type`                      | `0`          | 签名方案（0 = EOA，1 = 邮件代理，2 = 浏览器钱包代理）。                       |
+| `funder`                              | `None`       | pUSD 资金钱包；省略时从 `POLYMARKET_FUNDER` 读取。                    |
+| `api_key`                             | `None`       | API 密钥；省略时从 `POLYMARKET_API_KEY` 读取。                      |
+| `api_secret`                          | `None`       | API 密钥；省略时从 `POLYMARKET_API_SECRET` 读取。                   |
+| `passphrase`                          | `None`       | API 口令；省略时从 `POLYMARKET_PASSPHRASE` 读取。                   |
+| `base_url_http`                       | `None`       | REST 基础 URL 覆盖。                                           |
+| `base_url_ws`                         | `None`       | WebSocket 基础 URL 覆盖。                                      |
 | `base_url_data_api`                   | `None`       | Data API 基础 URL 覆盖（默认 `https://data-api.polymarket.com`）。 |
-| `proxy_url`                           | `None`       | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `ws_max_subscriptions_per_connection` | `200`        | 每个 WebSocket 连接的最大金融工具订阅数（Polymarket 限制为 500）。 |
-| `max_retries`                         | `None`       | 提交/取消请求的最大重试次数。 |
-| `retry_delay_initial_ms`              | `None`       | 重试之间的初始延迟（毫秒）。 |
-| `retry_delay_max_ms`                  | `None`       | 重试之间的最大延迟（毫秒）。 |
-| `ack_timeout_secs`                    | `5.0`        | 等待来自缓存的订单/交易确认的超时时间（秒）。 |
-| `generate_order_history_from_trades`  | `False`      | 为 `True` 时从交易报告生成合成订单历史（实验性功能）。 |
-| `log_raw_ws_messages`                 | `False`      | 为 `True` 时以 INFO 级别记录原始 WebSocket 载荷。 |
-| `instrument_config`                   | `None`       | 用于金融工具加载的可选 `PolymarketInstrumentProviderConfig`。 |
+| `proxy_url`                           | `None`       | HTTP 和 WebSocket 传输的可选代理 URL。                             |
+| `ws_max_subscriptions_per_connection` | `200`        | 每个 WebSocket 连接的最大金融工具订阅数（Polymarket 限制为 500）。            |
+| `max_retries`                         | `None`       | 提交/取消请求的最大重试次数。                                           |
+| `retry_delay_initial_ms`              | `None`       | 重试之间的初始延迟（毫秒）。                                            |
+| `retry_delay_max_ms`                  | `None`       | 重试之间的最大延迟（毫秒）。                                            |
+| `ack_timeout_secs`                    | `5.0`        | 等待来自缓存的订单/交易确认的超时时间（秒）。                                   |
+| `generate_order_history_from_trades`  | `False`      | 为 `True` 时从交易报告生成合成订单历史（实验性功能）。                           |
+| `log_raw_ws_messages`                 | `False`      | 为 `True` 时以 INFO 级别记录原始 WebSocket 载荷。                     |
+| `instrument_config`                   | `None`       | 用于金融工具加载的可选 `PolymarketInstrumentProviderConfig`。         |
 
 ### 数据客户端选项（Rust v2）
 
 结构体：`crates/adapters/polymarket/src/config.rs` 中的 `PolymarketDataClientConfig`。
 
-| 选项                                 | 默认值                                     | 描述 |
-|--------------------------------------|--------------------------------------------|-------------|
-| `base_url_http`                      | `None`（官方 CLOB 端点）                   | CLOB REST 基础 URL 覆盖。 |
-| `base_url_ws`                        | `None`（官方 CLOB 端点）                   | CLOB WebSocket 基础 URL 覆盖。 |
-| `base_url_gamma`                     | `None`（官方 Gamma 端点）                  | Gamma API 基础 URL 覆盖。 |
-| `base_url_data_api`                  | `None`（`https://data-api.polymarket.com`）| Data API 基础 URL 覆盖。 |
-| `http_timeout_secs`                  | `60`                                       | HTTP 请求超时（秒）。 |
-| `ws_timeout_secs`                    | `30`                                       | WebSocket 连接/空闲超时（秒）。 |
-| `ws_max_subscriptions`               | `200`                                      | 每个 WebSocket 连接的最大金融工具订阅数。 |
-| `update_instruments_interval_mins`   | `60`                                       | 金融工具目录刷新间隔（分钟）。 |
-| `subscribe_new_markets`              | `false`                                    | 为 `true` 时通过 WebSocket 订阅新市场发现事件。 |
-| `auto_load_missing_instruments`      | `true`                                     | 当订阅或请求命令引用未缓存的金融工具时，按需加载金融工具。 |
-| `auto_load_debounce_ms`              | `100`                                      | 合并并发运行时金融工具加载的去抖窗口（毫秒）。 |
-| `auto_load_max_retries`              | `12`                                       | 瞬态自动加载失败（处于 CLOB 水化窗口的市场）的最大重试次数。设为 `0` 可禁用。 |
-| `auto_load_retry_delay_initial_secs` | `5.0`                                      | 瞬态自动加载重试之间的初始延迟（秒）。 |
-| `auto_load_retry_delay_max_secs`     | `15.0`                                     | 瞬态自动加载重试之间的最大延迟（秒）。 |
-| `resolve_poll_enabled`               | `true`                                     | 自动轮询已过期的被观察条件以进行市场解析。 |
-| `resolve_poll_interval_secs`         | `30`                                       | 自动解析轮询尝试之间的间隔（秒）。 |
-| `resolve_poll_grace_secs`            | `10`                                       | 过期后到第一次自动解析轮询之间的延迟（秒）。 |
-| `resolve_poll_max_wait_secs`         | `1800`                                     | 过期后自动轮询暂停被观察条件以供手动恢复之前的最大等待时间（秒）。 |
-| `filters`                            | `[]`                                       | 在加载和发现期间应用的金融工具过滤器。 |
-| `new_market_filter`                  | `None`                                     | 在发出之前应用于新发现市场的可选过滤器。 |
-| `transport_backend`                  | `Sockudo`                                  | WebSocket 传输后端。 |
+| 选项                                   | 默认值                                       | 描述                                           |
+| ------------------------------------ | ----------------------------------------- | -------------------------------------------- |
+| `base_url_http`                      | `None`（官方 CLOB 端点）                        | CLOB REST 基础 URL 覆盖。                         |
+| `base_url_ws`                        | `None`（官方 CLOB 端点）                        | CLOB WebSocket 基础 URL 覆盖。                    |
+| `base_url_gamma`                     | `None`（官方 Gamma 端点）                       | Gamma API 基础 URL 覆盖。                         |
+| `base_url_data_api`                  | `None`（`https://data-api.polymarket.com`） | Data API 基础 URL 覆盖。                          |
+| `http_timeout_secs`                  | `60`                                      | HTTP 请求超时（秒）。                                |
+| `ws_timeout_secs`                    | `30`                                      | WebSocket 连接/空闲超时（秒）。                        |
+| `ws_max_subscriptions`               | `200`                                     | 每个 WebSocket 连接的最大金融工具订阅数。                   |
+| `update_instruments_interval_mins`   | `60`                                      | 金融工具目录刷新间隔（分钟）。                              |
+| `subscribe_new_markets`              | `false`                                   | 为 `true` 时通过 WebSocket 订阅新市场发现事件。            |
+| `auto_load_missing_instruments`      | `true`                                    | 当订阅或请求命令引用未缓存的金融工具时，按需加载金融工具。                |
+| `auto_load_debounce_ms`              | `100`                                     | 合并并发运行时金融工具加载的去抖窗口（毫秒）。                      |
+| `auto_load_max_retries`              | `12`                                      | 瞬态自动加载失败（处于 CLOB 水化窗口的市场）的最大重试次数。设为 `0` 可禁用。 |
+| `auto_load_retry_delay_initial_secs` | `5.0`                                     | 瞬态自动加载重试之间的初始延迟（秒）。                          |
+| `auto_load_retry_delay_max_secs`     | `15.0`                                    | 瞬态自动加载重试之间的最大延迟（秒）。                          |
+| `resolve_poll_enabled`               | `true`                                    | 自动轮询已过期的被观察条件以进行市场解析。                        |
+| `resolve_poll_interval_secs`         | `30`                                      | 自动解析轮询尝试之间的间隔（秒）。                            |
+| `resolve_poll_grace_secs`            | `10`                                      | 过期后到第一次自动解析轮询之间的延迟（秒）。                       |
+| `resolve_poll_max_wait_secs`         | `1800`                                    | 过期后自动轮询暂停被观察条件以供手动恢复之前的最大等待时间（秒）。            |
+| `filters`                            | `[]`                                      | 在加载和发现期间应用的金融工具过滤器。                          |
+| `new_market_filter`                  | `None`                                    | 在发出之前应用于新发现市场的可选过滤器。                         |
+| `transport_backend`                  | `Sockudo`                                 | WebSocket 传输后端。                              |
 
 Rust 数据客户端配置不接受账户凭证；认证由
 执行客户端处理。订阅缓冲（`ws_connection_initial_delay_secs`）和报价
@@ -913,25 +913,25 @@ Rust 数据客户端配置不接受账户凭证；认证由
 
 结构体：`crates/adapters/polymarket/src/config.rs` 中的 `PolymarketExecClientConfig`。
 
-| 选项                     | 默认值                                     | 描述 |
-|--------------------------|--------------------------------------------|-------------|
-| `trader_id`              | 默认 `TraderId`                            | 客户端注册时使用的交易者标识符。 |
-| `account_id`             | `POLYMARKET-001`                           | 此执行客户端的账户标识符。 |
-| `private_key`            | `None`（`POLYMARKET_PK` 环境变量）         | 用于 EIP-712 签名的钱包私钥。 |
-| `api_key`                | `None`（`POLYMARKET_API_KEY` 环境变量）    | CLOB API 密钥（L2 认证）。 |
-| `api_secret`             | `None`（`POLYMARKET_API_SECRET` 环境变量） | CLOB API 密钥（L2 认证）。 |
-| `passphrase`             | `None`（`POLYMARKET_PASSPHRASE` 环境变量） | CLOB API 口令（L2 认证）。 |
-| `funder`                 | `None`（`POLYMARKET_FUNDER` 环境变量）     | pUSD 资金钱包；对于 `Poly1271`，这是充值钱包。 |
-| `signature_type`         | `Eoa`                                      | 签名方案（`Eoa`、`PolyProxy`、`PolyGnosisSafe`、`Poly1271`）。 |
-| `base_url_http`          | `None`（官方 CLOB 端点）                   | CLOB REST 基础 URL 覆盖。 |
-| `base_url_ws`            | `None`（官方 CLOB 端点）                   | CLOB WebSocket 基础 URL 覆盖。 |
-| `base_url_data_api`      | `None`（`https://data-api.polymarket.com`）| Data API 基础 URL 覆盖。 |
-| `http_timeout_secs`      | `60`                                       | HTTP 请求超时（秒）。 |
-| `max_retries`            | `3`                                        | 单订单提交/取消请求的最大重试次数。 |
-| `retry_delay_initial_ms` | `1000`                                     | 重试之间的初始延迟（毫秒）。 |
-| `retry_delay_max_ms`     | `10000`                                    | 重试之间的最大延迟（毫秒）。 |
-| `ack_timeout_secs`       | `5`                                        | 等待 WebSocket 订单/交易确认的超时时间（秒）。 |
-| `transport_backend`      | `Sockudo`                                  | WebSocket 传输后端。 |
+| 选项                       | 默认值                                       | 描述                                                   |
+| ------------------------ | ----------------------------------------- | ---------------------------------------------------- |
+| `trader_id`              | 默认 `TraderId`                             | 客户端注册时使用的交易者标识符。                                     |
+| `account_id`             | `POLYMARKET-001`                          | 此执行客户端的账户标识符。                                        |
+| `private_key`            | `None`（`POLYMARKET_PK` 环境变量）              | 用于 EIP-712 签名的钱包私钥。                                  |
+| `api_key`                | `None`（`POLYMARKET_API_KEY` 环境变量）         | CLOB API 密钥（L2 认证）。                                  |
+| `api_secret`             | `None`（`POLYMARKET_API_SECRET` 环境变量）      | CLOB API 密钥（L2 认证）。                                  |
+| `passphrase`             | `None`（`POLYMARKET_PASSPHRASE` 环境变量）      | CLOB API 口令（L2 认证）。                                  |
+| `funder`                 | `None`（`POLYMARKET_FUNDER` 环境变量）          | pUSD 资金钱包；对于 `Poly1271`，这是充值钱包。                      |
+| `signature_type`         | `Eoa`                                     | 签名方案（`Eoa`、`PolyProxy`、`PolyGnosisSafe`、`Poly1271`）。 |
+| `base_url_http`          | `None`（官方 CLOB 端点）                        | CLOB REST 基础 URL 覆盖。                                 |
+| `base_url_ws`            | `None`（官方 CLOB 端点）                        | CLOB WebSocket 基础 URL 覆盖。                            |
+| `base_url_data_api`      | `None`（`https://data-api.polymarket.com`） | Data API 基础 URL 覆盖。                                  |
+| `http_timeout_secs`      | `60`                                      | HTTP 请求超时（秒）。                                        |
+| `max_retries`            | `3`                                       | 单订单提交/取消请求的最大重试次数。                                   |
+| `retry_delay_initial_ms` | `1000`                                    | 重试之间的初始延迟（毫秒）。                                       |
+| `retry_delay_max_ms`     | `10000`                                   | 重试之间的最大延迟（毫秒）。                                       |
+| `ack_timeout_secs`       | `5`                                       | 等待 WebSocket 订单/交易确认的超时时间（秒）。                        |
+| `transport_backend`      | `Sockudo`                                 | WebSocket 传输后端。                                      |
 
 Rust 执行客户端不暴露 `generate_order_history_from_trades`、
 `log_raw_ws_messages`、`ws_max_subscriptions_per_connection` 或 `instrument_config`。通过 `POST /orders` 的批量
@@ -942,12 +942,12 @@ Rust 执行客户端不暴露 `generate_order_history_from_trades`、
 
 金融工具 provider 配置通过数据客户端配置上的 `instrument_config` 参数传入。
 
-| 选项                 | 默认值  | 描述                                                                                        |
-|----------------------|---------|---------------------------------------------------------------------------------------------|
-| `load_all`           | `False` | 启动时加载所有场所金融工具。提供 slug 范围时自动设为 `True`。                                |
-| `event_slugs`        | `None`  | 通过 Gamma events 解析的静态 event slug。                                                    |
-| `market_slugs`       | `None`  | 通过 Gamma markets 直接加载的静态 market slug。                                              |
-| `event_slug_builder` | `None`  | 用于可预测的 Up/Down 事件 slug 窗口的 Rust 支持的 `PolymarketUpDownEventSlugConfig`。       |
+| 选项                   | 默认值     | 描述                                                                     |
+| -------------------- | ------- | ---------------------------------------------------------------------- |
+| `load_all`           | `False` | 启动时加载所有场所金融工具。提供 slug 范围时自动设为 `True`。                                  |
+| `event_slugs`        | `None`  | 通过 Gamma events 解析的静态 event slug。                                      |
+| `market_slugs`       | `None`  | 通过 Gamma markets 直接加载的静态 market slug。                                  |
+| `event_slug_builder` | `None`  | 用于可预测的 Up/Down 事件 slug 窗口的 Rust 支持的 `PolymarketUpDownEventSlugConfig`。 |
 
 #### 事件 slug 构建器
 
@@ -1001,10 +1001,10 @@ instrument_config = PolymarketInstrumentProviderConfig(
 
 加载器提供了两种访问 Polymarket API 的方式：
 
-| 前缀      | 类型             | 使用场景                                                               |
-|-----------|------------------|------------------------------------------------------------------------|
-| `query_*` | 静态方法         | 无需金融工具即可探索 API。不需要加载器实例。                            |
-| `fetch_*` | 实例方法         | 使用已配置的加载器获取数据。使用加载器的 HTTP 客户端。                  |
+| 前缀        | 类型   | 使用场景                           |
+| --------- | ---- | ------------------------------ |
+| `query_*` | 静态方法 | 无需金融工具即可探索 API。不需要加载器实例。       |
+| `fetch_*` | 实例方法 | 使用已配置的加载器获取数据。使用加载器的 HTTP 客户端。 |
 
 **在以下情况使用 `query_*`：**当你想要在确定某个特定金融工具之前探索市场、发现事件或获取元数据时：
 
@@ -1048,6 +1048,7 @@ import asyncio
 
 from nautilus_trader.adapters.polymarket import PolymarketDataLoader
 
+
 async def main():
     # 从 market slug 创建加载器（推荐）
     loader = await PolymarketDataLoader.from_market_slug("gta-vi-released-before-june-2026")
@@ -1055,6 +1056,7 @@ async def main():
     # 加载器已设置好 instrument 和 token_id，可立即使用
     print(loader.instrument)
     print(loader.token_id)
+
 
 asyncio.run(main())
 ```
@@ -1176,6 +1178,7 @@ from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
 
+
 async def run_backtest():
     # 初始化加载器并获取市场数据
     loader = await PolymarketDataLoader.from_market_slug("gta-vi-released-before-june-2026")
@@ -1213,6 +1216,7 @@ async def run_backtest():
     # 显示结果
     print(engine.trader.generate_account_report(POLYMARKET_VENUE))
 
+
 # 运行回测
 asyncio.run(run_backtest())
 ```
@@ -1233,7 +1237,7 @@ from nautilus_trader.adapters.polymarket import get_polymarket_instrument_id
 # 从 Polymarket 标识符创建 NautilusTrader InstrumentId
 instrument_id = get_polymarket_instrument_id(
     condition_id="0xcccb7e7613a087c132b69cbf3a02bece3fdcb824c1da54ae79acc8d4a562d902",
-    token_id="8441400852834915183759801017793514978104486628517653995211751018945988243154"
+    token_id="8441400852834915183759801017793514978104486628517653995211751018945988243154",
 )
 ```
 

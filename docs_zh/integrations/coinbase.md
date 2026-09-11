@@ -54,22 +54,22 @@ Coinbase 为 Advanced Trade API 提供了文档：
 
 支持以下产品类型：
 
-| 产品类型     | 是否支持 | 备注                                            |
-|--------------|----------|-------------------------------------------------|
-| 现货         | ✓        | 以 USD、USDC 和 USDT 计价的现货交易对。          |
-| 永续合约     | ✓        | FCM 交易场所上以 USD 计价的永续合约。            |
-| 期货合约     | ✓        | 到期交割期货（nano BTC、nano ETH 等）。          |
+| 产品类型 | 是否支持 | 备注                           |
+| ---- | ---- | ---------------------------- |
+| 现货   | ✓    | 以 USD、USDC 和 USDT 计价的现货交易对。  |
+| 永续合约 | ✓    | FCM 交易场所上以 USD 计价的永续合约。      |
+| 期货合约 | ✓    | 到期交割期货（nano BTC、nano ETH 等）。 |
 
 ## 符号体系 (Symbology)
 
 Coinbase 直接将交易场所的原生 `product_id` 字段用作 Nautilus 符号。金融工具 ID 为
 `{product_id}.COINBASE`。
 
-| 产品         | 格式                               | 示例                               |
-|--------------|------------------------------------|------------------------------------|
-| 现货         | `{base}-{quote}`                   | `BTC-USD`、`ETH-USDC`、`SOL-USDT`。 |
-| 永续合约     | `{contract_code}-{ddMMMyy}-CDE`    | `BIP-20DEC30-CDE`（BTC PERP）。     |
-| 到期期货     | `{contract_code}-{ddMMMyy}-CDE`    | `BIT-24APR26-CDE`（BTC 2026 年 4 月）。 |
+| 产品   | 格式                              | 示例                                 |
+| ---- | ------------------------------- | ---------------------------------- |
+| 现货   | `{base}-{quote}`                | `BTC-USD`、`ETH-USDC`、`SOL-USDT`。   |
+| 永续合约 | `{contract_code}-{ddMMMyy}-CDE` | `BIP-20DEC30-CDE`（BTC PERP）。       |
+| 到期期货 | `{contract_code}-{ddMMMyy}-CDE` | `BIT-24APR26-CDE`（BTC 2026 年 4 月）。 |
 
 `-CDE` 后缀表示 Coinbase Derivatives Exchange（FCM 交易场所）。永续合约带有交易所分配的
 远期到期日（例如 `20DEC30`），但由于存在持续的资金费率 (funding rate)，它们被归类为
@@ -107,10 +107,10 @@ BTC-USDC:  alias="BTC-USD" alias_to=[]             # BTC-USD 的别名
 
 Coinbase 提供两种交易环境。使用客户端配置中的 `environment` 字段配置相应的环境。
 
-| 环境    | `environment` 值                | REST 基础 URL                      |
-|---------|---------------------------------|------------------------------------|
-| Live    | `CoinbaseEnvironment.LIVE`      | `https://api.coinbase.com`         |
-| Sandbox | `CoinbaseEnvironment.SANDBOX`   | `https://api-sandbox.coinbase.com` |
+| 环境      | `environment` 值               | REST 基础 URL                        |
+| ------- | ----------------------------- | ---------------------------------- |
+| Live    | `CoinbaseEnvironment.LIVE`    | `https://api.coinbase.com`         |
+| Sandbox | `CoinbaseEnvironment.SANDBOX` | `https://api-sandbox.coinbase.com` |
 
 ### Live（生产环境）
 
@@ -133,7 +133,7 @@ config = CoinbaseExecClientConfig(
 
 ```python
 config = CoinbaseExecClientConfig(
-    api_key="ANY_NON_EMPTY_STRING",   # 适配器构造函数要求
+    api_key="ANY_NON_EMPTY_STRING",  # 适配器构造函数要求
     api_secret="ANY_NON_EMPTY_STRING",
     environment=CoinbaseEnvironment.SANDBOX,
 )
@@ -203,10 +203,10 @@ Coinbase 不再自动下载密钥文件。请在关闭弹窗前从创建弹窗�
 
 ### 环境变量
 
-| 变量                  | 描述                                                       |
-|-----------------------|----------------------------------------------------------|
-| `COINBASE_API_KEY`    | 密钥名称（`organizations/{org_id}/apiKeys/{key_id}`）。   |
-| `COINBASE_API_SECRET` | PEM 编码的 EC 私钥（完整的多行字符串）。                   |
+| 变量                    | 描述                                               |
+| --------------------- | ------------------------------------------------ |
+| `COINBASE_API_KEY`    | 密钥名称（`organizations/{org_id}/apiKeys/{key_id}`）。 |
+| `COINBASE_API_SECRET` | PEM 编码的 EC 私钥（完整的多行字符串）。                         |
 
 示例：
 
@@ -287,12 +287,12 @@ Coinbase 的 `POST /orders` 端点默认路由到密钥所绑定的投资组合�
 
 交易场所会因若干不同原因返回此错误；通过运行上面的探测二进制程序并检查投资组合钱包列表来诊断。
 
-| 现象                                                                | 可能原因                                                                                              | 修复方法                                                                                   |
-|---------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
-| 仅针对特定产品被拒（例如只持有 USDC 时下单 `BTC-USD`）               | 投资组合缺少该产品计价货币的钱包。在 Coinbase 上 USD 和 USDC 是分开的，且交易场所按提交的 `product_id` 而非规范别名来路由订单。 | 针对你所持有计价货币的产品提交（例如对 USDC 钱包使用 `BTC-USDC`）。适配器在内部解析数据侧的别名；无需修改配置。通过 coinbase.com 为缺失的钱包注资也是一个选项，但在只持有一种货币时并非必要。 |
-| 所有产品上的每个订单都被拒                                           | 密钥绑定到一个非默认投资组合，而 `retail_portfolio_id` 未设置。                                       | 将 `CoinbaseExecClientConfig` 上的 `retail_portfolio_id` 设置为目标投资组合 UUID。          |
-| 非美国账户在 `*-USD` 产品上被拒                                      | 司法管辖限制（例如澳大利亚账户不能交易 USD 计价的交易对）。                                           | 使用本地可用的计价货币（USDC、AUD、EUR 等）代替 USD。                                       |
-| 密钥轮换后立即被拒                                                   | 新密钥创建在了与上一个密钥不同的投资组合中。                                                         | 更新 `retail_portfolio_id` 以匹配新密钥的投资组合，或转移资金。                             |
+| 现象                                  | 可能原因                                                                              | 修复方法                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 仅针对特定产品被拒（例如只持有 USDC 时下单 `BTC-USD`） | 投资组合缺少该产品计价货币的钱包。在 Coinbase 上 USD 和 USDC 是分开的，且交易场所按提交的 `product_id` 而非规范别名来路由订单。 | 针对你所持有计价货币的产品提交（例如对 USDC 钱包使用 `BTC-USDC`）。适配器在内部解析数据侧的别名；无需修改配置。通过 coinbase.com 为缺失的钱包注资也是一个选项，但在只持有一种货币时并非必要。 |
+| 所有产品上的每个订单都被拒                       | 密钥绑定到一个非默认投资组合，而 `retail_portfolio_id` 未设置。                                       | 将 `CoinbaseExecClientConfig` 上的 `retail_portfolio_id` 设置为目标投资组合 UUID。                                          |
+| 非美国账户在 `*-USD` 产品上被拒                | 司法管辖限制（例如澳大利亚账户不能交易 USD 计价的交易对）。                                                  | 使用本地可用的计价货币（USDC、AUD、EUR 等）代替 USD。                                                                             |
+| 密钥轮换后立即被拒                           | 新密钥创建在了与上一个密钥不同的投资组合中。                                                            | 更新 `retail_portfolio_id` 以匹配新密钥的投资组合，或转移资金。                                                                    |
 
 ## 订单功能 (Orders capability)
 
@@ -306,9 +306,9 @@ FCM 订单接口）。
 `CoinbaseExecutionClientFactory` 只生产单一的 `CoinbaseExecutionClient` 类型。产品族由
 `CoinbaseExecClientConfig` 上的 `account_type` 字段选择：
 
-| `account_type`        | 启动加载的金融工具                             | 账户状态来源                                              |
-|-----------------------|-----------------------------------------------|-----------------------------------------------------------|
-| `AccountType::Cash`   | 仅 `CoinbaseProductType::Spot`。              | `/accounts` REST 端点。                                   |
+| `account_type`        | 启动加载的金融工具                               | 账户状态来源                                                                                |
+| --------------------- | --------------------------------------- | ------------------------------------------------------------------------------------- |
+| `AccountType::Cash`   | 仅 `CoinbaseProductType::Spot`。          | `/accounts` REST 端点。                                                                  |
 | `AccountType::Margin` | `CoinbaseProductType::Future`（永续 + 到期）。 | CFM `balance_summary` REST + `futures_balance_summary` WS，以及来自 `cfm/positions` 的持仓报告。 |
 
 其他账户类型会在工厂创建时被拒绝。OMS 始终为 `Netting`，因为交易场所不暴露对冲模式。
@@ -329,45 +329,45 @@ FCM 订单接口）。
 键。不在此表中的 Coinbase 订单类型（TWAP、Bracket、Scaled、SOR LIMIT IOC）记录在
 [高级订单功能](#高级订单功能-advanced-order-features) 中，并在那里标注为适配器 *尚未支持*。
 
-| 订单类型               | 现货 | 永续 | 期货 | 传输层结构                                                  |
-|------------------------|------|------|------|-------------------------------------------------------------|
-| `MARKET`               | ✓    | ✓    | ✓    | `market_market_ioc`（现货 + CFM）；`market_market_fok`（仅 CFM） |
-| `LIMIT`                | ✓    | ✓    | ✓    | `limit_limit_gtc` / `limit_limit_gtd` / `limit_limit_fok`   |
-| `STOP_LIMIT`           | -    | ✓    | ✓    | `stop_limit_stop_limit_gtc` / `stop_limit_stop_limit_gtd`   |
-| `STOP_MARKET`          | -    | -    | -    | *交易场所未暴露。*                                          |
-| `MARKET_IF_TOUCHED`    | -    | -    | -    | *交易场所未暴露。*                                          |
-| `LIMIT_IF_TOUCHED`     | -    | -    | -    | *交易场所未暴露。*                                          |
-| `TRAILING_STOP_MARKET` | -    | -    | -    | *交易场所未暴露。*                                          |
+| 订单类型                   | 现货  | 永续  | 期货  | 传输层结构                                                     |
+| ---------------------- | --- | --- | --- | --------------------------------------------------------- |
+| `MARKET`               | ✓   | ✓   | ✓   | `market_market_ioc`（现货 + CFM）；`market_market_fok`（仅 CFM）  |
+| `LIMIT`                | ✓   | ✓   | ✓   | `limit_limit_gtc` / `limit_limit_gtd` / `limit_limit_fok` |
+| `STOP_LIMIT`           | -   | ✓   | ✓   | `stop_limit_stop_limit_gtc` / `stop_limit_stop_limit_gtd` |
+| `STOP_MARKET`          | -   | -   | -   | *交易场所未暴露。*                                                |
+| `MARKET_IF_TOUCHED`    | -   | -   | -   | *交易场所未暴露。*                                                |
+| `LIMIT_IF_TOUCHED`     | -   | -   | -   | *交易场所未暴露。*                                                |
+| `TRAILING_STOP_MARKET` | -   | -   | -   | *交易场所未暴露。*                                                |
 
 ### 执行指令 (Execution instructions)
 
-| 指令          | 现货 | 永续 | 期货 | 备注                                                              |
-|---------------|------|------|------|-------------------------------------------------------------------|
-| `post_only`   | ✓    | ✓    | ✓    | 仅限 LIMIT GTC 和 LIMIT GTD。                                     |
-| `reduce_only` | -    | ✓    | ✓    | 仅限衍生品。                                                      |
+| 指令            | 现货  | 永续  | 期货  | 备注                        |
+| ------------- | --- | --- | --- | ------------------------- |
+| `post_only`   | ✓   | ✓   | ✓   | 仅限 LIMIT GTC 和 LIMIT GTD。 |
+| `reduce_only` | -   | ✓   | ✓   | 仅限衍生品。                    |
 
 ### 有效期 (Time in force)
 
 适配器接受此矩阵中的值；未列出的组合会在提交时被拒绝，并返回
 `"Unsupported TIF {tif} for {order_type}"`。
 
-| 订单类型     | GTC | GTD | IOC | FOK | 备注                                                          |
-|--------------|-----|-----|-----|-----|----------------------------------------------------------------|
+| 订单类型         | GTC | GTD | IOC | FOK | 备注                                                                                                                               |
+| ------------ | --- | --- | --- | --- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `MARKET`     | ✓   | -   | ✓   | (✓) | GTC 被映射为 IOC；显式的 IOC 会被遵守。FOK 会构造交易场所的 `market_market_fok` 结构，但撮合引擎目前在现货上会以 `UNSUPPORTED_ORDER_CONFIGURATION` 拒绝它；仅在 CFM 衍生品上可用。 |
-| `LIMIT`      | ✓   | ✓   | -   | ✓   | GTD 需要 `expire_time`。LIMIT IOC *尚未支持*（参见 [SOR LIMIT IOC](#高级订单功能-advanced-order-features)）。 |
-| `STOP_LIMIT` | ✓   | ✓   | -   | -   | 需要 `trigger_price`。仅限衍生品。                            |
+| `LIMIT`      | ✓   | ✓   | -   | ✓   | GTD 需要 `expire_time`。LIMIT IOC *尚未支持*（参见 [SOR LIMIT IOC](#高级订单功能-advanced-order-features)）。                                      |
+| `STOP_LIMIT` | ✓   | ✓   | -   | -   | 需要 `trigger_price`。仅限衍生品。                                                                                                        |
 
 ### 高级订单功能 (Advanced order features)
 
-| 功能               | 现货 | 永续 | 期货 | 备注                                                                              |
-|--------------------|------|------|------|------------------------------------------------------------------------------------|
-| 订单修改           | ✓    | ✓    | ✓    | 仅限 GTC 变体（LIMIT、STOP_LIMIT、Bracket）；其他类型使用撤单-重发。               |
-| Bracket 订单       | -    | -    | -    | *尚未支持。* 交易场所暴露 `trigger_bracket_gtc` / `trigger_bracket_gtd`。          |
-| OCO 订单           | -    | -    | -    | 交易场所 *未将其作为独立的订单类型暴露*。                                          |
-| 冰山订单           | -    | -    | -    | *交易场所未暴露。*                                                                 |
-| TWAP 订单          | -    | -    | -    | *尚未支持。* 交易场所暴露 `twap_limit_gtd`。                                       |
-| Scaled 订单        | -    | -    | -    | *尚未支持。* 交易场所暴露 `scaled_limit_gtc`。                                     |
-| SOR LIMIT IOC      | -    | -    | -    | *尚未支持。* 交易场所暴露 `sor_limit_ioc`，用于智能订单路由的 LIMIT IOC。           |
+| 功能            | 现货  | 永续  | 期货  | 备注                                                            |
+| ------------- | --- | --- | --- | ------------------------------------------------------------- |
+| 订单修改          | ✓   | ✓   | ✓   | 仅限 GTC 变体（LIMIT、STOP_LIMIT、Bracket）；其他类型使用撤单-重发。              |
+| Bracket 订单    | -   | -   | -   | *尚未支持。* 交易场所暴露 `trigger_bracket_gtc` / `trigger_bracket_gtd`。 |
+| OCO 订单        | -   | -   | -   | 交易场所 *未将其作为独立的订单类型暴露*。                                        |
+| 冰山订单          | -   | -   | -   | *交易场所未暴露。*                                                    |
+| TWAP 订单       | -   | -   | -   | *尚未支持。* 交易场所暴露 `twap_limit_gtd`。                              |
+| Scaled 订单     | -   | -   | -   | *尚未支持。* 交易场所暴露 `scaled_limit_gtc`。                            |
+| SOR LIMIT IOC | -   | -   | -   | *尚未支持。* 交易场所暴露 `sor_limit_ioc`，用于智能订单路由的 LIMIT IOC。           |
 
 底层交易场所规范请参阅
 [Create Order 参考](https://docs.cdp.coinbase.com/api-reference/advanced-trade-api/rest-api/orders/create-order)
@@ -375,28 +375,28 @@ FCM 订单接口）。
 
 ### 持仓控制（衍生品）
 
-| 控制项     | 备注                                                                |
-|------------|---------------------------------------------------------------------|
-| 杠杆       | 按订单设置；默认 `1.0`。                                            |
-| 保证金类型 | 按订单设置：cross（默认）或 isolated。                              |
-| 持仓模式   | 仅单向；不暴露对冲模式。                                            |
+| 控制项   | 备注                         |
+| ----- | -------------------------- |
+| 杠杆    | 按订单设置；默认 `1.0`。            |
+| 保证金类型 | 按订单设置：cross（默认）或 isolated。 |
+| 持仓模式  | 仅单向；不暴露对冲模式。               |
 
 ### 批量操作
 
-| 操作         | 备注                                                                                              |
-|--------------|----------------------------------------------------------------------------------------------------|
-| 批量提交     | 不支持。每个订单是一个 `Create Order` 请求。                                                       |
-| 批量修改     | 不支持。每次编辑是一个 `Edit Order` 请求。                                                         |
-| 批量取消     | `POST /api/v3/brokerage/orders/batch_cancel` 接受一个 `order_ids` 数组。没有文档化的最大数量；响应中按订单返回成功/失败。 |
+| 操作   | 备注                                                                                         |
+| ---- | ------------------------------------------------------------------------------------------ |
+| 批量提交 | 不支持。每个订单是一个 `Create Order` 请求。                                                             |
+| 批量修改 | 不支持。每次编辑是一个 `Edit Order` 请求。                                                               |
+| 批量取消 | `POST /api/v3/brokerage/orders/batch_cancel` 接受一个 `order_ids` 数组。没有文档化的最大数量；响应中按订单返回成功/失败。 |
 
 ### 订单查询
 
-| 功能             | 现货 | 永续 | 期货 | 备注                                        |
-|------------------|------|------|------|---------------------------------------------|
-| 查询未成交订单   | ✓    | ✓    | ✓    | 列出所有活跃订单。                          |
-| 查询订单历史     | ✓    | ✓    | ✓    | 带游标分页的历史订单数据。                  |
-| 订单状态更新     | ✓    | ✓    | ✓    | 通过 `user` 频道实时更新状态变化。          |
-| 交易历史         | ✓    | ✓    | ✓    | 执行和成交报告。                            |
+| 功能      | 现货  | 永续  | 期货  | 备注                    |
+| ------- | --- | --- | --- | --------------------- |
+| 查询未成交订单 | ✓   | ✓   | ✓   | 列出所有活跃订单。             |
+| 查询订单历史  | ✓   | ✓   | ✓   | 带游标分页的历史订单数据。         |
+| 订单状态更新  | ✓   | ✓   | ✓   | 通过 `user` 频道实时更新状态变化。 |
+| 交易历史    | ✓   | ✓   | ✓   | 执行和成交报告。              |
 
 ### 现货交易限制
 
@@ -533,13 +533,13 @@ user 频道不会回传 `price`、`stop_price`、`trigger_type` 或 maker/taker 
 
 Coinbase 为 Advanced Trade API 发布了以下限制：
 
-| 接口                              | 限制                                                  | 来源                                                  |
-|-----------------------------------|------------------------------------------------------|-------------------------------------------------------|
-| WebSocket 连接                    | 每个 IP 地址每秒 8 个                                 | Advanced Trade WebSocket Rate Limits                  |
-| WebSocket 未认证消息              | 每个 IP 地址每秒 8 个                                 | Advanced Trade WebSocket Rate Limits                  |
-| WebSocket 订阅截止时间            | 第一条订阅消息必须在连接后 5 秒内到达，否则服务器断开连接 | Advanced Trade WebSocket Overview |
-| 经认证的 WebSocket JWT            | 120 秒；每个经过认证的订阅消息都必须生成一个新的 JWT  | Advanced Trade WebSocket Overview |
-| REST 每密钥配额                   | 每个 API 密钥每小时 10,000 个请求（Coinbase App 通用政策） | Coinbase App Rate Limiting       |
+| 接口                 | 限制                                         | 来源                                   |
+| ------------------ | ------------------------------------------ | ------------------------------------ |
+| WebSocket 连接       | 每个 IP 地址每秒 8 个                             | Advanced Trade WebSocket Rate Limits |
+| WebSocket 未认证消息    | 每个 IP 地址每秒 8 个                             | Advanced Trade WebSocket Rate Limits |
+| WebSocket 订阅截止时间   | 第一条订阅消息必须在连接后 5 秒内到达，否则服务器断开连接             | Advanced Trade WebSocket Overview    |
+| 经认证的 WebSocket JWT | 120 秒；每个经过认证的订阅消息都必须生成一个新的 JWT             | Advanced Trade WebSocket Overview    |
+| REST 每密钥配额         | 每个 API 密钥每小时 10,000 个请求（Coinbase App 通用政策） | Coinbase App Rate Limiting           |
 
 当超过 REST 限制时，Coinbase 返回 HTTP `429`，响应体如下：
 
@@ -581,39 +581,39 @@ WebSocket 握手完成后立即发送排队的订阅。
 
 ### 数据客户端配置选项
 
-| 选项                               | 默认值      | 描述                                                                             |
-|------------------------------------|-------------|----------------------------------------------------------------------------------|
-| `api_key`                          | `None`      | 回退到 `COINBASE_API_KEY` 环境变量。                                             |
-| `api_secret`                       | `None`      | 回退到 `COINBASE_API_SECRET` 环境变量。                                          |
-| `base_url_rest`                    | `None`      | REST 基础 URL 覆盖。                                                             |
-| `base_url_ws`                      | `None`      | 市场数据 WebSocket URL 覆盖。                                                    |
-| `proxy_url`                        | `None`      | HTTP 和 WebSocket 传输的可选代理 URL。                                           |
-| `environment`                      | `Live`      | `Live` 或 `Sandbox`。                                                            |
-| `http_timeout_secs`                | `10`        | HTTP 请求超时（秒）。                                                            |
-| `ws_timeout_secs`                  | `30`        | WebSocket 超时（秒）。                                                           |
-| `update_instruments_interval_mins` | `60`        | 金融工具目录刷新之间的间隔。                                                     |
-| `derivatives_poll_interval_secs`   | `15`        | 发出 `IndexPriceUpdate` 和 `FundingRateUpdate` 的 REST 轮询之间的间隔。          |
-| `transport_backend`                | `Sockudo`   | WebSocket 传输后端。                                                             |
+| 选项                                 | 默认值       | 描述                                                          |
+| ---------------------------------- | --------- | ----------------------------------------------------------- |
+| `api_key`                          | `None`    | 回退到 `COINBASE_API_KEY` 环境变量。                                |
+| `api_secret`                       | `None`    | 回退到 `COINBASE_API_SECRET` 环境变量。                             |
+| `base_url_rest`                    | `None`    | REST 基础 URL 覆盖。                                             |
+| `base_url_ws`                      | `None`    | 市场数据 WebSocket URL 覆盖。                                      |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                               |
+| `environment`                      | `Live`    | `Live` 或 `Sandbox`。                                         |
+| `http_timeout_secs`                | `10`      | HTTP 请求超时（秒）。                                               |
+| `ws_timeout_secs`                  | `30`      | WebSocket 超时（秒）。                                            |
+| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新之间的间隔。                                              |
+| `derivatives_poll_interval_secs`   | `15`      | 发出 `IndexPriceUpdate` 和 `FundingRateUpdate` 的 REST 轮询之间的间隔。 |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                             |
 
 ### 执行客户端配置选项
 
-| 选项                     | 默认值    | 描述                                                                                                     |
-|--------------------------|-----------|----------------------------------------------------------------------------------------------------------|
-| `api_key`                | `None`    | 回退到 `COINBASE_API_KEY` 环境变量。                                                                     |
-| `api_secret`             | `None`    | 回退到 `COINBASE_API_SECRET` 环境变量。                                                                  |
-| `base_url_rest`          | `None`    | REST 基础 URL 覆盖。                                                                                     |
-| `base_url_ws`            | `None`    | 用户数据 WebSocket URL 覆盖。                                                                            |
-| `proxy_url`              | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                                                   |
-| `environment`            | `Live`    | `Live` 或 `Sandbox`。                                                                                    |
-| `http_timeout_secs`      | `10`      | HTTP 请求超时（秒）。                                                                                    |
-| `max_retries`            | `3`       | HTTP 请求的最大重试次数。                                                                                |
-| `retry_delay_initial_ms` | `100`     | 初始重试延迟（毫秒）。                                                                                   |
-| `retry_delay_max_ms`     | `5000`    | 最大重试延迟（毫秒）。                                                                                   |
-| `account_type`           | `Cash`    | 现货用 `Cash`，CFM 衍生品用 `Margin`。参见 [执行范围](#执行范围-execution-scope)。                       |
-| `default_margin_type`    | `None`    | 应用于衍生品订单的默认 `CoinbaseMarginType`（`Cross` 或 `Isolated`）。在 Cash 上被忽略。                  |
-| `default_leverage`       | `None`    | 应用于衍生品订单的默认杠杆。在 Cash 上被忽略。                                                           |
+| 选项                       | 默认值       | 描述                                                                                                           |
+| ------------------------ | --------- | ------------------------------------------------------------------------------------------------------------ |
+| `api_key`                | `None`    | 回退到 `COINBASE_API_KEY` 环境变量。                                                                                 |
+| `api_secret`             | `None`    | 回退到 `COINBASE_API_SECRET` 环境变量。                                                                              |
+| `base_url_rest`          | `None`    | REST 基础 URL 覆盖。                                                                                              |
+| `base_url_ws`            | `None`    | 用户数据 WebSocket URL 覆盖。                                                                                       |
+| `proxy_url`              | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                                                                |
+| `environment`            | `Live`    | `Live` 或 `Sandbox`。                                                                                          |
+| `http_timeout_secs`      | `10`      | HTTP 请求超时（秒）。                                                                                                |
+| `max_retries`            | `3`       | HTTP 请求的最大重试次数。                                                                                              |
+| `retry_delay_initial_ms` | `100`     | 初始重试延迟（毫秒）。                                                                                                  |
+| `retry_delay_max_ms`     | `5000`    | 最大重试延迟（毫秒）。                                                                                                  |
+| `account_type`           | `Cash`    | 现货用 `Cash`，CFM 衍生品用 `Margin`。参见 [执行范围](#执行范围-execution-scope)。                                               |
+| `default_margin_type`    | `None`    | 应用于衍生品订单的默认 `CoinbaseMarginType`（`Cross` 或 `Isolated`）。在 Cash 上被忽略。                                          |
+| `default_leverage`       | `None`    | 应用于衍生品订单的默认杠杆。在 Cash 上被忽略。                                                                                   |
 | `retail_portfolio_id`    | `None`    | CDP 零售投资组合 UUID。当 API 密钥绑定到非默认投资组合时必填（否则交易场所会以 `account is not available` 拒绝订单）。参见 [投资组合](#投资组合-portfolios)。 |
-| `transport_backend`      | `Sockudo` | WebSocket 传输后端。                                                                                     |
+| `transport_backend`      | `Sockudo` | WebSocket 传输后端。                                                                                              |
 
 配置通过 PyO3 导出的类型从 Python 构造：
 

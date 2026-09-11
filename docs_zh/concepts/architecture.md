@@ -349,15 +349,15 @@ stateDiagram-v2
 
 每个过渡状态在对应的生命周期回调**正常返回**后自动退出：
 
-| 过渡状态 | 退出条件 | 目标稳定状态 |
-|---------|---------|------------|
-| `STARTING` | `on_start()` 正常返回 | `RUNNING` |
-| `STOPPING` | `on_stop()` 正常返回 | `STOPPED` |
-| `RESUMING` | `on_resume()` 正常返回 | `RUNNING` |
-| `RESETTING` | `on_reset()` 正常返回 | `READY` |
+| 过渡状态        | 退出条件                | 目标稳定状态     |
+| ----------- | ------------------- | ---------- |
+| `STARTING`  | `on_start()` 正常返回   | `RUNNING`  |
+| `STOPPING`  | `on_stop()` 正常返回    | `STOPPED`  |
+| `RESUMING`  | `on_resume()` 正常返回  | `RUNNING`  |
+| `RESETTING` | `on_reset()` 正常返回   | `READY`    |
 | `DISPOSING` | `on_dispose()` 正常返回 | `DISPOSED` |
 | `DEGRADING` | `on_degrade()` 正常返回 | `DEGRADED` |
-| `FAULTING` | `on_fault()` 正常返回 | `FAULTED` |
+| `FAULTING`  | `on_fault()` 正常返回   | `FAULTED`  |
 
 如果回调中抛出未捕获的异常，组件将进入 `FAULTED` 状态。若某组件长时间停留在 `STARTING` 或 `STOPPING` 状态，通常意味着回调中存在阻塞操作（如同步网络请求），应改为异步实现。
 :::
@@ -482,6 +482,7 @@ Nautilus 的跨线程通信采用以下机制：
 3. **主线程消费**：单线程核心的 `MessageBus` 从通道接收事件，并同步分发给已注册的订阅者（Actor、Strategy 回调）。
 
 这种设计保证了：
+
 - 策略回调（如 `on_bar()`、`on_order_filled()`）始终在同一线程上顺序执行，**无需加锁**。
 - 策略代码不需要是线程安全的，可以自由使用实例变量。
 - 回测与实盘使用完全相同的分发路径，保证行为一致性。
@@ -603,23 +604,23 @@ flowchart BT
 
 **Crate 分类：**
 
-| 类别       | Crate                                                     | 用途                                                     |
-|------------|-----------------------------------------------------------|----------------------------------------------------------|
-| 基础层     | `core`、`model`、`common`、`system`、`trading`            | 基本类型、领域模型、内核、Actor 和策略基类。             |
-| 引擎层     | `data`、`execution`、`portfolio`、`risk`                  | 核心交易引擎组件。                                       |
-| 基础设施层 | `serialization`、`network`、`cryptography`、`persistence` | 编码、网络、签名、存储。                                 |
-| 运行时层   | `live`、`backtest`                                        | 特定于环境的节点实现。                                   |
-| 外部集成   | `adapters/*`                                              | 交易场所和数据集成。                                     |
-| 绑定层     | `pyo3`                                                    | Python 绑定。                                            |
+| 类别    | Crate                                                  | 用途                        |
+| ----- | ------------------------------------------------------ | ------------------------- |
+| 基础层   | `core`、`model`、`common`、`system`、`trading`             | 基本类型、领域模型、内核、Actor 和策略基类。 |
+| 引擎层   | `data`、`execution`、`portfolio`、`risk`                  | 核心交易引擎组件。                 |
+| 基础设施层 | `serialization`、`network`、`cryptography`、`persistence` | 编码、网络、签名、存储。              |
+| 运行时层  | `live`、`backtest`                                      | 特定于环境的节点实现。               |
+| 外部集成  | `adapters/*`                                           | 交易场所和数据集成。                |
+| 绑定层   | `pyo3`                                                 | Python 绑定。                |
 
 **功能标志：**
 
-| 功能标志    | Crate                      | 效果                                                       |
-|-------------|----------------------------|------------------------------------------------------------|
-| `streaming` | `data`、`system`、`live`   | 启用 `persistence` 依赖以支持 catalog 流式传输。           |
-| `cloud`     | `persistence`              | 启用云存储后端（S3、Azure、GCP、HTTP）。                   |
-| `python`    | 大多数 crate               | 启用 PyO3 绑定（自动启用 `streaming`、`cloud`）。          |
-| `defi`      | `common`、`model`、`data`  | 启用 DeFi/区块链数据类型。                                 |
+| 功能标志        | Crate                   | 效果                                    |
+| ----------- | ----------------------- | ------------------------------------- |
+| `streaming` | `data`、`system`、`live`  | 启用 `persistence` 依赖以支持 catalog 流式传输。  |
+| `cloud`     | `persistence`           | 启用云存储后端（S3、Azure、GCP、HTTP）。           |
+| `python`    | 大多数 crate               | 启用 PyO3 绑定（自动启用 `streaming`、`cloud`）。 |
+| `defi`      | `common`、`model`、`data` | 启用 DeFi/区块链数据类型。                      |
 
 :::note
 Rust 和 Cython 都是构建依赖。构建产生的二进制 wheel 在运行时不需要安装 Rust 或 Cython。

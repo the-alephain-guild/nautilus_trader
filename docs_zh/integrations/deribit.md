@@ -30,14 +30,14 @@ Deribit 适配器包含多个组件，可根据你的使用场景一起使用或
 
 ### 产品支持 (Product support)
 
-| 产品类型          | 数据源 | 交易 | 备注                             |
-|-------------------|--------|------|----------------------------------|
-| Perpetual Futures | ✓      | ✓    | BTC-PERPETUAL、ETH-PERPETUAL。   |
-| Dated Futures     | ✓      | ✓    | 具有固定到期日的期货。           |
-| Options           | ✓      | ✓    | BTC 与 ETH 期权。                |
-| Spot              | ✓      | ✓    | BTC_USDC、ETH_USDC 交易对。      |
-| Future Combos     | ✓      | ✓    | 期货的日历价差（calendar spread）。|
-| Option Combos     | ✓      | ✓    | 期权价差策略。                   |
+| 产品类型              | 数据源 | 交易  | 备注                           |
+| ----------------- | --- | --- | ---------------------------- |
+| Perpetual Futures | ✓   | ✓   | BTC-PERPETUAL、ETH-PERPETUAL。 |
+| Dated Futures     | ✓   | ✓   | 具有固定到期日的期货。                  |
+| Options           | ✓   | ✓   | BTC 与 ETH 期权。                |
+| Spot              | ✓   | ✓   | BTC_USDC、ETH_USDC 交易对。       |
+| Future Combos     | ✓   | ✓   | 期货的日历价差（calendar spread）。    |
+| Option Combos     | ✓   | ✓   | 期权价差策略。                      |
 
 ## 符号体系 (Symbology)
 
@@ -231,12 +231,12 @@ let resp = client.inner().get_last_trades_by_currency(params).await?;
 做前缀模式匹配。原始的 Deribit `trade_id` 会保留在前缀之后，因此与 Deribit 自身 ID 的对账
 只需去掉前缀即可。
 
-| 前缀         | 来源字段        | 含义                                                       |
-|--------------|-----------------|------------------------------------------------------------|
-| `RFQ-`       | `block_rfq_id`  | 成交源自大宗询价（Block RFQ）。                            |
-| `BLK-`       | `block_trade_id`| 成交为（非 RFQ 的）大宗交易。                              |
-| `COMBO-`     | `combo_id`      | 父级源自组合金融工具的腿级成交。                          |
-| *无前缀*     | （以上均非）    | 标准成交。                                                  |
+| 前缀       | 来源字段             | 含义                   |
+| -------- | ---------------- | -------------------- |
+| `RFQ-`   | `block_rfq_id`   | 成交源自大宗询价（Block RFQ）。 |
+| `BLK-`   | `block_trade_id` | 成交为（非 RFQ 的）大宗交易。    |
+| `COMBO-` | `combo_id`       | 父级源自组合金融工具的腿级成交。     |
+| *无前缀*    | （以上均非）           | 标准成交。                |
 
 当存在多个标记时的优先级：`RFQ-` > `BLK-` > `COMBO-`。在 Deribit 上，大宗询价本身也是大宗交易，
 因此 RFQ 标记优先；以大宗交易形式执行的组合会被标记为 `BLK-`，因为大宗流是更重要的对账信号。
@@ -277,10 +277,10 @@ Deribit 提供两种类型的订单簿数据源，各自适用于不同的使用
 
 Nautilus 适配器通过订阅参数同时支持两种数据源类型：
 
-| 参数       | 取值                   | 备注                                                                         |
-|------------|------------------------|------------------------------------------------------------------------------|
-| `interval` | `raw`、`100ms`、`agg2` | 默认：`100ms`。`agg2` 以约 1 秒的间隔批量推送。`raw` 需要认证。               |
-| `depth`    | `1`、`10`、`20`        | 默认：`10`。每一侧的价格档位数量。                                           |
+| 参数         | 取值                   | 备注                                          |
+| ---------- | -------------------- | ------------------------------------------- |
+| `interval` | `raw`、`100ms`、`agg2` | 默认：`100ms`。`agg2` 以约 1 秒的间隔批量推送。`raw` 需要认证。 |
+| `depth`    | `1`、`10`、`20`        | 默认：`10`。每一侧的价格档位数量。                         |
 
 ```python
 from nautilus_trader.model.identifiers import InstrumentId
@@ -324,28 +324,28 @@ strategy.subscribe_order_book_deltas(
 
 ### 订单类型 (Order types)
 
-| 订单类型      | 是否支持 | 备注                                    |
-|---------------|----------|-----------------------------------------|
-| `MARKET`      | ✓        | 以市场价格立即执行。                    |
-| `LIMIT`       | ✓        | 以指定价格或更优价格执行。              |
-| `STOP_MARKET` | ✓        | 触发后转为市价的条件单。                |
-| `STOP_LIMIT`  | ✓        | 触发后转为限价的条件单。                |
+| 订单类型          | 是否支持 | 备注            |
+| ------------- | ---- | ------------- |
+| `MARKET`      | ✓    | 以市场价格立即执行。    |
+| `LIMIT`       | ✓    | 以指定价格或更优价格执行。 |
+| `STOP_MARKET` | ✓    | 触发后转为市价的条件单。  |
+| `STOP_LIMIT`  | ✓    | 触发后转为限价的条件单。  |
 
 ### 执行指令 (Execution instructions)
 
-| 指令           | 是否支持 | 备注                                            |
-|----------------|----------|-------------------------------------------------|
-| `post_only`    | ✓        | 若订单会吃掉流动性则被拒绝。使用 `reject_post_only=true`。 |
-| `reduce_only`  | ✓        | 订单只能减少现有持仓。                          |
+| 指令            | 是否支持 | 备注                                        |
+| ------------- | ---- | ----------------------------------------- |
+| `post_only`   | ✓    | 若订单会吃掉流动性则被拒绝。使用 `reject_post_only=true`。 |
+| `reduce_only` | ✓    | 订单只能减少现有持仓。                               |
 
 ### 有效期 (Time in force)
 
-| 有效期        | 是否支持 | 备注                                                  |
-|---------------|----------|-------------------------------------------------------|
-| `GTC`         | ✓        | 撤单前一直有效（`good_til_cancelled`）。              |
-| `GTD`         | ✓        | 当日有效——在 UTC 8:00 到期（`good_til_day`）。        |
-| `IOC`         | ✓        | 立即成交否则取消（`immediate_or_cancel`）。           |
-| `FOK`         | ✓        | 全部成交否则取消（`fill_or_kill`）。                  |
+| 有效期   | 是否支持 | 备注                                   |
+| ----- | ---- | ------------------------------------ |
+| `GTC` | ✓    | 撤单前一直有效（`good_til_cancelled`）。       |
+| `GTD` | ✓    | 当日有效——在 UTC 8:00 到期（`good_til_day`）。 |
+| `IOC` | ✓    | 立即成交否则取消（`immediate_or_cancel`）。     |
+| `FOK` | ✓    | 全部成交否则取消（`fill_or_kill`）。            |
 
 :::note
 **Deribit 上的 GTD**：与其他允许 GTD 接受任意到期时间的交易所不同，
@@ -357,11 +357,11 @@ Deribit 的 `good_til_day` 始终在当日或次日的 UTC 8:00 到期。自定�
 
 条件单（止损单）支持不同的触发价格来源：
 
-| 触发类型      | 是否支持 | 备注                                  |
-|---------------|----------|---------------------------------------|
-| `last_price`  | ✓        | 使用最新成交价（默认）。              |
-| `mark_price`  | ✓        | 使用标记价格（mark price）。          |
-| `index_price` | ✓        | 使用底层指数价格。                    |
+| 触发类型          | 是否支持 | 备注                  |
+| ------------- | ---- | ------------------- |
+| `last_price`  | ✓    | 使用最新成交价（默认）。        |
+| `mark_price`  | ✓    | 使用标记价格（mark price）。 |
+| `index_price` | ✓    | 使用底层指数价格。           |
 
 ```python
 # Example: Stop loss using mark price trigger
@@ -377,11 +377,11 @@ strategy.submit_order(stop_order)
 
 ### 批量操作 (Batch operations)
 
-| 操作          | 是否支持 | 备注                                       |
-|---------------|----------|--------------------------------------------|
-| 批量提交      | -        | *尚未实现*。                               |
-| 批量修改      | -        | *尚未实现*。                               |
-| 批量取消      | -        | *尚未实现*。                               |
+| 操作   | 是否支持 | 备注      |
+| ---- | ---- | ------- |
+| 批量提交 | -    | *尚未实现*。 |
+| 批量修改 | -    | *尚未实现*。 |
+| 批量取消 | -    | *尚未实现*。 |
 
 ### Post-only 行为 (Post-only behavior)
 
@@ -405,11 +405,11 @@ Deribit 提供两种 post-only 模式：
 适配器使用 Deribit 原生的 `private/edit` 端点，而非取消并重下（cancel-and-replace）。
 这带来若干优势：
 
-| 优势                        | 说明                                                               |
-|----------------------------|--------------------------------------------------------------------|
-| 单次请求                    | 执行更快、延迟低于「取消 + 重新下单」。                            |
-| 保留队列优先级              | 仅减少数量或保持同一价格时维持原有位置。                          |
-| 保留成交历史                | 部分成交仍与同一订单 ID 关联。                                     |
+| 优势      | 说明                    |
+| ------- | --------------------- |
+| 单次请求    | 执行更快、延迟低于「取消 + 重新下单」。 |
+| 保留队列优先级 | 仅减少数量或保持同一价格时维持原有位置。  |
+| 保留成交历史  | 部分成交仍与同一订单 ID 关联。     |
 
 **队列优先级规则：**
 
@@ -419,42 +419,42 @@ Deribit 提供两种 post-only 模式：
 
 ### 持仓管理 (Position management)
 
-| 功能              | 是否支持 | 备注                                      |
-|-------------------|----------|-------------------------------------------|
-| 查询持仓          | ✓        | 实时持仓更新。                            |
-| 持仓模式          | -        | Deribit 仅使用净持仓（net position）模式。|
-| 杠杆控制          | -        | 杠杆在账户层级通过 UI 设置。              |
-| 保证金模式        | -        | 通过 Deribit UI 设置使用组合保证金。      |
+| 功能    | 是否支持 | 备注                              |
+| ----- | ---- | ------------------------------- |
+| 查询持仓  | ✓    | 实时持仓更新。                         |
+| 持仓模式  | -    | Deribit 仅使用净持仓（net position）模式。 |
+| 杠杆控制  | -    | 杠杆在账户层级通过 UI 设置。                |
+| 保证金模式 | -    | 通过 Deribit UI 设置使用组合保证金。        |
 
 ### 订单查询 (Order querying)
 
-| 功能                 | 是否支持 | 备注                              |
-|----------------------|----------|-----------------------------------|
-| 查询未结订单         | ✓        | 列出所有活跃订单。                |
-| 查询订单历史         | ✓        | 历史订单数据。                    |
-| 订单状态更新         | ✓        | 实时订单状态变化。                |
-| 成交历史             | ✓        | 执行与成交报告。                  |
+| 功能     | 是否支持 | 备注        |
+| ------ | ---- | --------- |
+| 查询未结订单 | ✓    | 列出所有活跃订单。 |
+| 查询订单历史 | ✓    | 历史订单数据。   |
+| 订单状态更新 | ✓    | 实时订单状态变化。 |
+| 成交历史   | ✓    | 执行与成交报告。  |
 
 ### 关联订单 (Contingent orders)
 
-| 功能                | 是否支持 | 备注                               |
-|---------------------|----------|------------------------------------|
-| 订单列表            | -        | *不支持*。                         |
-| OCO 订单            | -        | *不支持*。                         |
-| 括号单（Bracket）   | -        | *不支持*。                         |
-| 条件单              | ✓        | 止损市价单与止损限价单。           |
+| 功能           | 是否支持 | 备注           |
+| ------------ | ---- | ------------ |
+| 订单列表         | -    | *不支持*。       |
+| OCO 订单       | -    | *不支持*。       |
+| 括号单（Bracket） | -    | *不支持*。       |
+| 条件单          | ✓    | 止损市价单与止损限价单。 |
 
 ### 强平处理 (Liquidation handling)
 
 Deribit 会标记任何由强制平仓（liquidation）触发的成交。在 `user.trades` 数据流和
 `private/get_user_trades_*` 端点上，可选的 `liquidation` 字段指示哪一侧正在被强平：
 
-| 取值   | 含义                                      |
-|--------|-------------------------------------------|
-| `"M"`  | 做市方（Maker）被强平。                   |
-| `"T"`  | 吃单方（Taker）被强平。                   |
-| `"MT"` | 双方都被强平。                            |
-| 缺省   | 正常（非强平）成交。                      |
+| 取值     | 含义             |
+| ------ | -------------- |
+| `"M"`  | 做市方（Maker）被强平。 |
+| `"T"`  | 吃单方（Taker）被强平。 |
+| `"MT"` | 双方都被强平。        |
+| 缺省     | 正常（非强平）成交。     |
 
 适配器会为每一笔带强平标记的成交记录一条警告，包含金融工具、成交 ID、订单 ID 和被强平的一侧，
 随后通过正常流程发出 `FillReport`。Deribit 不运行与「强平 + 保险基金 / 组合保证金」流程相区别的
@@ -477,12 +477,12 @@ Deribit 持续（每隔几秒）结算资金费用，而非像大多数其他交
 `DeribitVolatilityIndex` 自定义数据。Deribit 提供诸如 `btc_usd` 和 `eth_usd` 之类的
 波动率指数数据流。
 
-| 字段         | 类型    | 说明                                                     |
-|--------------|---------|----------------------------------------------------------|
-| `index_name` | `str`   | Deribit 波动率指数名称，例如 `btc_usd`。                 |
-| `volatility` | `float` | 当前波动率指数值。                                       |
-| `ts_event`   | `int`   | 更新发生时的 UNIX 时间戳（纳秒）。                       |
-| `ts_init`    | `int`   | 对象构建时的 UNIX 时间戳（纳秒）。                       |
+| 字段           | 类型      | 说明                            |
+| ------------ | ------- | ----------------------------- |
+| `index_name` | `str`   | Deribit 波动率指数名称，例如 `btc_usd`。 |
+| `volatility` | `float` | 当前波动率指数值。                     |
+| `ts_event`   | `int`   | 更新发生时的 UNIX 时间戳（纳秒）。          |
+| `ts_init`    | `int`   | 对象构建时的 UNIX 时间戳（纳秒）。          |
 
 在 actor 或策略中使用 `DataType(DeribitVolatilityIndex)` 进行订阅。
 `index_name` 元数据键是必需的：
@@ -505,18 +505,18 @@ Deribit 使用基于额度（credit）的速率限制系统。每个 API 请求�
 
 ### REST 限制 (REST limits)
 
-| 桶 / 键             | 限制                   | 备注                                        |
-|---------------------|------------------------|---------------------------------------------|
-| `deribit:global`    | 20 次/秒（突发 100）   | 所有 REST 请求的默认桶。                    |
-| `deribit:orders`    | 5 次/秒（突发 20）     | 撮合引擎操作（买入、卖出、修改、取消）。    |
-| `deribit:account`   | 5 次/秒                | 账户信息端点。                              |
+| 桶 / 键             | 限制             | 备注                   |
+| ----------------- | -------------- | -------------------- |
+| `deribit:global`  | 20 次/秒（突发 100） | 所有 REST 请求的默认桶。      |
+| `deribit:orders`  | 5 次/秒（突发 20）   | 撮合引擎操作（买入、卖出、修改、取消）。 |
+| `deribit:account` | 5 次/秒          | 账户信息端点。              |
 
 ### WebSocket 限制 (WebSocket limits)
 
-| 操作                | 限制                   | 备注                                        |
-|---------------------|------------------------|---------------------------------------------|
-| 订阅/取消订阅       | 3 次/秒（突发 10）     | 订阅操作。                                  |
-| 订单操作            | 5 次/秒（突发 20）     | 通过 WebSocket 的买入、卖出、修改、取消。   |
+| 操作      | 限制           | 备注                         |
+| ------- | ------------ | -------------------------- |
+| 订阅/取消订阅 | 3 次/秒（突发 10） | 订阅操作。                      |
+| 订单操作    | 5 次/秒（突发 20） | 通过 WebSocket 的买入、卖出、修改、取消。 |
 
 :::note
 Nautilus 适配器使用 WebSocket（而非 REST）提交订单以获得更低的延迟。
@@ -530,18 +530,18 @@ Deribit 使用一套精巧的、基于额度的速率限制系统，额度会以
 
 **非撮合引擎请求：**
 
-| 参数             | 取值               | 备注                            |
-|------------------|--------------------|---------------------------------|
-| 每次请求成本     | 500 额度           | 每次 API 调用都会消耗额度。     |
-| 最大池容量       | 50,000 额度        | 允许 100 次请求的突发。         |
-| 补充速率         | 10,000 额度/秒     | 约 20 次/秒的持续请求。         |
+| 参数     | 取值          | 备注               |
+| ------ | ----------- | ---------------- |
+| 每次请求成本 | 500 额度      | 每次 API 调用都会消耗额度。 |
+| 最大池容量  | 50,000 额度   | 允许 100 次请求的突发。   |
+| 补充速率   | 10,000 额度/秒 | 约 20 次/秒的持续请求。   |
 
 **撮合引擎请求（默认档位）：**
 
-| 参数           | 取值           | 备注                             |
-|----------------|----------------|----------------------------------|
-| 持续速率       | 5 次/秒        | 持续速率限制。                   |
-| 突发容量       | 20 次          | 触发限流前的最大突发。           |
+| 参数   | 取值    | 备注          |
+| ---- | ----- | ----------- |
+| 持续速率 | 5 次/秒 | 持续速率限制。     |
+| 突发容量 | 20 次  | 触发限流前的最大突发。 |
 
 做市商和高交易量交易者可根据 7 天交易量档位获得更高的撮合引擎限制。
 
@@ -563,20 +563,20 @@ Nautilus 适配器使用令牌桶（token bucket）速率限制器实现这一�
 
 ### 平台限制 (Platform limits)
 
-| 限制                              | 取值 |
-|-----------------------------------|------|
-| 每个 IP 的最大连接数              | 32   |
-| 每个 API key 的最大会话数         | 16   |
-| 每个（子）账户的最大 API key 数   | 8    |
+| 限制                   | 取值  |
+| -------------------- | --- |
+| 每个 IP 的最大连接数         | 32  |
+| 每个 API key 的最大会话数    | 16  |
+| 每个（子）账户的最大 API key 数 | 8   |
 
 ### 基于会话的认证 (Session-based authentication)
 
 适配器为数据客户端和执行客户端使用**独立的 WebSocket 会话**，每个会话都有各自的认证范围：
 
-| 客户端           | 会话名称             | 用途                                                 |
-|------------------|----------------------|------------------------------------------------------|
-| 数据客户端       | `nautilus-data`      | 市场数据订阅（原始数据源需要认证）。                |
-| 执行客户端       | `nautilus-execution` | 订单操作（买入、卖出、修改、取消）。                |
+| 客户端   | 会话名称                 | 用途                 |
+| ----- | -------------------- | ------------------ |
+| 数据客户端 | `nautilus-data`      | 市场数据订阅（原始数据源需要认证）。 |
+| 执行客户端 | `nautilus-execution` | 订单操作（买入、卖出、修改、取消）。 |
 
 **认证流程：**
 
@@ -635,12 +635,12 @@ Deribit 对私有端点使用基于 API key 的认证，并采用 HMAC-SHA256 �
 Deribit 上的每个 API key 都被分配了一个默认访问范围（scope），用于定义其最大权限。
 在 [创建 API key](https://support.deribit.com/hc/en-us/articles/26268257333661) 时配置合适的权限：
 
-| 范围               | 所需用途                               |
-|--------------------|----------------------------------------|
-| `account:read`     | 账户信息、组合数据。                   |
-| `trade:read`       | 查看订单和持仓。                       |
-| `trade:read_write` | 下单、修改和取消订单。                 |
-| `wallet:read`      | 查看余额和交易历史。                   |
+| 范围                 | 所需用途        |
+| ------------------ | ----------- |
+| `account:read`     | 账户信息、组合数据。  |
+| `trade:read`       | 查看订单和持仓。    |
+| `trade:read_write` | 下单、修改和取消订单。 |
+| `wallet:read`      | 查看余额和交易历史。  |
 
 **交易所需的推荐最小范围：** `account:read`、`trade:read_write`、`wallet:read`
 
@@ -688,22 +688,22 @@ config = TradingNodeConfig(
 
 ### 数据客户端配置选项 (Data client configuration options)
 
-| 选项                               | 默认值     | 说明 |
-|------------------------------------|------------|-------------|
-| `api_key`                          | `None`     | Deribit API key；省略时从环境变量加载。 |
-| `api_secret`                       | `None`     | Deribit API secret；省略时从环境变量加载。 |
-| `product_types`                    | `None`     | 要加载的产品类型（Future、Option、Spot 等）。若为 `None`，默认为 Future。 |
-| `environment`                      | `None`     | 环境枚举（`MAINNET` 或 `TESTNET`）。 |
-| `base_url_http`                    | `None`     | 覆盖 HTTP REST 基础 URL。 |
-| `base_url_ws`                      | `None`     | 覆盖 WebSocket 基础 URL。 |
-| `proxy_url`                        | `None`     | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `http_timeout_secs`                | `60`       | REST 调用的请求超时（秒）。 |
-| `max_retries`                      | `3`        | 可恢复错误的最大重试次数。 |
-| `retry_delay_initial_ms`           | `1,000`    | 重试前的初始延迟（毫秒）。 |
-| `retry_delay_max_ms`               | `10,000`   | 重试之间的最大延迟（毫秒）。 |
-| `update_instruments_interval_mins` | `60`       | 金融工具刷新之间的间隔（分钟）。 |
-| `auto_load_missing_instruments`    | `False`    | 在订阅时惰性加载未缓存的金融工具；参见 [订阅时惰性加载](#lazy-load-on-subscribe)。 |
-| `transport_backend`                | `Sockudo`  | WebSocket 传输后端。 |
+| 选项                                 | 默认值       | 说明                                                      |
+| ---------------------------------- | --------- | ------------------------------------------------------- |
+| `api_key`                          | `None`    | Deribit API key；省略时从环境变量加载。                             |
+| `api_secret`                       | `None`    | Deribit API secret；省略时从环境变量加载。                          |
+| `product_types`                    | `None`    | 要加载的产品类型（Future、Option、Spot 等）。若为 `None`，默认为 Future。    |
+| `environment`                      | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。                            |
+| `base_url_http`                    | `None`    | 覆盖 HTTP REST 基础 URL。                                    |
+| `base_url_ws`                      | `None`    | 覆盖 WebSocket 基础 URL。                                    |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                           |
+| `http_timeout_secs`                | `60`      | REST 调用的请求超时（秒）。                                        |
+| `max_retries`                      | `3`       | 可恢复错误的最大重试次数。                                           |
+| `retry_delay_initial_ms`           | `1,000`   | 重试前的初始延迟（毫秒）。                                           |
+| `retry_delay_max_ms`               | `10,000`  | 重试之间的最大延迟（毫秒）。                                          |
+| `update_instruments_interval_mins` | `60`      | 金融工具刷新之间的间隔（分钟）。                                        |
+| `auto_load_missing_instruments`    | `False`   | 在订阅时惰性加载未缓存的金融工具；参见 [订阅时惰性加载](#lazy-load-on-subscribe)。 |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                         |
 
 #### 订阅时惰性加载 (Lazy-load on subscribe)
 
@@ -717,20 +717,20 @@ config = TradingNodeConfig(
 
 ### 执行客户端配置选项 (Execution client configuration options)
 
-| 选项                     | 默认值     | 说明 |
-|--------------------------|------------|-------------|
-| `api_key`                | `None`     | Deribit API key；省略时从环境变量加载。 |
-| `api_secret`             | `None`     | Deribit API secret；省略时从环境变量加载。 |
-| `product_types`          | `None`     | 要加载的产品类型（Future、Option、Spot 等）。若为 `None`，默认为 Future。 |
-| `environment`            | `None`     | 环境枚举（`MAINNET` 或 `TESTNET`）。 |
-| `base_url_http`          | `None`     | 覆盖 HTTP REST 基础 URL。 |
-| `base_url_ws`            | `None`     | 覆盖 WebSocket 基础 URL。 |
-| `proxy_url`              | `None`     | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `http_timeout_secs`      | `60`       | REST 调用的请求超时（秒）。 |
-| `max_retries`            | `3`        | 可恢复错误的最大重试次数。 |
-| `retry_delay_initial_ms` | `1,000`    | 重试前的初始延迟（毫秒）。 |
-| `retry_delay_max_ms`     | `10,000`   | 重试之间的最大延迟（毫秒）。 |
-| `transport_backend`      | `Sockudo`  | WebSocket 传输后端。 |
+| 选项                       | 默认值       | 说明                                                   |
+| ------------------------ | --------- | ---------------------------------------------------- |
+| `api_key`                | `None`    | Deribit API key；省略时从环境变量加载。                          |
+| `api_secret`             | `None`    | Deribit API secret；省略时从环境变量加载。                       |
+| `product_types`          | `None`    | 要加载的产品类型（Future、Option、Spot 等）。若为 `None`，默认为 Future。 |
+| `environment`            | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。                         |
+| `base_url_http`          | `None`    | 覆盖 HTTP REST 基础 URL。                                 |
+| `base_url_ws`            | `None`    | 覆盖 WebSocket 基础 URL。                                 |
+| `proxy_url`              | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                        |
+| `http_timeout_secs`      | `60`      | REST 调用的请求超时（秒）。                                     |
+| `max_retries`            | `3`       | 可恢复错误的最大重试次数。                                        |
+| `retry_delay_initial_ms` | `1,000`   | 重试前的初始延迟（毫秒）。                                        |
+| `retry_delay_max_ms`     | `10,000`  | 重试之间的最大延迟（毫秒）。                                       |
+| `transport_backend`      | `Sockudo` | WebSocket 传输后端。                                      |
 
 ### 生产配置 (Production configuration)
 
@@ -752,8 +752,8 @@ config = TradingNodeConfig(
     ...,  # Omitted
     data_clients={
         DERIBIT: DeribitDataClientConfig(
-            api_key=None,           # Uses DERIBIT_API_KEY env var
-            api_secret=None,        # Uses DERIBIT_API_SECRET env var
+            api_key=None,  # Uses DERIBIT_API_KEY env var
+            api_secret=None,  # Uses DERIBIT_API_SECRET env var
             product_types=(DeribitProductType.Future,),
             environment=DeribitEnvironment.MAINNET,
             instrument_provider=InstrumentProviderConfig(load_all=True),
@@ -824,10 +824,10 @@ config = DeribitDataClientConfig(
 
 可以为 HTTP 和 WebSocket API 覆盖默认的基础 URL：
 
-| 环境        | HTTP URL                   | WebSocket URL                      |
-|-------------|----------------------------|------------------------------------|
-| 生产        | `https://www.deribit.com`  | `wss://www.deribit.com/ws/api/v2`  |
-| 测试网      | `https://test.deribit.com` | `wss://test.deribit.com/ws/api/v2` |
+| 环境  | HTTP URL                   | WebSocket URL                      |
+| --- | -------------------------- | ---------------------------------- |
+| 生产  | `https://www.deribit.com`  | `wss://www.deribit.com/ws/api/v2`  |
+| 测试网 | `https://test.deribit.com` | `wss://test.deribit.com/ws/api/v2` |
 
 ## 服务器基础设施 (Server infrastructure)
 

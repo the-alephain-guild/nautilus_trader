@@ -23,8 +23,8 @@ from nautilus_trader.common.actor import Actor
 
 
 class MyActorConfig(ActorConfig):
-    instrument_id: InstrumentId   # 示例值: "ETHUSDT-PERP.BINANCE"
-    bar_type: BarType             # 示例值: "ETHUSDT-PERP.BINANCE-15-MINUTE[LAST]-INTERNAL"
+    instrument_id: InstrumentId  # 示例值: "ETHUSDT-PERP.BINANCE"
+    bar_type: BarType  # 示例值: "ETHUSDT-PERP.BINANCE-15-MINUTE[LAST]-INTERNAL"
     lookback_period: int = 10
 
 
@@ -80,15 +80,15 @@ stateDiagram-v2
 
 重写以下方法以挂钩生命周期事件：
 
-| 方法              | 调用时机                                                          |
-|-----------------|---------------------------------------------------------------------|
-| `on_start()`    | Actor 正在启动（在此处订阅数据）。                                    |
-| `on_stop()`     | Actor 正在停止（取消定时器、清理资源）。                               |
-| `on_resume()`   | Actor 正在从停止状态恢复。                                           |
-| `on_reset()`    | 重置指标和内部状态（在回测 (backtest) 运行之间调用）。                  |
-| `on_degrade()`  | Actor 正在进入降级状态（部分功能可用）。                               |
-| `on_fault()`    | Actor 遇到了严重故障。                                               |
-| `on_dispose()`  | Actor 正在被销毁（最终清理）。                                        |
+| 方法             | 调用时机                              |
+| -------------- | --------------------------------- |
+| `on_start()`   | Actor 正在启动（在此处订阅数据）。              |
+| `on_stop()`    | Actor 正在停止（取消定时器、清理资源）。           |
+| `on_resume()`  | Actor 正在从停止状态恢复。                  |
+| `on_reset()`   | 重置指标和内部状态（在回测 (backtest) 运行之间调用）。 |
+| `on_degrade()` | Actor 正在进入降级状态（部分功能可用）。           |
+| `on_fault()`   | Actor 遇到了严重故障。                    |
+| `on_dispose()` | Actor 正在被销毁（最终清理）。                |
 
 ## 定时器和告警
 
@@ -110,12 +110,15 @@ def on_start(self) -> None:
         callback=self._on_alert,
     )
 
+
 def on_stop(self) -> None:
     # 取消定时器以防止在 stop/resume 周期中产生资源泄漏
     self.clock.cancel_timer("my_timer")
 
+
 def _on_timer(self, event: TimeEvent) -> None:
     self.log.info("Timer fired!")
+
 
 def _on_alert(self, event: TimeEvent) -> None:
     self.log.info("Alert triggered!")
@@ -138,13 +141,13 @@ Nautilus 采用单线程核心设计（参见[架构](architecture.md#线程模�
 
 Actor 可以访问核心系统组件 (component)：
 
-| 属性              | 描述                                                     |
-|-------------------|----------------------------------------------------------|
-| `self.cache`      | 金融工具 (instrument)、订单、持仓等的共享状态。             |
-| `self.portfolio`  | 投资组合状态和计算。                                       |
-| `self.clock`      | 当前时间和定时器/告警调度。                                 |
-| `self.log`        | 结构化日志。                                               |
-| `self.msgbus`     | 发布/订阅自定义消息。                                      |
+| 属性               | 描述                             |
+| ---------------- | ------------------------------ |
+| `self.cache`     | 金融工具 (instrument)、订单、持仓等的共享状态。 |
+| `self.portfolio` | 投资组合状态和计算。                     |
+| `self.clock`     | 当前时间和定时器/告警调度。                 |
+| `self.log`       | 结构化日志。                         |
+| `self.msgbus`    | 发布/订阅自定义消息。                    |
 
 关于组件间的自定义消息传递，请参阅[消息总线 (Message Bus)](message_bus.md)指南。
 
@@ -171,48 +174,48 @@ Actor 可以访问核心系统组件 (component)：
 
 以下是不同数据操作与其处理器的映射关系：
 
-| 操作                                 | 类别       | 处理器                   | 用途                                              |
-|--------------------------------------|------------|--------------------------|---------------------------------------------------|
-| `subscribe_data()`                   | 实时       | `on_data()`              | 实时数据更新。                                     |
-| `subscribe_instrument()`             | 实时       | `on_instrument()`        | 实时金融工具定义更新。                             |
-| `subscribe_instruments()`            | 实时       | `on_instrument()`        | 实时金融工具定义更新（按交易场所 (venue)）。       |
-| `subscribe_order_book_deltas()`      | 实时       | `on_order_book_deltas()` | 实时订单簿增量。                                   |
-| `subscribe_order_book_depth()`       | 实时       | `on_order_book_depth()`  | 实时订单簿深度快照。                               |
-| `subscribe_order_book_at_interval()` | 实时       | `on_order_book()`        | 按间隔获取实时订单簿快照。                         |
-| `subscribe_quote_ticks()`            | 实时       | `on_quote_tick()`        | 实时报价更新。                                     |
-| `subscribe_trade_ticks()`            | 实时       | `on_trade_tick()`        | 实时成交更新。                                     |
-| `subscribe_mark_prices()`            | 实时       | `on_mark_price()`        | 实时标记价格更新。                                 |
-| `subscribe_index_prices()`           | 实时       | `on_index_price()`       | 实时指数价格更新。                                 |
-| `subscribe_bars()`                   | 实时       | `on_bar()`               | 实时 K线 更新。                                    |
-| `subscribe_funding_rates()`          | 实时       | `on_funding_rate()`      | 实时资金费率更新。                                 |
-| `subscribe_instrument_status()`      | 实时       | `on_instrument_status()` | 实时金融工具状态更新。                             |
-| `subscribe_instrument_close()`       | 实时       | `on_instrument_close()`  | 实时金融工具收盘更新。                             |
-| `subscribe_option_greeks()`          | 实时       | `on_option_greeks()`     | 实时期权希腊字母更新。                             |
-| `subscribe_option_chain()`           | 实时       | `on_option_chain()`      | 实时期权链切片快照。                               |
-| `subscribe_order_fills()`            | 实时       | `on_order_filled()`      | 某金融工具的实时订单成交事件。                     |
-| `subscribe_order_cancels()`          | 实时       | `on_order_canceled()`    | 某金融工具的实时订单取消事件。                     |
-| `request_data()`                     | 历史       | `on_historical_data()`   | 历史数据处理。                                     |
-| `request_order_book_deltas()`        | 历史       | `on_historical_data()`   | 历史订单簿增量。                                   |
-| `request_order_book_depth()`         | 历史       | `on_historical_data()`   | 历史订单簿深度。                                   |
-| `request_order_book_snapshot()`      | 历史       | `on_historical_data()`   | 历史订单簿快照。                                   |
-| `request_instrument()`               | 历史       | `on_instrument()`        | 金融工具定义。                                     |
-| `request_instruments()`              | 历史       | `on_instrument()`        | 金融工具定义（批量）。                             |
-| `request_quote_ticks()`              | 历史       | `on_historical_data()`   | 历史报价处理。                                     |
-| `request_trade_ticks()`              | 历史       | `on_historical_data()`   | 历史成交处理。                                     |
-| `request_bars()`                     | 历史       | `on_historical_data()`   | 历史 K线 处理。                                    |
-| `request_aggregated_bars()`          | 历史       | `on_historical_data()`   | 历史聚合 K线（即时生成）。                         |
-| `request_funding_rates()`            | 历史       | `on_historical_data()`   | 历史资金费率处理。                                 |
+| 操作                                   | 类别  | 处理器                      | 用途                         |
+| ------------------------------------ | --- | ------------------------ | -------------------------- |
+| `subscribe_data()`                   | 实时  | `on_data()`              | 实时数据更新。                    |
+| `subscribe_instrument()`             | 实时  | `on_instrument()`        | 实时金融工具定义更新。                |
+| `subscribe_instruments()`            | 实时  | `on_instrument()`        | 实时金融工具定义更新（按交易场所 (venue)）。 |
+| `subscribe_order_book_deltas()`      | 实时  | `on_order_book_deltas()` | 实时订单簿增量。                   |
+| `subscribe_order_book_depth()`       | 实时  | `on_order_book_depth()`  | 实时订单簿深度快照。                 |
+| `subscribe_order_book_at_interval()` | 实时  | `on_order_book()`        | 按间隔获取实时订单簿快照。              |
+| `subscribe_quote_ticks()`            | 实时  | `on_quote_tick()`        | 实时报价更新。                    |
+| `subscribe_trade_ticks()`            | 实时  | `on_trade_tick()`        | 实时成交更新。                    |
+| `subscribe_mark_prices()`            | 实时  | `on_mark_price()`        | 实时标记价格更新。                  |
+| `subscribe_index_prices()`           | 实时  | `on_index_price()`       | 实时指数价格更新。                  |
+| `subscribe_bars()`                   | 实时  | `on_bar()`               | 实时 K线 更新。                  |
+| `subscribe_funding_rates()`          | 实时  | `on_funding_rate()`      | 实时资金费率更新。                  |
+| `subscribe_instrument_status()`      | 实时  | `on_instrument_status()` | 实时金融工具状态更新。                |
+| `subscribe_instrument_close()`       | 实时  | `on_instrument_close()`  | 实时金融工具收盘更新。                |
+| `subscribe_option_greeks()`          | 实时  | `on_option_greeks()`     | 实时期权希腊字母更新。                |
+| `subscribe_option_chain()`           | 实时  | `on_option_chain()`      | 实时期权链切片快照。                 |
+| `subscribe_order_fills()`            | 实时  | `on_order_filled()`      | 某金融工具的实时订单成交事件。            |
+| `subscribe_order_cancels()`          | 实时  | `on_order_canceled()`    | 某金融工具的实时订单取消事件。            |
+| `request_data()`                     | 历史  | `on_historical_data()`   | 历史数据处理。                    |
+| `request_order_book_deltas()`        | 历史  | `on_historical_data()`   | 历史订单簿增量。                   |
+| `request_order_book_depth()`         | 历史  | `on_historical_data()`   | 历史订单簿深度。                   |
+| `request_order_book_snapshot()`      | 历史  | `on_historical_data()`   | 历史订单簿快照。                   |
+| `request_instrument()`               | 历史  | `on_instrument()`        | 金融工具定义。                    |
+| `request_instruments()`              | 历史  | `on_instrument()`        | 金融工具定义（批量）。                |
+| `request_quote_ticks()`              | 历史  | `on_historical_data()`   | 历史报价处理。                    |
+| `request_trade_ticks()`              | 历史  | `on_historical_data()`   | 历史成交处理。                    |
+| `request_bars()`                     | 历史  | `on_historical_data()`   | 历史 K线 处理。                  |
+| `request_aggregated_bars()`          | 历史  | `on_historical_data()`   | 历史聚合 K线（即时生成）。             |
+| `request_funding_rates()`            | 历史  | `on_historical_data()`   | 历史资金费率处理。                  |
 
 :::tip 请求（历史数据）与订阅（实时数据）的关键区别
 
-| 维度 | 请求（历史数据） | 订阅（实时数据） |
-|------|---------------|---------------|
-| 方法前缀 | `request_*` | `subscribe_*` |
-| 回调处理器 | `on_historical_data()` | `on_bar()`、`on_quote_tick()` 等专用处理器 |
-| 数据传递方式 | 批量返回（一次性） | 逐条推送（流式） |
-| 典型用途 | 启动时加载历史数据、预热指标 | 接收实时市场更新、触发交易逻辑 |
-| 回测中行为 | 立即同步返回数据 | 随历史数据回放逐条触发 |
-| 实盘中行为 | 发起 REST 请求，异步回调 | 订阅 WebSocket 流 |
+| 维度     | 请求（历史数据）               | 订阅（实时数据）                            |
+| ------ | ---------------------- | ----------------------------------- |
+| 方法前缀   | `request_*`            | `subscribe_*`                       |
+| 回调处理器  | `on_historical_data()` | `on_bar()`、`on_quote_tick()` 等专用处理器 |
+| 数据传递方式 | 批量返回（一次性）              | 逐条推送（流式）                            |
+| 典型用途   | 启动时加载历史数据、预热指标         | 接收实时市场更新、触发交易逻辑                     |
+| 回测中行为  | 立即同步返回数据               | 随历史数据回放逐条触发                         |
+| 实盘中行为  | 发起 REST 请求，异步回调        | 订阅 WebSocket 流                      |
 
 建议在 `on_start()` 中先 `request_*` 预热指标，再 `subscribe_*` 开始接收实时更新。
 :::
@@ -231,7 +234,7 @@ from nautilus_trader.model import ClientId, InstrumentId
 
 class MyActorConfig(ActorConfig):
     instrument_id: InstrumentId  # 示例值: "AAPL.XNAS"
-    bar_type: BarType            # 示例值: "AAPL.XNAS-1-MINUTE-LAST-EXTERNAL"
+    bar_type: BarType  # 示例值: "AAPL.XNAS-1-MINUTE-LAST-EXTERNAL"
 
 
 class MyActor(Actor):
@@ -244,11 +247,11 @@ class MyActor(Actor):
         self.request_bars(
             bar_type=self.bar_type,
             # 多个可选参数
-            start=None,                # pd.Timestamp | None
-            end=None,                  # pd.Timestamp | None
-            callback=None,             # Callable[[UUID4], None] | None
+            start=None,  # pd.Timestamp | None
+            end=None,  # pd.Timestamp | None
+            callback=None,  # Callable[[UUID4], None] | None
             update_catalog_mode=None,  # UpdateCatalogMode | None
-            params=None,               # dict[str, Any] | None
+            params=None,  # dict[str, Any] | None
         )
 
         # 订阅实时数据 - 将由 on_bar() 处理器处理
@@ -256,7 +259,7 @@ class MyActor(Actor):
             bar_type=self.bar_type,
             # 多个可选参数
             client_id=None,  # ClientId, 可选
-            params=None,     # dict[str, Any], 可选
+            params=None,  # dict[str, Any], 可选
         )
 
     def on_historical_data(self, data: Data) -> None:
@@ -367,8 +370,7 @@ class CancelMonitorActor(Actor):
         self.cancel_count += 1
 
         self.log.info(
-            f"Cancel received: {event.client_order_id}, "
-            f"Total cancels: {self.cancel_count}"
+            f"Cancel received: {event.client_order_id}, Total cancels: {self.cancel_count}"
         )
 
     def on_stop(self) -> None:

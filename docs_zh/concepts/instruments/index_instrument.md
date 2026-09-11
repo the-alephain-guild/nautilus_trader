@@ -6,19 +6,19 @@
 
 ## 字段 (Fields)
 
-| 字段               | Rust 类型        | Python 类型    | 必填/默认值      | 说明                                     |
-|--------------------|------------------|----------------|------------------|------------------------------------------|
-| `instrument_id`    | `InstrumentId`   | `InstrumentId` | 必填             | 在 Rust 中存储为 `id`。                  |
-| `raw_symbol`       | `Symbol`         | `Symbol`       | 必填             | 交易场所原生代码。                       |
-| `currency`         | `Currency`       | `Currency`     | 必填             | 报价值所用的参考货币。                   |
-| `price_precision`  | `u8`             | `int`          | 必填             | 价格允许的小数位数。                     |
-| `size_precision`   | `u8`             | `int`          | 必填             | 数量允许的小数位数。                     |
-| `price_increment`  | `Price`          | `Price`        | 必填             | 最小有效价格步长。                       |
-| `size_increment`   | `Quantity`       | `Quantity`     | 必填             | 最小有效数量步长。                       |
-| `ts_event`         | `UnixNanos`      | `int`          | 必填             | 事件时间戳（纳秒）。                     |
-| `ts_init`          | `UnixNanos`      | `int`          | 必填             | 初始化时间戳（纳秒）。                   |
-| `tick_scheme_name` | N/A              | `str \| None`   | `None`           | 已注册的可变 tick 方案名称。            |
-| `info`             | `Option<Params>` | `dict \| None`  | `None`           | 适配器元数据。                          |
+| 字段                 | Rust 类型          | Python 类型      | 必填/默认值 | 说明                |
+| ------------------ | ---------------- | -------------- | ------ | ----------------- |
+| `instrument_id`    | `InstrumentId`   | `InstrumentId` | 必填     | 在 Rust 中存储为 `id`。 |
+| `raw_symbol`       | `Symbol`         | `Symbol`       | 必填     | 交易场所原生代码。         |
+| `currency`         | `Currency`       | `Currency`     | 必填     | 报价值所用的参考货币。       |
+| `price_precision`  | `u8`             | `int`          | 必填     | 价格允许的小数位数。        |
+| `size_precision`   | `u8`             | `int`          | 必填     | 数量允许的小数位数。        |
+| `price_increment`  | `Price`          | `Price`        | 必填     | 最小有效价格步长。         |
+| `size_increment`   | `Quantity`       | `Quantity`     | 必填     | 最小有效数量步长。         |
+| `ts_event`         | `UnixNanos`      | `int`          | 必填     | 事件时间戳（纳秒）。        |
+| `ts_init`          | `UnixNanos`      | `int`          | 必填     | 初始化时间戳（纳秒）。       |
+| `tick_scheme_name` | N/A              | `str \| None`  | `None` | 已注册的可变 tick 方案名称。 |
+| `info`             | `Option<Params>` | `dict \| None` | `None` | 适配器元数据。           |
 
 *注意：Python 构造函数使用 `instrument_id`；Rust 将同一个值存储为 `id`。*
 

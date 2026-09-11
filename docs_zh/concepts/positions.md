@@ -93,10 +93,10 @@
 signed_qty = +100  # 多头持仓
 
 # 后续 SELL 150 单位，价格 $55
-signed_qty = -50   # 现在变为空头持仓
+signed_qty = -50  # 现在变为空头持仓
 
 # 最终 BUY 50 单位，价格 $52
-signed_qty = 0     # 空仓（已关闭）
+signed_qty = 0  # 空仓（已关闭）
 ```
 
 ## 持仓调整
@@ -169,11 +169,11 @@ NautilusTrader 支持两种主要的 OMS 类型，它们从根本上影响持仓
 
 平台允许为策略和交易场所设置不同的 OMS 配置：
 
-| 策略 OMS | 交易场所 OMS | 行为 |
-|----------|-------------|------|
-| `NETTING` | `NETTING` | 策略和交易场所层面均为每个金融工具单一持仓。 |
-| `HEDGING` | `HEDGING` | 两个层面均支持多持仓。 |
-| `NETTING` | `HEDGING` | 交易场所跟踪多持仓，Nautilus 维护单一持仓。 |
+| 策略 OMS    | 交易场所 OMS  | 行为                          |
+| --------- | --------- | --------------------------- |
+| `NETTING` | `NETTING` | 策略和交易场所层面均为每个金融工具单一持仓。      |
+| `HEDGING` | `HEDGING` | 两个层面均支持多持仓。                 |
+| `NETTING` | `HEDGING` | 交易场所跟踪多持仓，Nautilus 维护单一持仓。  |
 | `HEDGING` | `NETTING` | 交易场所跟踪单一持仓，Nautilus 维护虚拟持仓。 |
 
 :::tip
@@ -247,6 +247,7 @@ realized_pnl = (exit_price - entry_price) * closed_quantity * multiplier
 因为结算货币是基础货币，盈亏需要通过价格的倒数（`1/price`）来换算，导致公式与标准合约不同。这也带来了**非线性特性**——以做多为例，价格下跌时亏损的 BTC 数量会比同等幅度价格上涨时盈利的 BTC 数量更大，因为价格越低，同样的 USD 波动换算成 BTC 的金额越大。
 
 **示例（反向 BTC/USD，面值 100 USD）：**
+
 - 做多 $50,000 → $60,000：PnL = 100 × (1/50000 - 1/60000) = **+0.000333 BTC**
 - 做多 $50,000 → $40,000：PnL = 100 × (1/50000 - 1/40000) = **-0.000500 BTC**（亏损更大）
 :::
@@ -257,8 +258,8 @@ realized_pnl = (exit_price - entry_price) * closed_quantity * multiplier
 
 ```python
 position.unrealized_pnl(last_price)  # 使用最新成交价
-position.unrealized_pnl(bid_price)   # 多头持仓的保守估计
-position.unrealized_pnl(ask_price)   # 空头持仓的保守估计
+position.unrealized_pnl(bid_price)  # 多头持仓的保守估计
+position.unrealized_pnl(ask_price)  # 空头持仓的保守估计
 ```
 
 对于空仓持仓，无论提供什么价格，都返回 `Money(0, settlement_currency)`。
@@ -307,11 +308,11 @@ notional = position.notional_value(current_price)
 :::note 什么是 Quanto 合约？
 **Quanto 合约**（quantity-adjusted contract）是一种跨币种结算的衍生品合约：标的以 A 货币计价，但盈亏以 B 货币按**固定汇率**结算，从而消除汇率风险。
 
-| 类型 | 标的计价 | 结算货币 | 汇率风险 | 典型例子 |
-|------|---------|---------|---------|---------|
-| 线性（标准） | USD | USD | 无 | Binance BTCUSDT |
-| 反向 | USD | BTC | 有（非线性 PnL） | BitMEX XBTUSD |
-| **Quanto** | USD | BTC | **无**（固定汇率） | BitMEX 早期 ETHUSD |
+| 类型         | 标的计价 | 结算货币 | 汇率风险        | 典型例子             |
+| ---------- | ---- | ---- | ----------- | ---------------- |
+| 线性（标准）     | USD  | USD  | 无           | Binance BTCUSDT  |
+| 反向         | USD  | BTC  | 有（非线性 PnL）  | BitMEX XBTUSD    |
+| **Quanto** | USD  | BTC  | **无**（固定汇率） | BitMEX 早期 ETHUSD |
 
 **示例（BitMEX ETHUSD quanto 永续，固定乘数 0.000001 BTC/USD）：** 做多 10,000 张，ETH 从 $2,000 涨到 $2,100 → PnL = (2100 - 2000) × 10000 × 0.000001 = **1.0 BTC**，无论 BTC/USD 汇率如何变化。
 

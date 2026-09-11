@@ -24,36 +24,36 @@
 
 每个存储或重新分发具体产物（artifact）的整理过的数据集，都必须包含一个 `metadata.json`，至少包含以下字段：
 
-| 字段           | 描述                                                              |
-|----------------|-------------------------------------------------------------------|
-| `file`         | 数据集的文件名。                                                  |
-| `sha256`       | 文件的 SHA-256 哈希值。                                           |
-| `size_bytes`   | 文件大小（字节）。                                                |
-| `original_url` | 原始源数据的下载 URL。                                            |
-| `licence`      | 许可证条款及任何重新分发约束。                                    |
-| `added_at`     | 数据集整理时的 ISO 8601 时间戳。                                  |
+| 字段             | 描述                    |
+| -------------- | --------------------- |
+| `file`         | 数据集的文件名。              |
+| `sha256`       | 文件的 SHA-256 哈希值。      |
+| `size_bytes`   | 文件大小（字节）。             |
+| `original_url` | 原始源数据的下载 URL。         |
+| `licence`      | 许可证条款及任何重新分发约束。       |
+| `added_at`     | 数据集整理时的 ISO 8601 时间戳。 |
 
 这些字段与 `scripts/curate-dataset.sh` 的输出相对应。为提供更丰富的来源信息（provenance），推荐补充以下字段：
 
-| 字段            | 描述                                                             |
-|-----------------|------------------------------------------------------------------|
-| `instrument`    | 所涵盖的金融工具代码（symbol）。                                 |
-| `date`          | 所涵盖的交易日期。                                               |
-| `format`        | 存储格式（例如 "Nautilus OrderBookDelta Parquet"）。            |
-| `original_file` | 转换前的原始供应商文件名。                                       |
-| `parser`        | 用于转换的解析器（例如 "itchy 0.3.4"）。                        |
+| 字段              | 描述                                          |
+| --------------- | ------------------------------------------- |
+| `instrument`    | 所涵盖的金融工具代码（symbol）。                         |
+| `date`          | 所涵盖的交易日期。                                   |
+| `format`        | 存储格式（例如 "Nautilus OrderBookDelta Parquet"）。 |
+| `original_file` | 转换前的原始供应商文件名。                               |
+| `parser`        | 用于转换的解析器（例如 "itchy 0.3.4"）。                 |
 
 用户自取数据集在适用的字段上使用相同的元数据字段。它们还应包含以下字段：
 
-| 字段                  | 描述                                                                  |
-|-----------------------|-----------------------------------------------------------------------|
-| `distribution`        | 必须为 `"user-fetch"`。                                               |
-| `fetch_method`        | 用户获取源数据的方式（API、网页门户、CLI 等）。                      |
-| `fetch_reference`     | 面向用户的下载流程的 URL 或文档引用。                                |
-| `auth`                | 所需的凭据或授权（如有）。                                            |
-| `transform_version`   | 用于构建最终文件的本地转换流水线版本。                                |
-| `redistribution`      | 简要说明该数据集的重新分发限制。                                      |
-| `public_mirror`       | 对于受限的供应商数据集，必须为 `false`。                             |
+| 字段                  | 描述                          |
+| ------------------- | --------------------------- |
+| `distribution`      | 必须为 `"user-fetch"`。         |
+| `fetch_method`      | 用户获取源数据的方式（API、网页门户、CLI 等）。 |
+| `fetch_reference`   | 面向用户的下载流程的 URL 或文档引用。       |
+| `auth`              | 所需的凭据或授权（如有）。               |
+| `transform_version` | 用于构建最终文件的本地转换流水线版本。         |
+| `redistribution`    | 简要说明该数据集的重新分发限制。            |
+| `public_mirror`     | 对于受限的供应商数据集，必须为 `false`。    |
 
 对于没有单一已签入或已镜像产物的用户自取数据集，`metadata.json` 中可以省略 `file`、`sha256` 和 `size_bytes`。在这种情况下，`manifest.json` 中的 `target_files` 才是本地输出文件的权威来源。对于用户自取数据集，当具体文件是按每个用户账号或每次请求生成时，`original_url` 可以指向供应商的下载入口点，而非确切的文件 URL。
 
@@ -160,18 +160,18 @@ tests/test_data/<source>/<slug>/
 
 推荐的清单字段：
 
-| 字段                | 描述                                                               |
-|---------------------|--------------------------------------------------------------------|
-| `slug`              | 稳定的数据集标识符。                                               |
-| `vendor`            | 供应商或交易场所名称。                                             |
-| `source_type`       | `api`、`portal-download`、`purchased-archive` 等。                |
-| `source_filters`    | 代码（symbol）、事件 ID、市场 ID、日期范围或文件名。              |
-| `target_files`      | 转换后预期产出的 Nautilus Parquet 文件。                          |
-| `cache_dir`         | 相对于 `tests/test_data/local/` 的本地输出位置。                  |
-| `fetch_command`     | 建议的命令或脚本入口点。                                           |
-| `transform_command` | 建议的本地转换命令。                                               |
-| `env`               | 所需的环境变量。                                                   |
-| `notes`             | 面向用户的简短运维说明。                                           |
+| 字段                  | 描述                                             |
+| ------------------- | ---------------------------------------------- |
+| `slug`              | 稳定的数据集标识符。                                     |
+| `vendor`            | 供应商或交易场所名称。                                    |
+| `source_type`       | `api`、`portal-download`、`purchased-archive` 等。 |
+| `source_filters`    | 代码（symbol）、事件 ID、市场 ID、日期范围或文件名。               |
+| `target_files`      | 转换后预期产出的 Nautilus Parquet 文件。                  |
+| `cache_dir`         | 相对于 `tests/test_data/local/` 的本地输出位置。          |
+| `fetch_command`     | 建议的命令或脚本入口点。                                   |
+| `transform_command` | 建议的本地转换命令。                                     |
+| `env`               | 所需的环境变量。                                       |
+| `notes`             | 面向用户的简短运维说明。                                   |
 
 依赖用户自取数据的测试应当：
 
@@ -288,13 +288,13 @@ pytest tests/docs_tests/test_tutorials.py::test_tutorial_with_local_data -v
 
 这些数据集早于本策略，使用原始的供应商格式（CSV/CSV.gz），且没有 `metadata.json`。它们对既有测试仍然有效。新数据集应遵循上述 Parquet 标准。
 
-| 数据集                        | 来源     | 格式             | 位置                      | 状态     |
-|-------------------------------|----------|------------------|---------------------------|----------|
-| Tardis Deribit L2 deltas      | Tardis   | Parquet（大）    | `tests/test_data/large/`  | 已整理   |
-| ITCH AAPL L3 deltas           | NASDAQ   | Parquet（大）    | `tests/test_data/large/`  | 已整理   |
-| HISTDATA EURUSD.SIM quotes    | HISTDATA | Parquet（大）    | `tests/test_data/large/`  | 已迁移   |
-| Tardis Deribit L2             | Tardis   | CSV（签入）      | `tests/test_data/tardis/` | 遗留     |
-| Tardis Binance snapshots      | Tardis   | CSV.gz（大）     | `tests/test_data/large/`  | 遗留     |
-| Tardis Bitmex trades          | Tardis   | CSV.gz（大）     | `tests/test_data/large/`  | 遗留     |
+| 数据集                        | 来源       | 格式         | 位置                        | 状态  |
+| -------------------------- | -------- | ---------- | ------------------------- | --- |
+| Tardis Deribit L2 deltas   | Tardis   | Parquet（大） | `tests/test_data/large/`  | 已整理 |
+| ITCH AAPL L3 deltas        | NASDAQ   | Parquet（大） | `tests/test_data/large/`  | 已整理 |
+| HISTDATA EURUSD.SIM quotes | HISTDATA | Parquet（大） | `tests/test_data/large/`  | 已迁移 |
+| Tardis Deribit L2          | Tardis   | CSV（签入）    | `tests/test_data/tardis/` | 遗留  |
+| Tardis Binance snapshots   | Tardis   | CSV.gz（大）  | `tests/test_data/large/`  | 遗留  |
+| Tardis Bitmex trades       | Tardis   | CSV.gz（大）  | `tests/test_data/large/`  | 遗留  |
 
 原先的 `nautechsystems/nautilus_data` 目录映射到上文的 HISTDATA EURUSD.SIM Parquet 文件。原始的 HISTDATA CSV 文件仍为用户自取。

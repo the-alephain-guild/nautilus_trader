@@ -25,14 +25,14 @@ NautilusTrader 为多种订单类型和执行指令提供了统一的 API，但�
 ```python
 from nautilus_trader.model.events import OrderDenied
 
+
 def on_order_denied(self, event: OrderDenied) -> None:
-    self.log.warning(
-        f"订单被拒绝: {event.client_order_id}, 原因: {event.reason}"
-    )
+    self.log.warning(f"订单被拒绝: {event.client_order_id}, 原因: {event.reason}")
     # 可回退到支持的替代订单类型（如改用 MARKET 代替 STOP_MARKET）
 ```
 
 常见原因：
+
 - 交易场所不支持该订单类型（如不支持 `TRAILING_STOP_MARKET`）。
 - 不支持特定执行指令（如不支持 `post_only`）。
 
@@ -62,6 +62,7 @@ def on_order_denied(self, event: OrderDenied) -> None:
 from datetime import timedelta
 from nautilus_trader.model.identifiers import ClientOrderId
 
+
 def on_order_submitted(self, event) -> None:
     # 设置 30 秒超时检查
     self.clock.set_alert(
@@ -69,12 +70,14 @@ def on_order_submitted(self, event) -> None:
         self.clock.utc_now() + timedelta(seconds=30),
     )
 
+
 def on_alert(self, event) -> None:
     if event.name.startswith("inflight_timeout_"):
         order_id = ClientOrderId(event.name.replace("inflight_timeout_", ""))
         if self.cache.is_order_inflight(order_id):
             self.query_order(order_id)  # 向交易场所查询最新状态
 ```
+
 :::
 
 - 当订单处于以下（非终态）状态之一时，该订单是**开放的 (open)**：
@@ -152,22 +155,22 @@ flowchart TB
 
 ### 订单状态定义
 
-| 状态                | 描述                                                                            |
-|--------------------|---------------------------------------------------------------------------------|
-| `INITIALIZED`      | 订单已在 Nautilus 系统中实例化。                                                    |
-| `DENIED`           | 订单因无效、无法处理或超出风险限制而被 Nautilus 拒绝。                                   |
-| `EMULATED`         | 订单正在由 `OrderEmulator` 组件进行模拟 (emulation)。                                |
-| `RELEASED`         | 订单已从 `OrderEmulator` 组件释放。                                                 |
-| `SUBMITTED`        | 订单已提交至交易场所（等待确认）。                                                     |
-| `ACCEPTED`         | 订单已被交易场所确认接收且有效（可能已开始生效）。                                        |
-| `REJECTED`         | 订单被交易场所拒绝。                                                                |
-| `CANCELED`         | 订单已取消（终态）。                                                                |
-| `EXPIRED`          | 订单已达到 GTD 到期时间（终态）。                                                     |
-| `TRIGGERED`        | 订单的 STOP 价格已在交易场所被触发。                                                  |
-| `PENDING_UPDATE`   | 订单正在交易场所等待修改请求处理。                                                     |
-| `PENDING_CANCEL`   | 订单正在交易场所等待取消请求处理。                                                     |
-| `PARTIALLY_FILLED` | 订单已在交易场所部分成交 (fill)。                                                     |
-| `FILLED`           | 订单已完全成交（终态）。                                                              |
+| 状态                 | 描述                                        |
+| ------------------ | ----------------------------------------- |
+| `INITIALIZED`      | 订单已在 Nautilus 系统中实例化。                     |
+| `DENIED`           | 订单因无效、无法处理或超出风险限制而被 Nautilus 拒绝。          |
+| `EMULATED`         | 订单正在由 `OrderEmulator` 组件进行模拟 (emulation)。 |
+| `RELEASED`         | 订单已从 `OrderEmulator` 组件释放。                |
+| `SUBMITTED`        | 订单已提交至交易场所（等待确认）。                         |
+| `ACCEPTED`         | 订单已被交易场所确认接收且有效（可能已开始生效）。                 |
+| `REJECTED`         | 订单被交易场所拒绝。                                |
+| `CANCELED`         | 订单已取消（终态）。                                |
+| `EXPIRED`          | 订单已达到 GTD 到期时间（终态）。                       |
+| `TRIGGERED`        | 订单的 STOP 价格已在交易场所被触发。                     |
+| `PENDING_UPDATE`   | 订单正在交易场所等待修改请求处理。                         |
+| `PENDING_CANCEL`   | 订单正在交易场所等待取消请求处理。                         |
+| `PARTIALLY_FILLED` | 订单已在交易场所部分成交 (fill)。                      |
+| `FILLED`           | 订单已完全成交（终态）。                              |
 
 ## 执行指令
 
@@ -258,34 +261,34 @@ flowchart TB
 NautilusTrader 支持以下订单类型。每种类型都链接到一份带有代码示例的专门指南；
 可选参数会用包含默认值的注释标记。
 
-| 订单类型                                            | 类别                 | 描述                                                              |
-|----------------------------------------------------|----------------------|-----------------------------------------------------------------|
-| [`MARKET`](market.md)                              | 主动                 | 以最佳可用价格立即交易该数量。                                       |
-| [`LIMIT`](limit.md)                                | 被动                 | 挂在订单簿中，仅以限价或更优价格成交。                                |
-| [`STOP_MARKET`](stop_market.md)                    | 条件                 | 一旦触发价格被触及，下达一个 *市价单*。                              |
-| [`STOP_LIMIT`](stop_limit.md)                      | 条件                 | 一旦触发价格被触及，以设定价格下达一个 *限价单*。                     |
-| [`MARKET_TO_LIMIT`](market_to_limit.md)            | 混合                 | 作为 *市价单* 提交；任何剩余部分以成交价挂为 *限价单*。               |
-| [`MARKET_IF_TOUCHED`](market_if_touched.md)        | 条件                 | 一旦触发价格被触及，下达一个 *市价单*。                              |
-| [`LIMIT_IF_TOUCHED`](limit_if_touched.md)          | 条件                 | 一旦触发价格被触及，以设定价格下达一个 *限价单*。                     |
-| [`TRAILING_STOP_MARKET`](trailing_stop_market.md)  | 条件追踪             | 以一定偏移追踪触发价，随后下达一个 *市价单*。                        |
-| [`TRAILING_STOP_LIMIT`](trailing_stop_limit.md)    | 条件追踪             | 以一定偏移追踪触发价，随后下达一个 *限价单*。                        |
+| 订单类型                                              | 类别   | 描述                              |
+| ------------------------------------------------- | ---- | ------------------------------- |
+| [`MARKET`](market.md)                             | 主动   | 以最佳可用价格立即交易该数量。                 |
+| [`LIMIT`](limit.md)                               | 被动   | 挂在订单簿中，仅以限价或更优价格成交。             |
+| [`STOP_MARKET`](stop_market.md)                   | 条件   | 一旦触发价格被触及，下达一个 *市价单*。           |
+| [`STOP_LIMIT`](stop_limit.md)                     | 条件   | 一旦触发价格被触及，以设定价格下达一个 *限价单*。      |
+| [`MARKET_TO_LIMIT`](market_to_limit.md)           | 混合   | 作为 *市价单* 提交；任何剩余部分以成交价挂为 *限价单*。 |
+| [`MARKET_IF_TOUCHED`](market_if_touched.md)       | 条件   | 一旦触发价格被触及，下达一个 *市价单*。           |
+| [`LIMIT_IF_TOUCHED`](limit_if_touched.md)         | 条件   | 一旦触发价格被触及，以设定价格下达一个 *限价单*。      |
+| [`TRAILING_STOP_MARKET`](trailing_stop_market.md) | 条件追踪 | 以一定偏移追踪触发价，随后下达一个 *市价单*。        |
+| [`TRAILING_STOP_LIMIT`](trailing_stop_limit.md)   | 条件追踪 | 以一定偏移追踪触发价，随后下达一个 *限价单*。        |
 
 ### FIX OrdType 映射
 
 每种类型映射到最接近的 FIX 5.0 SP2 [`OrdType <40>`](https://www.onixs.biz/fix-dictionary/5.0.sp2/tagnum_40.html)
 值（在协议定义了相应值的情况下）：
 
-| 订单类型              | FIX `OrdType <40>`                   |
-|----------------------|--------------------------------------|
+| 订单类型                 | FIX `OrdType <40>`                   |
+| -------------------- | ------------------------------------ |
 | Market               | `1` (Market)                         |
 | Limit                | `2` (Limit)                          |
 | Stop‑Market          | `3` (Stop)                           |
 | Stop‑Limit           | `4` (Stop Limit)                     |
 | Market‑To‑Limit      | `K` (Market With Left Over as Limit) |
 | Market‑If‑Touched    | `J` (Market If Touched)              |
-| Limit‑If‑Touched     | 无专用值 †                            |
-| Trailing‑Stop‑Market | `3` (Stop) + 追踪 peg                 |
-| Trailing‑Stop‑Limit  | `4` (Stop Limit) + 追踪 peg           |
+| Limit‑If‑Touched     | 无专用值 †                               |
+| Trailing‑Stop‑Market | `3` (Stop) + 追踪 peg                  |
+| Trailing‑Stop‑Limit  | `4` (Stop Limit) + 追踪 peg            |
 
 † FIX 没有为 *Limit-If-Touched* 定义专用的 `OrdType`；它通常以 `4`（Stop Limit）
 配合一个有利的触发价发送。追踪止损同样没有专用值，被建模为 `3`/`4`

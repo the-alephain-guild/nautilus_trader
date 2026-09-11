@@ -8,12 +8,12 @@ Nautilus 把连续期货建模为一个目标 `BarType`，加上一份在 reques
 
 `ContinuousFutureAdjustmentType` 把方向（向后或向前）与操作（价差或比率）组合在一起：
 
-| 模式              | 操作            | 锚定分段             |
-|-------------------|-----------------|----------------------|
-| `BACKWARD_SPREAD` | 加法            | 最新的合约           |
-| `FORWARD_SPREAD`  | 加法            | 第一个合约           |
-| `BACKWARD_RATIO`  | 乘法            | 最新的合约           |
-| `FORWARD_RATIO`   | 乘法            | 第一个合约           |
+| 模式                | 操作  | 锚定分段  |
+| ----------------- | --- | ----- |
+| `BACKWARD_SPREAD` | 加法  | 最新的合约 |
+| `FORWARD_SPREAD`  | 加法  | 第一个合约 |
+| `BACKWARD_RATIO`  | 乘法  | 最新的合约 |
+| `FORWARD_RATIO`   | 乘法  | 第一个合约 |
 
 在 `N` 个过渡中，第 `k` 个分段处的累计调整量为：
 
@@ -37,8 +37,8 @@ params = {
             "transition_time_ns": 1773671460000000000,  # ESH26 滚动到 ESM26 的时刻
             "pre_instrument_id": "ESH26.XCME",
             "post_instrument_id": "ESM26.XCME",
-            "pre_price": "6001.00",                     # 滚动前 ESH26 的最后价格
-            "post_price": "5995.50",                    # 滚动后 ESM26 的首个价格
+            "pre_price": "6001.00",  # 滚动前 ESH26 的最后价格
+            "post_price": "5995.50",  # 滚动后 ESM26 的首个价格
         },
         # ... 更多过渡 ...
     ],

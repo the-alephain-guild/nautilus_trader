@@ -6,46 +6,46 @@
 
 ## 字段
 
-| 字段                   | Rust 类型          | Python 类型       | 必填/默认值       | 说明                                       |
-|------------------------|--------------------|-------------------|------------------|--------------------------------------------|
-| `instrument_id`        | `InstrumentId`     | N/A               | 仅 Rust          | 在 Rust 中以 `id` 存储。                   |
-| `raw_symbol`           | `Symbol`           | N/A               | 仅 Rust          | 原生或生成的交易场所代码。                  |
-| `venue_name`           | N/A                | `str`             | 仅 Python        | 用于构造合约 ID 的交易场所。               |
-| `event_type_id`        | `u64`              | `int`             | 必填             | 赛事类型标识符。                           |
-| `event_type_name`      | `Ustr`             | `str`             | 必填             | 赛事类型名称，例如某项运动。               |
-| `competition_id`       | `u64`              | `int`             | 必填             | 赛事系列标识符。                           |
-| `competition_name`     | `Ustr`             | `str`             | 必填             | 赛事系列名称。                             |
-| `event_id`             | `u64`              | `int`             | 必填             | 赛事标识符。                               |
-| `event_name`           | `Ustr`             | `str`             | 必填             | 赛事名称。                                 |
-| `event_country_code`   | `Ustr`             | `str`             | 必填             | 赛事所在国家/地区代码。                     |
-| `event_open_date`      | `UnixNanos`        | `datetime`        | 必填             | 赛事开始时间。                             |
-| `betting_type`         | `Ustr`             | `str`             | 必填             | 交易场所发布的投注类型。                   |
-| `market_id`            | `Ustr`             | `str`             | 必填             | 市场标识符。                               |
-| `market_name`          | `Ustr`             | `str`             | 必填             | 市场名称。                                 |
-| `market_type`          | `Ustr`             | `str`             | 必填             | 市场类型，例如对盘赔率。                   |
-| `market_start_time`    | `UnixNanos`        | `datetime`        | 必填             | 市场开始时间。                             |
-| `selection_id`         | `u64`              | `int`             | 必填             | 投注选项或参赛者标识符。                   |
-| `selection_name`       | `Ustr`             | `str`             | 必填             | 投注选项或参赛者名称。                     |
-| `selection_handicap`   | `f64`              | `float`           | 必填             | 让分市场的让分值。                         |
-| `currency`             | `Currency`         | `str`             | 必填             | 报价和结算货币。                           |
-| `price_precision`      | `u8`               | `int`             | 必填             | 价格允许的小数位数。                       |
-| `size_precision`       | `u8`               | `int`             | 必填             | 订单数量允许的小数位数。                   |
-| `price_increment`      | `Price`            | `Price \| None`    | 必填/Rust        | 价格步长，通常由 tick scheme 设定。        |
-| `size_increment`       | `Quantity`         | `Quantity`        | 必填/Rust        | 最小数量步长。                             |
-| `max_quantity`         | `Option<Quantity>` | `Quantity \| None` | `None`           | 最大订单数量。                             |
-| `min_quantity`         | `Option<Quantity>` | `Quantity \| None` | `None`           | 最小订单数量。                             |
-| `max_notional`         | `Option<Money>`    | `Money \| None`    | `None`           | 最大订单名义价值。                         |
-| `min_notional`         | `Option<Money>`    | `Money \| None`    | `None`           | 最小订单名义价值。                         |
-| `max_price`            | `Option<Price>`    | `Price \| None`    | `None`           | 最大有效报价或订单价格。                   |
-| `min_price`            | `Option<Price>`    | `Price \| None`    | `None`           | 最小有效报价或订单价格。                   |
-| `margin_init`          | `Option<Decimal>`  | `Decimal \| None`  | `1`              | 初始保证金率。                             |
-| `margin_maint`         | `Option<Decimal>`  | `Decimal \| None`  | `1`              | 维持保证金率。                             |
-| `maker_fee`            | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 挂单 (maker) 费率。负值表示返佣。          |
-| `taker_fee`            | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 吃单 (taker) 费率。负值表示返佣。          |
-| `tick_scheme_name`     | N/A                | `str \| None`      | `None`           | 已注册的可变 tick scheme 名称。           |
-| `info`                 | `Option<Params>`   | `dict \| None`     | `{}`/`None`      | 适配器元数据。                             |
-| `ts_event`             | `UnixNanos`        | `int`             | 必填             | 事件时间戳，单位为纳秒。                   |
-| `ts_init`              | `UnixNanos`        | `int`             | 必填             | 初始化时间戳，单位为纳秒。                 |
+| 字段                   | Rust 类型            | Python 类型          | 必填/默认值      | 说明                       |
+| -------------------- | ------------------ | ------------------ | ----------- | ------------------------ |
+| `instrument_id`      | `InstrumentId`     | N/A                | 仅 Rust      | 在 Rust 中以 `id` 存储。       |
+| `raw_symbol`         | `Symbol`           | N/A                | 仅 Rust      | 原生或生成的交易场所代码。            |
+| `venue_name`         | N/A                | `str`              | 仅 Python    | 用于构造合约 ID 的交易场所。         |
+| `event_type_id`      | `u64`              | `int`              | 必填          | 赛事类型标识符。                 |
+| `event_type_name`    | `Ustr`             | `str`              | 必填          | 赛事类型名称，例如某项运动。           |
+| `competition_id`     | `u64`              | `int`              | 必填          | 赛事系列标识符。                 |
+| `competition_name`   | `Ustr`             | `str`              | 必填          | 赛事系列名称。                  |
+| `event_id`           | `u64`              | `int`              | 必填          | 赛事标识符。                   |
+| `event_name`         | `Ustr`             | `str`              | 必填          | 赛事名称。                    |
+| `event_country_code` | `Ustr`             | `str`              | 必填          | 赛事所在国家/地区代码。             |
+| `event_open_date`    | `UnixNanos`        | `datetime`         | 必填          | 赛事开始时间。                  |
+| `betting_type`       | `Ustr`             | `str`              | 必填          | 交易场所发布的投注类型。             |
+| `market_id`          | `Ustr`             | `str`              | 必填          | 市场标识符。                   |
+| `market_name`        | `Ustr`             | `str`              | 必填          | 市场名称。                    |
+| `market_type`        | `Ustr`             | `str`              | 必填          | 市场类型，例如对盘赔率。             |
+| `market_start_time`  | `UnixNanos`        | `datetime`         | 必填          | 市场开始时间。                  |
+| `selection_id`       | `u64`              | `int`              | 必填          | 投注选项或参赛者标识符。             |
+| `selection_name`     | `Ustr`             | `str`              | 必填          | 投注选项或参赛者名称。              |
+| `selection_handicap` | `f64`              | `float`            | 必填          | 让分市场的让分值。                |
+| `currency`           | `Currency`         | `str`              | 必填          | 报价和结算货币。                 |
+| `price_precision`    | `u8`               | `int`              | 必填          | 价格允许的小数位数。               |
+| `size_precision`     | `u8`               | `int`              | 必填          | 订单数量允许的小数位数。             |
+| `price_increment`    | `Price`            | `Price \| None`    | 必填/Rust     | 价格步长，通常由 tick scheme 设定。 |
+| `size_increment`     | `Quantity`         | `Quantity`         | 必填/Rust     | 最小数量步长。                  |
+| `max_quantity`       | `Option<Quantity>` | `Quantity \| None` | `None`      | 最大订单数量。                  |
+| `min_quantity`       | `Option<Quantity>` | `Quantity \| None` | `None`      | 最小订单数量。                  |
+| `max_notional`       | `Option<Money>`    | `Money \| None`    | `None`      | 最大订单名义价值。                |
+| `min_notional`       | `Option<Money>`    | `Money \| None`    | `None`      | 最小订单名义价值。                |
+| `max_price`          | `Option<Price>`    | `Price \| None`    | `None`      | 最大有效报价或订单价格。             |
+| `min_price`          | `Option<Price>`    | `Price \| None`    | `None`      | 最小有效报价或订单价格。             |
+| `margin_init`        | `Option<Decimal>`  | `Decimal \| None`  | `1`         | 初始保证金率。                  |
+| `margin_maint`       | `Option<Decimal>`  | `Decimal \| None`  | `1`         | 维持保证金率。                  |
+| `maker_fee`          | `Option<Decimal>`  | `Decimal \| None`  | `0`         | 挂单 (maker) 费率。负值表示返佣。    |
+| `taker_fee`          | `Option<Decimal>`  | `Decimal \| None`  | `0`         | 吃单 (taker) 费率。负值表示返佣。    |
+| `tick_scheme_name`   | N/A                | `str \| None`      | `None`      | 已注册的可变 tick scheme 名称。   |
+| `info`               | `Option<Params>`   | `dict \| None`     | `{}`/`None` | 适配器元数据。                  |
+| `ts_event`           | `UnixNanos`        | `int`              | 必填          | 事件时间戳，单位为纳秒。             |
+| `ts_init`            | `UnixNanos`        | `int`              | 必填          | 初始化时间戳，单位为纳秒。            |
 
 *注意：Python 会根据交易场所、市场、投注选项和让分字段来构造合约 ID 和原生代码 (raw symbol)。Rust 则直接以 `instrument_id` 和 `raw_symbol` 接收这两者。*
 

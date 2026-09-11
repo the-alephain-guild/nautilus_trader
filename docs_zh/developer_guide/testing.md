@@ -28,16 +28,16 @@
 
 测试各层遵循平行的逐级升级。从能证明关键问题的最低层开始；只有当下层不再能检测到回归，或输入空间增长到超出手工挑选的用例范围时，才向上攀登。
 
-| 层级                     | 触发条件                                                                          |
-|--------------------------|---------------------------------------------------------------------------------|
-| 单元测试                 | 单个函数或状态转换具有一个小而可枚举的用例集合。                                  |
-| 参数化测试               | 同一形态在离散输入（订单方向、状态、金融工具）上重复出现。                        |
-| 基于属性的测试           | 某个不变量必须对人脑无法枚举的一整类输入都成立。                                  |
-| 集成测试                 | 多个模块通过真实（非 mock）的引擎或运行时进行交互。                              |
-| 模糊测试                 | 不可信或对抗性的字节流穿过解析器、解码器或线格式（wire-format）处理器。          |
-| 规范验收测试             | 行为依赖于实时交易场所契约（参见 `spec_exec_testing.md`）。                       |
-| 确定性仿真               | 正确性依赖于任务调度、超时或挂钟时间（wall-clock）顺序。                          |
-| 形式化验证               | 一个纯函数具有清晰的不变量和有界的输入空间，值得进行证明。                        |
+| 层级      | 触发条件                                      |
+| ------- | ----------------------------------------- |
+| 单元测试    | 单个函数或状态转换具有一个小而可枚举的用例集合。                  |
+| 参数化测试   | 同一形态在离散输入（订单方向、状态、金融工具）上重复出现。             |
+| 基于属性的测试 | 某个不变量必须对人脑无法枚举的一整类输入都成立。                  |
+| 集成测试    | 多个模块通过真实（非 mock）的引擎或运行时进行交互。              |
+| 模糊测试    | 不可信或对抗性的字节流穿过解析器、解码器或线格式（wire-format）处理器。 |
+| 规范验收测试  | 行为依赖于实时交易场所契约（参见 `spec_exec_testing.md`）。 |
+| 确定性仿真   | 正确性依赖于任务调度、超时或挂钟时间（wall-clock）顺序。         |
+| 形式化验证   | 一个纯函数具有清晰的不变量和有界的输入空间，值得进行证明。             |
 
 形式化验证这一档是前瞻性的：工作区中尚未落地任何 Kani 或 Prusti 测试框架。该行记录的是当未来采用某个验证器时的升级条件，而非当前的义务。
 
@@ -46,13 +46,13 @@
 模块的形态决定了哪些层值得投入。并非每个模块都需要完整的阶梯。
 请在模块粒度（而非 crate 粒度）上应用此规则：一个适配器 crate 既包含纯解析器，也包含受 I/O 约束的客户端循环，而每一行规则适用于其中不同的部分。
 
-| 模块形态                            | 适用的层                                      | 示例                                   |
-|-------------------------------------|-----------------------------------------------|----------------------------------------|
-| 纯函数，不变量清晰                  | 单元、参数化、属性、模糊                       | 对账内核、组合数学运算                 |
-| 纯函数，未声明不变量                | 单元、参数化、属性、模糊                       | 编解码器、适配器解析器、格式化器       |
-| 有状态，同步                        | 单元、参数化、针对状态转换的属性测试          | Cache、订单簿                          |
-| 有状态，异步                        | 单元、集成、确定性仿真                         | 实时引擎、执行管理器                   |
-| 受 I/O 约束，交易场所契约           | 集成、规范验收、边界模糊                       | 适配器客户端循环                       |
+| 模块形态            | 适用的层               | 示例               |
+| --------------- | ------------------ | ---------------- |
+| 纯函数，不变量清晰       | 单元、参数化、属性、模糊       | 对账内核、组合数学运算      |
+| 纯函数，未声明不变量      | 单元、参数化、属性、模糊       | 编解码器、适配器解析器、格式化器 |
+| 有状态，同步          | 单元、参数化、针对状态转换的属性测试 | Cache、订单簿        |
+| 有状态，异步          | 单元、集成、确定性仿真        | 实时引擎、执行管理器       |
+| 受 I/O 约束，交易场所契约 | 集成、规范验收、边界模糊       | 适配器客户端循环         |
 
 ### 何时不应添加覆盖
 
@@ -304,25 +304,25 @@ setup_debugging()
 
 ### 测试层矩阵
 
-| 层                     | 位置                                        | 覆盖内容                                                   |
-|------------------------|---------------------------------------------|------------------------------------------------------------|
-| DataEngine subscribe   | `crates/data/tests/engine.rs`               | 引擎正确处理订阅/取消订阅命令。                            |
-| DataEngine publish     | `crates/data/tests/engine.rs`               | 引擎将已发布的数据路由到消息总线。                         |
-| DataActor subscribe    | `crates/common/src/actor/tests.rs`          | Actor 通过类型化发布订阅并接收数据。                       |
-| DataActor unsubscribe  | `crates/common/src/actor/tests.rs`          | Actor 在取消订阅后停止接收数据。                           |
-| PyO3 actor dispatch    | `crates/common/src/python/actor.rs`         | Rust 处理器分派到 Python 的 `on_*` 方法。                  |
-| Python Actor subscribe | `tests/unit_tests/common/test_actor.py`     | Python actor 订阅；命令计数递增。                          |
-| Python Actor unsub     | `tests/unit_tests/common/test_actor.py`     | Python actor 取消订阅；订阅列表清空。                      |
-| Backtest client        | `nautilus_trader/backtest/data_client.pyx`  | 回测客户端覆盖基类的 subscribe/unsubscribe。              |
-| Adapter live tests     | `docs/developer_guide/spec_data_testing.md` | 实时数据验收测试（DataTester）。                           |
+| 层                      | 位置                                          | 覆盖内容                              |
+| ---------------------- | ------------------------------------------- | --------------------------------- |
+| DataEngine subscribe   | `crates/data/tests/engine.rs`               | 引擎正确处理订阅/取消订阅命令。                  |
+| DataEngine publish     | `crates/data/tests/engine.rs`               | 引擎将已发布的数据路由到消息总线。                 |
+| DataActor subscribe    | `crates/common/src/actor/tests.rs`          | Actor 通过类型化发布订阅并接收数据。             |
+| DataActor unsubscribe  | `crates/common/src/actor/tests.rs`          | Actor 在取消订阅后停止接收数据。               |
+| PyO3 actor dispatch    | `crates/common/src/python/actor.rs`         | Rust 处理器分派到 Python 的 `on_*` 方法。   |
+| Python Actor subscribe | `tests/unit_tests/common/test_actor.py`     | Python actor 订阅；命令计数递增。           |
+| Python Actor unsub     | `tests/unit_tests/common/test_actor.py`     | Python actor 取消订阅；订阅列表清空。         |
+| Backtest client        | `nautilus_trader/backtest/data_client.pyx`  | 回测客户端覆盖基类的 subscribe/unsubscribe。 |
+| Adapter live tests     | `docs/developer_guide/spec_data_testing.md` | 实时数据验收测试（DataTester）。             |
 
 ### 各数据类型的覆盖情况
 
 下表展示了每种数据类型在哪些层有测试覆盖。
 在添加新类型时将其用作检查清单。
 
-| 数据类型            | Engine | Actor (Rust) | PyO3 dispatch | Actor (Python) | Backtest client | Adapter spec |
-|---------------------|--------|--------------|---------------|----------------|-----------------|--------------|
+| 数据类型                | Engine | Actor (Rust) | PyO3 dispatch | Actor (Python) | Backtest client | Adapter spec |
+| ------------------- | ------ | ------------ | ------------- | -------------- | --------------- | ------------ |
 | `InstrumentAny`     | ✓      | ✓            | ✓             | ✓              | ✓               | ✓            |
 | `OrderBookDeltas`   | ✓      | ✓            | ✓             | ✓              | ✓               | ✓            |
 | `OrderBook`         | ✓      | ✓            | ✓             | ✓              | ✓               | ✓            |

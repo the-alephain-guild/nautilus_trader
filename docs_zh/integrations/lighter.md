@@ -56,12 +56,12 @@ cargo run --example lighter-exec-tester --package nautilus-lighter --features ex
 
 ## 产品支持 (Product support)
 
-| 产品类型      | 数据源 | 交易 | 备注                                                          |
-|-------------------|-----------|---------|--------------------------------------------------------------|
-| 现货 (Spot)              | ✓         | ✓       | 使用 Lighter market index 2048-4094 的现货市场。         |
-| 永续合约 (Perpetual futures) | ✓         | ✓       | 使用 Lighter market index 0-254 的线性永续市场。 |
-| 定期合约 (Dated futures)     | -         | -       | *不支持*。                                             |
-| 期权 (Options)           | -         | -       | *不支持*。                                             |
+| 产品类型                     | 数据源 | 交易  | 备注                                       |
+| ------------------------ | --- | --- | ---------------------------------------- |
+| 现货 (Spot)                | ✓   | ✓   | 使用 Lighter market index 2048-4094 的现货市场。 |
+| 永续合约 (Perpetual futures) | ✓   | ✓   | 使用 Lighter market index 0-254 的线性永续市场。   |
+| 定期合约 (Dated futures)     | -   | -   | *不支持*。                                   |
+| 期权 (Options)             | -   | -   | *不支持*。                                   |
 
 ## 限制 (Limitations)
 
@@ -80,19 +80,19 @@ cargo run --example lighter-exec-tester --package nautilus-lighter --features ex
 
 Lighter 通过数值型的 `market_index` 值来标识市场。适配器从 `GET /api/v1/orderBookDetails` 引导出该映射，然后将原始的交易场所符号转换为 Nautilus `InstrumentId`。
 
-| 交易场所产品      | Nautilus 符号格式 | 示例            | 备注                   |
-|--------------------|------------------------|--------------------|-------------------------|
-| 永续合约  | `{BASE}-PERP.LIGHTER`  | `BTC-PERP.LIGHTER` | 原始交易场所符号 `BTC`。 |
-| 现货               | `{BASE}-SPOT.LIGHTER`  | `ETH-SPOT.LIGHTER` | 原始交易场所符号 `ETH`。 |
+| 交易场所产品 | Nautilus 符号格式         | 示例                 | 备注              |
+| ------ | --------------------- | ------------------ | --------------- |
+| 永续合约   | `{BASE}-PERP.LIGHTER` | `BTC-PERP.LIGHTER` | 原始交易场所符号 `BTC`。 |
+| 现货     | `{BASE}-SPOT.LIGHTER` | `ETH-SPOT.LIGHTER` | 原始交易场所符号 `ETH`。 |
 
 后缀用于区分共享同一交易场所符号的现货和永续挂牌。出站请求会去掉后缀，并使用缓存的 `market_index`。
 
 ## 环境 (Environments)
 
-| 环境 | REST URL                              | WebSocket URL                              | Chain ID |
-|-------------|---------------------------------------|--------------------------------------------|----------|
-| Mainnet     | `https://mainnet.zklighter.elliot.ai` | `wss://mainnet.zklighter.elliot.ai/stream` | 304      |
-| Testnet     | `https://testnet.zklighter.elliot.ai` | `wss://testnet.zklighter.elliot.ai/stream` | 300      |
+| 环境      | REST URL                              | WebSocket URL                              | Chain ID |
+| ------- | ------------------------------------- | ------------------------------------------ | -------- |
+| Mainnet | `https://mainnet.zklighter.elliot.ai` | `wss://mainnet.zklighter.elliot.ai/stream` | 304      |
+| Testnet | `https://testnet.zklighter.elliot.ai` | `wss://testnet.zklighter.elliot.ai/stream` | 300      |
 
 在数据和执行配置中使用 `LighterEnvironment::Mainnet` 或 `LighterEnvironment::Testnet`。也可以通过 URL 覆盖来指向私有网关或本地测试 fixture。
 
@@ -122,7 +122,7 @@ cargo run -p nautilus-lighter --bin lighter-integrator-revoke testnet   # testne
 from nautilus_trader.core.nautilus_pyo3 import revoke_lighter_integrator
 from nautilus_trader.core.nautilus_pyo3 import LighterEnvironment
 
-await revoke_lighter_integrator()                            # mainnet (默认)
+await revoke_lighter_integrator()  # mainnet (默认)
 await revoke_lighter_integrator(LighterEnvironment.TESTNET)  # testnet
 ```
 
@@ -130,19 +130,19 @@ Rust 脚本会打印该操作的摘要，并在签名或发送之前暂停等待
 
 ## 数据订阅 (Data subscriptions)
 
-| 数据类型            | 订阅         | 快照 | 历史 | Nautilus 类型       | 备注                                                   |
-|----------------------|--------------|----------|-------|---------------------|--------------------------------------------------------|
-| Instrument 元数据  | 缓存重放 | ✓        | -     | `InstrumentAny`     | 从 `orderBookDetails` 加载。                        |
-| 成交 Tick (Trade ticks)          | ✓            | -        | ✓     | `TradeTick`         | WebSocket 成交；历史 REST 成交需要鉴权。 |
-| 报价 Tick (Quote ticks)          | ✓            | -        | -     | `QuoteTick`         | 最优买卖 ticker 流。                                  |
-| 订单簿增量 (Order book deltas)    | ✓            | ✓        | -     | `OrderBookDeltas`   | 仅 `L2_MBP`。                                         |
-| 订单簿 depth10   | ✓            | ✓        | -     | `OrderBookDepth10`  | 从维护的订单簿状态得到的实时前 10 档视图。           |
-| 订单簿快照 (Order book snapshots) | -            | ✓        | -     | `OrderBook`         | REST 快照，最大深度 250。                          |
-| 标记价格 (Mark prices)          | ✓            | -        | -     | `MarkPriceUpdate`   | 永续市场统计流。                              |
-| 指数价格 (Index prices)         | ✓            | -        | -     | `IndexPriceUpdate`  | 市场和现货统计流。                       |
-| 资金费率 (Funding rates)        | ✓            | -        | ✓     | `FundingRateUpdate` | 当前预估值及 REST 小时级历史。            |
-| Bar                 | ✓            | -        | ✓     | `Bar`               | WebSocket K 线流；用于回填的 REST 历史。    |
-| Instrument 状态    | REST         | ✓        | -     | `InstrumentStatus`  | `active` / `inactive` 快照。                       |
+| 数据类型                         | 订阅   | 快照  | 历史  | Nautilus 类型         | 备注                            |
+| ---------------------------- | ---- | --- | --- | ------------------- | ----------------------------- |
+| Instrument 元数据               | 缓存重放 | ✓   | -   | `InstrumentAny`     | 从 `orderBookDetails` 加载。      |
+| 成交 Tick (Trade ticks)        | ✓    | -   | ✓   | `TradeTick`         | WebSocket 成交；历史 REST 成交需要鉴权。  |
+| 报价 Tick (Quote ticks)        | ✓    | -   | -   | `QuoteTick`         | 最优买卖 ticker 流。                |
+| 订单簿增量 (Order book deltas)    | ✓    | ✓   | -   | `OrderBookDeltas`   | 仅 `L2_MBP`。                   |
+| 订单簿 depth10                  | ✓    | ✓   | -   | `OrderBookDepth10`  | 从维护的订单簿状态得到的实时前 10 档视图。       |
+| 订单簿快照 (Order book snapshots) | -    | ✓   | -   | `OrderBook`         | REST 快照，最大深度 250。             |
+| 标记价格 (Mark prices)           | ✓    | -   | -   | `MarkPriceUpdate`   | 永续市场统计流。                      |
+| 指数价格 (Index prices)          | ✓    | -   | -   | `IndexPriceUpdate`  | 市场和现货统计流。                     |
+| 资金费率 (Funding rates)         | ✓    | -   | ✓   | `FundingRateUpdate` | 当前预估值及 REST 小时级历史。            |
+| Bar                          | ✓    | -   | ✓   | `Bar`               | WebSocket K 线流；用于回填的 REST 历史。 |
+| Instrument 状态                | REST | ✓   | -   | `InstrumentStatus`  | `active` / `inactive` 快照。     |
 
 订单簿增量和 depth10 订阅仅接受 `BookType::L2_MBP`。其他订单簿类型会在订阅前返回错误。
 
@@ -176,18 +176,18 @@ Lighter 使用一个数值型的交易场所订单索引以及一个由调用方
 
 ### 订单类型 (Order types)
 
-| 订单类型             | 永续 | 现货 | 备注                                                   |
-|------------------------|------------|------|---------------------------------------------------------|
-| `MARKET`               | ✓          | ✓    | 上限由缓存的对手方报价 + 滑点派生。      |
-| `LIMIT`                | ✓          | ✓    | 需要限价。                                 |
-| `STOP_MARKET`          | ✓          | -    | 仅永续；上限由 `trigger_price` + 滑点派生。 |
-| `STOP_LIMIT`           | ✓          | -    | 仅永续；映射到 Lighter 止损限价单。      |
-| `MARKET_IF_TOUCHED`    | ✓          | -    | 仅永续；上限由 `trigger_price` + 滑点派生。 |
-| `LIMIT_IF_TOUCHED`     | ✓          | -    | 仅永续；映射到 Lighter 止盈限价单。    |
-| `MARKET_TO_LIMIT`      | -          | -    | *不支持*。                                        |
-| `TRAILING_STOP_MARKET` | -          | -    | *不支持*。                                        |
-| `TRAILING_STOP_LIMIT`  | -          | -    | *不支持*。                                        |
-| `TWAP`                 | -          | -    | *不支持*；无 Nautilus 映射。                   |
+| 订单类型                   | 永续  | 现货  | 备注                              |
+| ---------------------- | --- | --- | ------------------------------- |
+| `MARKET`               | ✓   | ✓   | 上限由缓存的对手方报价 + 滑点派生。             |
+| `LIMIT`                | ✓   | ✓   | 需要限价。                           |
+| `STOP_MARKET`          | ✓   | -   | 仅永续；上限由 `trigger_price` + 滑点派生。 |
+| `STOP_LIMIT`           | ✓   | -   | 仅永续；映射到 Lighter 止损限价单。          |
+| `MARKET_IF_TOUCHED`    | ✓   | -   | 仅永续；上限由 `trigger_price` + 滑点派生。 |
+| `LIMIT_IF_TOUCHED`     | ✓   | -   | 仅永续；映射到 Lighter 止盈限价单。          |
+| `MARKET_TO_LIMIT`      | -   | -   | *不支持*。                          |
+| `TRAILING_STOP_MARKET` | -   | -   | *不支持*。                          |
+| `TRAILING_STOP_LIMIT`  | -   | -   | *不支持*。                          |
+| `TWAP`                 | -   | -   | *不支持*；无 Nautilus 映射。            |
 
 条件性订单类型仅对永续市场可用。现货条件性订单会在本地被拒绝，因为 Lighter 会在交易场所侧拒绝它们。条件性订单类型必须包含 `trigger_price`。如果触发价缺失，`STOP_MARKET` 和 `MARKET_IF_TOUCHED` 会被提前拒绝；如果触发价在该 instrument 的价格精度下被截断为 `0` ticks，则所有条件性类型都会被拒绝。
 
@@ -195,47 +195,47 @@ Lighter 的市价类订单在传输层上需要一个最差可接受的 `price` 
 
 ### 关联订单 (Contingent orders)
 
-| 特性                         | 永续 | 现货 | 备注                                                  |
-|---------------------------------|------------|------|--------------------------------------------------------|
-| 止损市价 (Stop-loss market)                | ✓          | -    | `STOP_MARKET` 映射到 Lighter `STOP_LOSS`。             |
-| 止损限价 (Stop-loss limit)                 | ✓          | -    | `STOP_LIMIT` 映射到 Lighter `STOP_LOSS_LIMIT`。        |
-| 止盈市价 (Take-profit market)              | ✓          | -    | `MARKET_IF_TOUCHED` 映射到 Lighter `TAKE_PROFIT`。     |
-| 止盈限价 (Take-profit limit)               | ✓          | -    | `LIMIT_IF_TOUCHED` 映射到 `TAKE_PROFIT_LIMIT`。        |
-| 触发价 (Trigger price)                   | ✓          | -    | 每个受支持的条件性订单都需要。        |
-| 触发价类型 (Trigger price type)              | -          | -    | *不支持*；无触发来源选择器。           |
-| 分组订单列表 (Grouped order lists)             | -          | -    | *不支持*。                                       |
-| OCO / OTO 订单                | -          | -    | *不支持*。                                       |
-| Bracket 订单                  | -          | -    | *不支持*。                                       |
-| `CreateGroupedOrders`           | -          | -    | *不支持*；原生批处理使用相互独立的交易。   |
+| 特性                           | 永续  | 现货  | 备注                                             |
+| ---------------------------- | --- | --- | ---------------------------------------------- |
+| 止损市价 (Stop-loss market)      | ✓   | -   | `STOP_MARKET` 映射到 Lighter `STOP_LOSS`。         |
+| 止损限价 (Stop-loss limit)       | ✓   | -   | `STOP_LIMIT` 映射到 Lighter `STOP_LOSS_LIMIT`。    |
+| 止盈市价 (Take-profit market)    | ✓   | -   | `MARKET_IF_TOUCHED` 映射到 Lighter `TAKE_PROFIT`。 |
+| 止盈限价 (Take-profit limit)     | ✓   | -   | `LIMIT_IF_TOUCHED` 映射到 `TAKE_PROFIT_LIMIT`。    |
+| 触发价 (Trigger price)          | ✓   | -   | 每个受支持的条件性订单都需要。                                |
+| 触发价类型 (Trigger price type)   | -   | -   | *不支持*；无触发来源选择器。                                |
+| 分组订单列表 (Grouped order lists) | -   | -   | *不支持*。                                         |
+| OCO / OTO 订单                 | -   | -   | *不支持*。                                         |
+| Bracket 订单                   | -   | -   | *不支持*。                                         |
+| `CreateGroupedOrders`        | -   | -   | *不支持*；原生批处理使用相互独立的交易。                          |
 
 ### 订单选项 (Order options)
 
-| 选项           | 永续 | 现货 | 备注                                                                      |
-|------------------|------------|------|----------------------------------------------------------------------------|
-| `post_only`      | ✓          | ✓    | 映射到 Lighter 的 post-only time-in-force。                                 |
-| `reduce_only`    | ✓          | -    | 透传到 `CreateOrder`；仅用于减少已有持仓。  |
-| `quote_quantity` | -          | -    | *不支持*；请改为提交 base 数量。                             |
-| `display_qty`    | -          | -    | *不支持*；Lighter 不暴露 iceberg 显示数量字段。        |
+| 选项               | 永续  | 现货  | 备注                                     |
+| ---------------- | --- | --- | -------------------------------------- |
+| `post_only`      | ✓   | ✓   | 映射到 Lighter 的 post-only time-in-force。 |
+| `reduce_only`    | ✓   | -   | 透传到 `CreateOrder`；仅用于减少已有持仓。           |
+| `quote_quantity` | -   | -   | *不支持*；请改为提交 base 数量。                   |
+| `display_qty`    | -   | -   | *不支持*；Lighter 不暴露 iceberg 显示数量字段。      |
 
 ### 适配器订单参数 (Adapter order params)
 
-| 参数                                      | 永续 | 现货 | 备注                                               |
-|--------------------------------------------|------------|------|-----------------------------------------------------|
-| `market_order_slippage_bps`                | ✓          | ✓    | 覆盖市价类上限的配置默认值。 |
-| 通过 `SubmitOrder.params` 传 `post_only`   | -          | -    | *不支持*；请使用 Nautilus 订单标志。       |
-| 通过 `SubmitOrder.params` 传 `reduce_only` | -          | -    | *不支持*；请使用 Nautilus 订单标志。       |
+| 参数                                      | 永续  | 现货  | 备注                       |
+| --------------------------------------- | --- | --- | ------------------------ |
+| `market_order_slippage_bps`             | ✓   | ✓   | 覆盖市价类上限的配置默认值。           |
+| 通过 `SubmitOrder.params` 传 `post_only`   | -   | -   | *不支持*；请使用 Nautilus 订单标志。 |
+| 通过 `SubmitOrder.params` 传 `reduce_only` | -   | -   | *不支持*；请使用 Nautilus 订单标志。 |
 
 ### 有效期 (Time in force)
 
-| 有效期  | 永续 | 现货 | 备注                                                                        |
-|----------------|------------|------|------------------------------------------------------------------------------|
-| `GTC`          | ✓          | ✓    | 限价类使用 `GoodTillTime`；市价类使用 `IOC`。                    |
-| `DAY`          | ✓          | ✓    | 限价类和条件性订单使用正的订单到期时间。              |
-| `GTD`          | ✓          | ✓    | 限价类和条件性订单使用所提供的 Nautilus 到期时间。         |
-| `IOC`          | ✓          | ✓    | 普通 `MARKET`/`LIMIT` 使用到期 `0`；条件限价使用触发到期。 |
-| `FOK`          | -          | -    | *不支持*。                                                            |
-| `AT_THE_OPEN`  | -          | -    | *不支持*。                                                            |
-| `AT_THE_CLOSE` | -          | -    | *不支持*。                                                            |
+| 有效期            | 永续  | 现货  | 备注                                       |
+| -------------- | --- | --- | ---------------------------------------- |
+| `GTC`          | ✓   | ✓   | 限价类使用 `GoodTillTime`；市价类使用 `IOC`。        |
+| `DAY`          | ✓   | ✓   | 限价类和条件性订单使用正的订单到期时间。                     |
+| `GTD`          | ✓   | ✓   | 限价类和条件性订单使用所提供的 Nautilus 到期时间。           |
+| `IOC`          | ✓   | ✓   | 普通 `MARKET`/`LIMIT` 使用到期 `0`；条件限价使用触发到期。 |
+| `FOK`          | -   | -   | *不支持*。                                   |
+| `AT_THE_OPEN`  | -   | -   | *不支持*。                                   |
+| `AT_THE_CLOSE` | -   | -   | *不支持*。                                   |
 
 对于 `MARKET`、`STOP_MARKET` 和 `MARKET_IF_TOUCHED`，适配器会把传输层有效期映射为 Lighter `ImmediateOrCancel`，因为该交易场所会拒绝以 `GoodTillTime` 发送的市价类订单。普通 `MARKET` 订单设置 `OrderExpiry = 0`。条件市价订单（`STOP_MARKET` 和 `MARKET_IF_TOUCHED`）保留一个正的 `OrderExpiry`，以便触发器可以挂着等待，传输层的 `ImmediateOrCancel` 仅在触发器触发后才生效。Nautilus 的 `IOC` 无法为条件市价订单表示，因此适配器会在本地拒绝它并附带清晰的错误信息。条件限价订单（`STOP_LIMIT` 和 `LIMIT_IF_TOUCHED`）可以使用 Nautilus `IOC`：触发器以一个正的 `OrderExpiry` 挂着等待，子限价订单在触发后使用 Lighter `ImmediateOrCancel`。
 
@@ -243,43 +243,43 @@ Lighter 的市价类订单在传输层上需要一个最差可接受的 `price` 
 
 ### 执行指令 (Execution instructions)
 
-| 指令   | 永续 | 现货 | 备注                                                        |
-|---------------|------------|------|--------------------------------------------------------------|
-| `post_only`   | ✓          | ✓    | 覆盖 TIF 并发送 Lighter `PostOnly`。              |
-| `reduce_only` | ✓          | -    | 针对已有衍生品持仓的减仓标志。    |
+| 指令            | 永续  | 现货  | 备注                             |
+| ------------- | --- | --- | ------------------------------ |
+| `post_only`   | ✓   | ✓   | 覆盖 TIF 并发送 Lighter `PostOnly`。 |
+| `reduce_only` | ✓   | -   | 针对已有衍生品持仓的减仓标志。                |
 
 请在限价类订单上使用 `post_only`。适配器不会合成只做 maker 的市价单。实时 mainnet 测试确认了用于平掉永续持仓的 `reduce_only=true`。无效的减仓开仓可能会被 Lighter 丢弃而不产生交易场所订单报告；适配器会将它们对账为 `INFLIGHT_TIMEOUT`，而非交易场所提供的拒绝原因。
 
 ### 高级订单特性 (Advanced order features)
 
-| 特性              | 永续 | 现货 | 备注                                                       |
-|----------------------|------------|------|-------------------------------------------------------------|
-| 订单修改 (Order modification)   | ✓          | ✓    | 在活跃订单上修改数量、价格和触发价。  |
-| Bracket 订单       | -          | -    | *不支持*。                                            |
-| Iceberg 订单       | -          | -    | *不支持*。                                            |
-| 追踪止损 (Trailing stops)       | -          | -    | *不支持*。                                            |
-| 钉住订单 (Pegged orders)        | -          | -    | *不支持*。                                            |
-| TWAP 订单          | -          | -    | *不支持*；无 Nautilus 映射。                       |
-| 杠杆更新 (Leverage update)      | ✓          | -    | 仅永续；提交一笔签名的 `UpdateLeverage` 交易。            |
-| 原生全撤 (Native cancel-all)    | -          | -    | *不支持*；适配器按 instrument 限定全撤范围。  |
-| 死手开关 (Dead man's switch)    | -          | -    | *不支持*。                                            |
+| 特性                        | 永续  | 现货  | 备注                               |
+| ------------------------- | --- | --- | -------------------------------- |
+| 订单修改 (Order modification) | ✓   | ✓   | 在活跃订单上修改数量、价格和触发价。               |
+| Bracket 订单                | -   | -   | *不支持*。                           |
+| Iceberg 订单                | -   | -   | *不支持*。                           |
+| 追踪止损 (Trailing stops)     | -   | -   | *不支持*。                           |
+| 钉住订单 (Pegged orders)      | -   | -   | *不支持*。                           |
+| TWAP 订单                   | -   | -   | *不支持*；无 Nautilus 映射。             |
+| 杠杆更新 (Leverage update)    | ✓   | -   | 仅永续；提交一笔签名的 `UpdateLeverage` 交易。 |
+| 原生全撤 (Native cancel-all)  | -   | -   | *不支持*；适配器按 instrument 限定全撤范围。    |
+| 死手开关 (Dead man's switch)  | -   | -   | *不支持*。                           |
 
 ### 订单操作 (Order operations)
 
-| 操作           | 永续 | 现货 | 备注                                                       |
-|---------------------|------------|------|-------------------------------------------------------------|
-| 提交订单 (Submit order)        | ✓          | ✓    | 通过 WebSocket 发送一笔签名的 `L2CreateOrder` 交易。  |
-| 提交订单列表 (Submit order list)   | ✓          | ✓    | 仅批处理相互独立的 `L2CreateOrder` 交易。               |
-| 修改订单 (Modify order)        | ✓          | ✓    | 发送一笔签名的 `ModifyOrder`；报告可能会重述接受状态。  |
-| 撤销订单 (Cancel order)        | ✓          | ✓    | 发送一笔签名的 `L2CancelOrder` 交易。                 |
-| 撤销所有订单 (Cancel all orders)   | ✓          | ✓    | 遍历所请求 instrument 的缓存挂单。   |
-| 设置杠杆 (Set leverage)        | ✓          | -    | 仅永续；提交一笔签名的 `UpdateLeverage` 交易。            |
-| 批量撤销订单 (Batch cancel orders) | ✓          | ✓    | 仅批处理相互独立的 `L2CancelOrder` 交易。               |
-| 原生批量提交 (Native batch submit) | ✓          | ✓    | 使用一个 `sendTxBatch`，上限为 15 笔创建交易。            |
-| 原生批量撤销 (Native batch cancel) | ✓          | ✓    | 使用一个 `sendTxBatch`，上限为 15 笔撤销交易。            |
-| 查询订单 (Query order)         | ✓          | ✓    | 需要凭证和 REST 查询。                       |
-| 查询账户 (Query account)       | ✓          | ✓    | 重放最新的私有 WebSocket 账户状态。         |
-| 批量状态 (Mass status)         | ✓          | ✓    | 限定在来自 WS 和 REST 报告的账户活跃市场范围内。 |
+| 操作                           | 永续  | 现货  | 备注                                       |
+| ---------------------------- | --- | --- | ---------------------------------------- |
+| 提交订单 (Submit order)          | ✓   | ✓   | 通过 WebSocket 发送一笔签名的 `L2CreateOrder` 交易。 |
+| 提交订单列表 (Submit order list)   | ✓   | ✓   | 仅批处理相互独立的 `L2CreateOrder` 交易。            |
+| 修改订单 (Modify order)          | ✓   | ✓   | 发送一笔签名的 `ModifyOrder`；报告可能会重述接受状态。       |
+| 撤销订单 (Cancel order)          | ✓   | ✓   | 发送一笔签名的 `L2CancelOrder` 交易。              |
+| 撤销所有订单 (Cancel all orders)   | ✓   | ✓   | 遍历所请求 instrument 的缓存挂单。                  |
+| 设置杠杆 (Set leverage)          | ✓   | -   | 仅永续；提交一笔签名的 `UpdateLeverage` 交易。         |
+| 批量撤销订单 (Batch cancel orders) | ✓   | ✓   | 仅批处理相互独立的 `L2CancelOrder` 交易。            |
+| 原生批量提交 (Native batch submit) | ✓   | ✓   | 使用一个 `sendTxBatch`，上限为 15 笔创建交易。         |
+| 原生批量撤销 (Native batch cancel) | ✓   | ✓   | 使用一个 `sendTxBatch`，上限为 15 笔撤销交易。         |
+| 查询订单 (Query order)           | ✓   | ✓   | 需要凭证和 REST 查询。                           |
+| 查询账户 (Query account)         | ✓   | ✓   | 重放最新的私有 WebSocket 账户状态。                  |
+| 批量状态 (Mass status)           | ✓   | ✓   | 限定在来自 WS 和 REST 报告的账户活跃市场范围内。            |
 
 原生交易场所的 `CancelAllOrders` 交易是账户级的。适配器刻意按 instrument 撤销缓存挂单，以避免触及无关的市场。
 
@@ -293,16 +293,16 @@ Lighter 的市价类订单在传输层上需要一个最差可接受的 `price` 
 
 ### 订单查询与对账 (Order querying and reconciliation)
 
-| 特性              | 永续 | 现货 | 备注                                                        |
-|----------------------|------------|------|--------------------------------------------------------------|
-| 查询挂单 (Query open orders)    | ✓          | ✓    | REST `accountActiveOrders`，按市场限定范围。                 |
-| 查询订单历史 (Query order history)  | ✓          | ✓    | REST `accountInactiveOrders`，带游标分页。         |
-| 订单状态更新 (Order status updates) | ✓          | ✓    | 私有 WebSocket 订单流加上状态报告。         |
-| 成交历史 (Trade history)        | ✓          | ✓    | REST `trades`；账户历史需要凭证。 |
-| 成交报告 (Fill reports)         | ✓          | ✓    | REST 和私有 WebSocket 成交载荷。         |
-| 持仓报告 (Position reports)     | ✓          | -    | 仅永续；重放缓存的持仓流。                   |
-| 账户状态 (Account state)        | ✓          | ✓    | 重放缓存的合并账户状态快照。            |
-| 批量状态 (Mass status)          | ✓          | ✓    | 组合订单、成交和缓存持仓。                |
+| 特性                            | 永续  | 现货  | 备注                                  |
+| ----------------------------- | --- | --- | ----------------------------------- |
+| 查询挂单 (Query open orders)      | ✓   | ✓   | REST `accountActiveOrders`，按市场限定范围。 |
+| 查询订单历史 (Query order history)  | ✓   | ✓   | REST `accountInactiveOrders`，带游标分页。 |
+| 订单状态更新 (Order status updates) | ✓   | ✓   | 私有 WebSocket 订单流加上状态报告。             |
+| 成交历史 (Trade history)          | ✓   | ✓   | REST `trades`；账户历史需要凭证。             |
+| 成交报告 (Fill reports)           | ✓   | ✓   | REST 和私有 WebSocket 成交载荷。            |
+| 持仓报告 (Position reports)       | ✓   | -   | 仅永续；重放缓存的持仓流。                       |
+| 账户状态 (Account state)          | ✓   | ✓   | 重放缓存的合并账户状态快照。                      |
+| 批量状态 (Mass status)            | ✓   | ✓   | 组合订单、成交和缓存持仓。                       |
 
 ## 账户与持仓管理 (Account and position management)
 
@@ -320,25 +320,25 @@ Lighter 的市价类订单在传输层上需要一个最差可接受的 `price` 
 
 永续持仓以净额 (netting) 模式报告：每个市场一个持仓。现货余额通过账户资产状态到达，而非持仓报告。每一帧 `account_all_positions` 都被视为一份完整的交易场所快照。如果新的一帧省略了某个先前缓存的市场，适配器会为该 instrument 发出一个平仓持仓报告；一个空的 `positions` 映射会清空所有缓存的永续持仓，并为每个发出平仓报告。
 
-| 特性                 | 永续 | 现货 | 备注                                                        |
-|-------------------------|------------|------|--------------------------------------------------------------|
-| 账户余额 (Account balances)        | ✓          | ✓    | 合并资产 + `user_stats`，查询时从缓存重放。  |
-| 持仓快照 (Position snapshots)      | ✓          | -    | 仅永续；`account_all_positions` 流。                   |
-| 净额持仓 (Netting positions)       | ✓          | -    | 每个永续市场一个 Nautilus 持仓。                  |
-| 全仓保证金 (Cross margin)            | ✓          | -    | 通过 `LighterPositionMarginMode::Cross` 透传。           |
-| 逐仓保证金 (Isolated margin)         | ✓          | -    | 通过 `LighterPositionMarginMode::Isolated` 透传。        |
-| 杠杆更新 (Leverage updates)        | ✓          | -    | 签名的 `UpdateLeverage` 交易。                         |
-| 现货保证金 / 借贷 (Spot margin / borrowing) | -          | -    | *不支持*。                                             |
-| 充值 / 提现 (Deposits / withdrawals)  | -          | -    | 请使用交易场所工具或交易适配器之外的 Lighter API。 |
+| 特性                                   | 永续  | 现货  | 备注                                           |
+| ------------------------------------ | --- | --- | -------------------------------------------- |
+| 账户余额 (Account balances)              | ✓   | ✓   | 合并资产 + `user_stats`，查询时从缓存重放。                |
+| 持仓快照 (Position snapshots)            | ✓   | -   | 仅永续；`account_all_positions` 流。               |
+| 净额持仓 (Netting positions)             | ✓   | -   | 每个永续市场一个 Nautilus 持仓。                        |
+| 全仓保证金 (Cross margin)                 | ✓   | -   | 通过 `LighterPositionMarginMode::Cross` 透传。    |
+| 逐仓保证金 (Isolated margin)              | ✓   | -   | 通过 `LighterPositionMarginMode::Isolated` 透传。 |
+| 杠杆更新 (Leverage updates)              | ✓   | -   | 签名的 `UpdateLeverage` 交易。                     |
+| 现货保证金 / 借贷 (Spot margin / borrowing) | -   | -   | *不支持*。                                       |
+| 充值 / 提现 (Deposits / withdrawals)     | -   | -   | 请使用交易场所工具或交易适配器之外的 Lighter API。              |
 
 ## 强平与 ADL 处理 (Liquidation and ADL handling)
 
-| 事件或字段              | 支持 | 备注                                                             |
-|-----------------------------|---------|-------------------------------------------------------------------|
-| 强平成交 (Liquidation trades)          | ✓       | 账户成交行可解析为成交，没有特殊事件。     |
-| 自动减仓成交 (Deleverage trades)         | ✓       | 账户成交行可解析为成交，没有特殊事件。     |
-| 强平价格报告 (Liquidation price reporting) | -       | *不支持*；报告中省略此字段。                         |
-| ADL 事件流 (ADL event stream)            | -       | *不支持*。                                                  |
+| 事件或字段                                | 支持  | 备注                  |
+| ------------------------------------ | --- | ------------------- |
+| 强平成交 (Liquidation trades)            | ✓   | 账户成交行可解析为成交，没有特殊事件。 |
+| 自动减仓成交 (Deleverage trades)           | ✓   | 账户成交行可解析为成交，没有特殊事件。 |
+| 强平价格报告 (Liquidation price reporting) | -   | *不支持*；报告中省略此字段。     |
+| ADL 事件流 (ADL event stream)           | -   | *不支持*。              |
 
 ## 资金费率 (Funding rates)
 
@@ -350,12 +350,12 @@ Lighter 的市价类订单在传输层上需要一个最差可接受的 `price` 
 
 Lighter 为每个账户分配一个层级，用于管控延迟、速率限制和费用。Standard 是零费用的默认层级；更高的层级在交易场所上是选择性加入的，以费用换取更低的延迟和更高的吞吐。执行客户端在连接时（通过 `GET /api/v1/account`）检测该层级，并以蓝色记录它，对于此适配器尚不识别的任何层级，还会包含原始的 `account_type` 代码。检测仅供参考：适配器从不自行提高速率限制，因为更高的交易场所限制需要向 Lighter 注册调用方 IP，所以仅凭更高的层级本身并不能保证更高的限制对你的连接已经生效。
 
-| 层级     | 延迟 (maker / taker) | REST 加权限制 | `sendTx` 限制       | 费用 (maker / taker)      | 备注                                   |
-|----------|-------------------------|---------------------|----------------------|---------------------------|-----------------------------------------|
-| Standard | 200 ms / 300 ms         | 60 req/min          | 60 req/min           | 0 / 0                     | 零费用的默认层级。                  |
-| Premium  | 0 ms / 140-200 ms       | 24,000 req/min      | 4,000-40,000 req/min | 0.28-0.40 / 1.96-2.80 bps | 最低延迟；随质押的 LIT 扩展。 |
-| Plus     | 200 ms / 300 ms         | 120,000 req/min     | 8,000 req/min        | 0.5 / 0.5 bps             | 提高了限制，标准延迟。        |
-| Builder  | -                       | 240,000 req/min     | -                    | -                         | 最高的 REST 吞吐。                |
+| 层级       | 延迟 (maker / taker) | REST 加权限制       | `sendTx` 限制          | 费用 (maker / taker)        | 备注                |
+| -------- | ------------------ | --------------- | -------------------- | ------------------------- | ----------------- |
+| Standard | 200 ms / 300 ms    | 60 req/min      | 60 req/min           | 0 / 0                     | 零费用的默认层级。         |
+| Premium  | 0 ms / 140-200 ms  | 24,000 req/min  | 4,000-40,000 req/min | 0.28-0.40 / 1.96-2.80 bps | 最低延迟；随质押的 LIT 扩展。 |
+| Plus     | 200 ms / 300 ms    | 120,000 req/min | 8,000 req/min        | 0.5 / 0.5 bps             | 提高了限制，标准延迟。       |
+| Builder  | -                  | 240,000 req/min | -                    | -                         | 最高的 REST 吞吐。      |
 
 Premium 的延迟、费用和 `sendTx` 吞吐随质押的 LIT 扩展，且该表可能变化；请参阅 Lighter 文档获取当前数据。要实际使用更高层级的限制，需向 Lighter 注册调用方 IP 并显式设置配额（参见 [速率限制](#rate-limiting)）。
 
@@ -368,35 +368,35 @@ Lighter 对 IP 地址和 L1 地址都施加速率限制。执行客户端在连�
 
 该交易场所在一个桶中跨两种传输方式对每个账户的交易进行计量。执行客户端用一个跨它提交所用两条路径共享的限流器来强制执行 `sendtx_quota_per_min`：WebSocket `sendTx` 路径（单笔订单提交、撤销、修改、杠杆）和 HTTP `sendTx` / `sendTxBatch` 端点（原生批量提交/撤销以及启动时的 integrator 批准）。因此它们的合计速率始终保持在那一个交易场所限制之下。
 
-| 范围                                  | 交易场所限制                 | 适配器行为                                     |
-|----------------------------------------|-----------------------------|------------------------------------------------------|
-| REST，标准账户                 | 60 req/min                  | 默认；设置 `rest_quota_per_min` 以覆盖。       |
-| REST，premium 账户                  | 24,000 加权 req/min     | 已记录；设置 `rest_quota_per_min` 以使用它。          |
-| REST，plus 账户                     | 120,000 加权 req/min    | 已记录；设置 `rest_quota_per_min` 以使用它。          |
-| REST，builder 账户                  | 240,000 加权 req/min    | 已记录；设置 `rest_quota_per_min` 以使用它。          |
-| `sendTx` / `sendTxBatch`，标准     | 60 req/min                  | 单笔使用 `sendTx`；批处理使用 `sendTxBatch`。     |
-| `sendTx` / `sendTxBatch`，plus         | 8,000 req/min               | 设置 `sendtx_quota_per_min` 以使用它。                |
-| `sendTx` / `sendTxBatch`，premium      | 4,000-40,000 req/min        | 设置 `sendtx_quota_per_min`（随质押的 LIT 扩展）。 |
-| 默认交易类型限制         | 40 req/min                  | 适用于未被成交量配额覆盖的交易类型。     |
-| `L2UpdateLeverage` 交易限制   | 40 req/min                  | 与 `update_leverage` 相关。                         |
-| 待处理订单 (Pending orders)                         | 500/账户，16/市场      | 交易场所限制；适配器不会预先计数。          |
-| 活跃订单 (Active orders)                          | 1,500/账户，1,000/市场 | 交易场所限制；适配器不会预先计数。          |
+| 范围                               | 交易场所限制               | 适配器行为                                   |
+| -------------------------------- | -------------------- | --------------------------------------- |
+| REST，标准账户                        | 60 req/min           | 默认；设置 `rest_quota_per_min` 以覆盖。         |
+| REST，premium 账户                  | 24,000 加权 req/min    | 已记录；设置 `rest_quota_per_min` 以使用它。       |
+| REST，plus 账户                     | 120,000 加权 req/min   | 已记录；设置 `rest_quota_per_min` 以使用它。       |
+| REST，builder 账户                  | 240,000 加权 req/min   | 已记录；设置 `rest_quota_per_min` 以使用它。       |
+| `sendTx` / `sendTxBatch`，标准      | 60 req/min           | 单笔使用 `sendTx`；批处理使用 `sendTxBatch`。      |
+| `sendTx` / `sendTxBatch`，plus    | 8,000 req/min        | 设置 `sendtx_quota_per_min` 以使用它。         |
+| `sendTx` / `sendTxBatch`，premium | 4,000-40,000 req/min | 设置 `sendtx_quota_per_min`（随质押的 LIT 扩展）。 |
+| 默认交易类型限制                         | 40 req/min           | 适用于未被成交量配额覆盖的交易类型。                      |
+| `L2UpdateLeverage` 交易限制          | 40 req/min           | 与 `update_leverage` 相关。                 |
+| 待处理订单 (Pending orders)           | 500/账户，16/市场         | 交易场所限制；适配器不会预先计数。                       |
+| 活跃订单 (Active orders)             | 1,500/账户，1,000/市场    | 交易场所限制；适配器不会预先计数。                       |
 
-| 端点或传输方式                  | 限制      | 备注                                              |
-|----------------------------------------|------------|----------------------------------------------------|
-| `/api/v1/trades`                       | 100 行   | 适配器在对账时按此上限分页。      |
-| `/api/v1/accountInactiveOrders`        | 100 行   | 适配器在此上限下跟随 `next_cursor`。         |
-| `/api/v1/orderBookOrders`              | 250 档 | 快照深度被钳制到交易场所上限。        |
-| `/api/v1/candles`                      | 500 行   | 适配器将 REST bar 分页上限设为此交易场所最大值。 |
-| WebSocket 连接数                  | 200 / IP   | 交易场所限制。                                       |
-| WebSocket 订阅数 / 连接   | 500        | 交易场所限制。                                       |
-| WebSocket 唯一账户数 / 连接 | 500        | 交易场所限制。                                       |
-| WebSocket 连接数 / 分钟         | 80         | 交易场所限制。                                       |
-| WebSocket 客户端消息数 / 分钟     | 200        | 不含 `sendTx` 和 `sendTxBatch`。               |
-| WebSocket 在途消息数            | 50         | 不含 `sendTx` 和 `sendTxBatch`。               |
-| `sendTxBatch` 批大小               | 15 笔交易     | 适用于原生 HTTP 提交和撤销批处理。  |
-| WebSocket keepalive                    | 2 分钟  | 适配器每 30 秒发送一次心跳。       |
-| WebSocket 出站命令队列       | 1000       | 适配器从此队列深度开始施加背压。   |
+| 端点或传输方式                         | 限制       | 备注                            |
+| ------------------------------- | -------- | ----------------------------- |
+| `/api/v1/trades`                | 100 行    | 适配器在对账时按此上限分页。                |
+| `/api/v1/accountInactiveOrders` | 100 行    | 适配器在此上限下跟随 `next_cursor`。     |
+| `/api/v1/orderBookOrders`       | 250 档    | 快照深度被钳制到交易场所上限。               |
+| `/api/v1/candles`               | 500 行    | 适配器将 REST bar 分页上限设为此交易场所最大值。 |
+| WebSocket 连接数                   | 200 / IP | 交易场所限制。                       |
+| WebSocket 订阅数 / 连接              | 500      | 交易场所限制。                       |
+| WebSocket 唯一账户数 / 连接            | 500      | 交易场所限制。                       |
+| WebSocket 连接数 / 分钟              | 80       | 交易场所限制。                       |
+| WebSocket 客户端消息数 / 分钟           | 200      | 不含 `sendTx` 和 `sendTxBatch`。  |
+| WebSocket 在途消息数                 | 50       | 不含 `sendTx` 和 `sendTxBatch`。  |
+| `sendTxBatch` 批大小               | 15 笔交易   | 适用于原生 HTTP 提交和撤销批处理。          |
+| WebSocket keepalive             | 2 分钟     | 适配器每 30 秒发送一次心跳。              |
+| WebSocket 出站命令队列                | 1000     | 适配器从此队列深度开始施加背压。              |
 
 Premium 成交量配额是针对 `L2CreateOrder`、`L2CancelAllOrders`、`L2ModifyOrder` 和 `L2CreateGroupedOrders` 的一个独立交易场所约束。适配器不检查剩余配额；如果某个策略依赖于 premium 或 plus 限制，请使用交易场所账户工具。
 
@@ -420,10 +420,10 @@ Lighter 签名需要全部三个凭证值：
 
 配置值优先。当配置字段被省略时，适配器会根据所选环境读取环境变量。
 
-| 环境 | API key 索引                   | API 私钥              | 账户索引                    |
-|-------------|---------------------------------|------------------------------|----------------------------------|
-| Mainnet     | `LIGHTER_API_KEY_INDEX`         | `LIGHTER_API_SECRET`         | `LIGHTER_ACCOUNT_INDEX`          |
-| Testnet     | `LIGHTER_TESTNET_API_KEY_INDEX` | `LIGHTER_TESTNET_API_SECRET` | `LIGHTER_TESTNET_ACCOUNT_INDEX`  |
+| 环境      | API key 索引                      | API 私钥                       | 账户索引                            |
+| ------- | ------------------------------- | ---------------------------- | ------------------------------- |
+| Mainnet | `LIGHTER_API_KEY_INDEX`         | `LIGHTER_API_SECRET`         | `LIGHTER_ACCOUNT_INDEX`         |
+| Testnet | `LIGHTER_TESTNET_API_KEY_INDEX` | `LIGHTER_TESTNET_API_SECRET` | `LIGHTER_TESTNET_ACCOUNT_INDEX` |
 
 执行会拒绝不完整的凭证。数据客户端可以在没有凭证的情况下运行公开流和公开 REST 端点；诸如 `request_trades` 这类已鉴权的数据请求在三个值都可用时会使用相同的值。
 
@@ -431,38 +431,38 @@ Lighter 签名需要全部三个凭证值：
 
 ### 数据客户端配置选项 (Data client configuration options)
 
-| 选项                             | 默认   | 描述                                          |
-|------------------------------------|-----------|------------------------------------------------------|
-| `base_url_http`                    | `None`    | 可选的 REST URL 覆盖。                          |
-| `base_url_ws`                      | `None`    | 可选的 WebSocket URL 覆盖。                     |
-| `proxy_url`                        | `None`    | 用于 HTTP 和 WebSocket 的可选代理 URL。           |
-| `environment`                      | `Mainnet` | `LighterEnvironment::Mainnet` 或 `Testnet`。          |
-| `account_index`                    | `None`    | 用于已鉴权 REST 数据的 Lighter 账户索引。   |
-| `api_key_index`                    | `None`    | 用于已鉴权 REST 数据的 Lighter API key 槽位。    |
-| `private_key`                      | `None`    | 用于 REST 鉴权 token 的十六进制私钥。                |
-| `http_timeout_secs`                | `60`      | HTTP 请求超时，单位秒。                     |
-| `ws_timeout_secs`                  | `30`      | WebSocket 连接超时，单位秒。                |
-| `update_instruments_interval_mins` | `60`      | Instrument 元数据刷新间隔，单位分钟。     |
-| `transport_backend`                | Default   | WebSocket 传输后端。                         |
+| 选项                                 | 默认        | 描述                                         |
+| ---------------------------------- | --------- | ------------------------------------------ |
+| `base_url_http`                    | `None`    | 可选的 REST URL 覆盖。                           |
+| `base_url_ws`                      | `None`    | 可选的 WebSocket URL 覆盖。                      |
+| `proxy_url`                        | `None`    | 用于 HTTP 和 WebSocket 的可选代理 URL。             |
+| `environment`                      | `Mainnet` | `LighterEnvironment::Mainnet` 或 `Testnet`。 |
+| `account_index`                    | `None`    | 用于已鉴权 REST 数据的 Lighter 账户索引。               |
+| `api_key_index`                    | `None`    | 用于已鉴权 REST 数据的 Lighter API key 槽位。         |
+| `private_key`                      | `None`    | 用于 REST 鉴权 token 的十六进制私钥。                  |
+| `http_timeout_secs`                | `60`      | HTTP 请求超时，单位秒。                             |
+| `ws_timeout_secs`                  | `30`      | WebSocket 连接超时，单位秒。                        |
+| `update_instruments_interval_mins` | `60`      | Instrument 元数据刷新间隔，单位分钟。                   |
+| `transport_backend`                | Default   | WebSocket 传输后端。                            |
 
 ### 执行客户端配置选项 (Execution client configuration options)
 
-| 选项                      | 默认   | 描述                                                |
-|-----------------------------|-----------|------------------------------------------------------------|
-| `trader_id`                 | 必填  | Nautilus trader 标识符。                                |
-| `account_id`                | 必填  | 该交易场所的 Nautilus 账户标识符。                 |
-| `account_index`             | `None`    | Lighter 账户索引。                                     |
-| `api_key_index`             | `None`    | Lighter API key 槽位。                                      |
-| `private_key`               | `None`    | 用于鉴权和 L2 交易签名的十六进制私钥。       |
+| 选项                          | 默认        | 描述                                               |
+| --------------------------- | --------- | ------------------------------------------------ |
+| `trader_id`                 | 必填        | Nautilus trader 标识符。                             |
+| `account_id`                | 必填        | 该交易场所的 Nautilus 账户标识符。                           |
+| `account_index`             | `None`    | Lighter 账户索引。                                    |
+| `api_key_index`             | `None`    | Lighter API key 槽位。                              |
+| `private_key`               | `None`    | 用于鉴权和 L2 交易签名的十六进制私钥。                            |
 | `base_url_http`             | `None`    | 可选的 REST URL 覆盖。                                 |
 | `base_url_ws`               | `None`    | 可选的 WebSocket URL 覆盖。                            |
-| `proxy_url`                 | `None`    | 用于 HTTP 和 WebSocket 的可选代理 URL。                 |
-| `environment`               | `Mainnet` | `LighterEnvironment::Mainnet` 或 `Testnet`。                |
-| `http_timeout_secs`         | `60`      | HTTP 请求超时，单位秒。                           |
-| `ws_timeout_secs`           | `30`      | WebSocket 连接超时，单位秒。                      |
-| `active_markets`            | `[]`      | 无作用域对账期间要轮询的 Lighter market ID。 |
-| `market_order_slippage_bps` | `50`      | 用于 `MARKET` / `STOP_MARKET` / `MIT` 的滑点上限 (bps)。   |
-| `transport_backend`         | Default   | WebSocket 传输后端。                               |
+| `proxy_url`                 | `None`    | 用于 HTTP 和 WebSocket 的可选代理 URL。                   |
+| `environment`               | `Mainnet` | `LighterEnvironment::Mainnet` 或 `Testnet`。       |
+| `http_timeout_secs`         | `60`      | HTTP 请求超时，单位秒。                                   |
+| `ws_timeout_secs`           | `30`      | WebSocket 连接超时，单位秒。                              |
+| `active_markets`            | `[]`      | 无作用域对账期间要轮询的 Lighter market ID。                  |
+| `market_order_slippage_bps` | `50`      | 用于 `MARKET` / `STOP_MARKET` / `MIT` 的滑点上限 (bps)。 |
+| `transport_backend`         | Default   | WebSocket 传输后端。                                  |
 
 ### 配置示例 (Configuration example)
 

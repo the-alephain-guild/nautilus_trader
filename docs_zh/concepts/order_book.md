@@ -36,14 +36,13 @@ self.subscribe_order_book_at_interval(instrument_id, interval_ms=1000)
 每种订阅类型会将数据传递给对应的处理器：
 
 ```python
-def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-    ...
+def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None: ...
 
-def on_order_book_depth(self, depth: OrderBookDepth10) -> None:
-    ...
 
-def on_order_book(self, order_book: OrderBook) -> None:
-    ...
+def on_order_book_depth(self, depth: OrderBookDepth10) -> None: ...
+
+
+def on_order_book(self, order_book: OrderBook) -> None: ...
 ```
 
 ## 访问订单簿

@@ -19,22 +19,22 @@ Nautilus 提供两条处理期权希腊字母（Greeks，即期权价格对市�
 `OptionGreeks` 类型表示场所为单个期权合约提供的敏感度。它是一个 Rust 原生类型，
 通过 PyO3 暴露给 Python。
 
-| 字段               | 类型               | 描述                                              |
-|--------------------|--------------------|---------------------------------------------------|
+| 字段                 | 类型                 | 描述                                  |
+| ------------------ | ------------------ | ----------------------------------- |
 | `instrument_id`    | `InstrumentId`     | 这些希腊字母所对应的期权合约。                     |
-| `convention`       | `GreeksConvention` | 希腊字母的计价单位约定 (numeraire convention)。    |
-| `delta`            | `float`            | 期权价格相对每单位标的的变化率。                   |
-| `gamma`            | `float`            | delta 相对每单位标的的变化率。                     |
-| `vega`             | `float`            | 对隐含波动率变化 1% 的敏感度。                     |
-| `theta`            | `float`            | 每日时间衰减（dV/dt / 365.25）。                   |
-| `rho`              | `float`            | 对利率变化的敏感度。                               |
-| `mark_iv`          | `float` 或 None    | 标记隐含波动率 (mark implied volatility)。         |
-| `bid_iv`           | `float` 或 None    | 买价隐含波动率。                                   |
-| `ask_iv`           | `float` 或 None    | 卖价隐含波动率。                                   |
-| `underlying_price` | `float` 或 None    | 计算时刻的标的价格。                               |
-| `open_interest`    | `float` 或 None    | 合约的未平仓量 (open interest)。                   |
-| `ts_event`         | `int`              | 事件的 UNIX 时间戳（纳秒）。                       |
-| `ts_init`          | `int`              | 初始化时的 UNIX 时间戳（纳秒）。                   |
+| `convention`       | `GreeksConvention` | 希腊字母的计价单位约定 (numeraire convention)。 |
+| `delta`            | `float`            | 期权价格相对每单位标的的变化率。                    |
+| `gamma`            | `float`            | delta 相对每单位标的的变化率。                  |
+| `vega`             | `float`            | 对隐含波动率变化 1% 的敏感度。                   |
+| `theta`            | `float`            | 每日时间衰减（dV/dt / 365.25）。             |
+| `rho`              | `float`            | 对利率变化的敏感度。                          |
+| `mark_iv`          | `float` 或 None     | 标记隐含波动率 (mark implied volatility)。  |
+| `bid_iv`           | `float` 或 None     | 买价隐含波动率。                            |
+| `ask_iv`           | `float` 或 None     | 卖价隐含波动率。                            |
+| `underlying_price` | `float` 或 None     | 计算时刻的标的价格。                          |
+| `open_interest`    | `float` 或 None     | 合约的未平仓量 (open interest)。            |
+| `ts_event`         | `int`              | 事件的 UNIX 时间戳（纳秒）。                   |
+| `ts_init`          | `int`              | 初始化时的 UNIX 时间戳（纳秒）。                 |
 
 从 actor 或 strategy 中订阅：
 
@@ -58,7 +58,7 @@ def on_option_greeks(self, greeks: OptionGreeks) -> None:
 并在回测中作为内置市场数据（而非自定义数据）回放。写入和查询都使用标准的目录 API：
 
 ```python
-catalog.write_data(greeks)               # greeks: list[OptionGreeks]
+catalog.write_data(greeks)  # greeks: list[OptionGreeks]
 greeks = catalog.query(data_cls=OptionGreeks)
 ```
 
@@ -111,8 +111,9 @@ result = black_scholes_greeks(s=100.0, r=0.05, b=0.0, vol=0.20, is_call=True, k=
 result = imply_vol_and_greeks(s=100.0, r=0.05, b=0.0, is_call=True, k=100.0, t=0.25, price=5.0)
 
 # 从一个起始波动率估计值开始精化（收敛更快）
-result = refine_vol_and_greeks(s=100.0, r=0.05, b=0.0, is_call=True, k=100.0, t=0.25,
-                                target_price=5.0, initial_vol=0.18)
+result = refine_vol_and_greeks(
+    s=100.0, r=0.05, b=0.0, is_call=True, k=100.0, t=0.25, target_price=5.0, initial_vol=0.18
+)
 ```
 
 这些函数返回的 `BlackScholesGreeksResult` 包含：`price`、`vol`、`delta`、`gamma`、
@@ -168,9 +169,9 @@ delta），且没有 gamma/vega/theta。
 ```python
 greeks = calculator.instrument_greeks(
     instrument_id=option_id,
-    spot_shock=10.0,            # 标的 +10 点
-    vol_shock=0.02,             # 波动率绝对值 +2%
-    time_to_expiry_shock=1/365, # 向前滚动一天
+    spot_shock=10.0,  # 标的 +10 点
+    vol_shock=0.02,  # 波动率绝对值 +2%
+    time_to_expiry_shock=1 / 365,  # 向前滚动一天
 )
 ```
 
@@ -179,8 +180,8 @@ greeks = calculator.instrument_greeks(
 ```python
 greeks = calculator.instrument_greeks(
     instrument_id=option_id,
-    update_vol=True,        # 使用缓存的波动率作为起始点
-    cache_greeks=True,      # 存储结果供下次迭代使用
+    update_vol=True,  # 使用缓存的波动率作为起始点
+    cache_greeks=True,  # 存储结果供下次迭代使用
 )
 ```
 
@@ -237,27 +238,27 @@ portfolio = calculator.portfolio_greeks(
 （`@customdataclass`），它携带单个工具希腊字母计算的完整上下文。它继承自 `Data`，
 并支持 Arrow 序列化、缓存存储和目录持久化。v2/PyO3 接口从 Rust 暴露相同的核心字段。
 
-| 字段                | 类型            | 描述                                              |
-|---------------------|-----------------|---------------------------------------------------|
-| `instrument_id`     | `InstrumentId`  | 该工具。                                          |
-| `is_call`           | `bool`          | 看涨为 True，看跌为 False。                       |
-| `strike`            | `float`         | 行权价。                                          |
-| `expiry`            | `int`           | 到期日，以 YYYYMMDD 整数表示。                    |
-| `expiry_in_days`    | `int`           | 距到期的天数。                                    |
-| `expiry_in_years`   | `float`         | 距到期的年数（天数 / 365.25）。                   |
-| `multiplier`        | `float`         | 合约乘数。                                        |
-| `quantity`          | `float`         | 持仓数量（来自 `instrument_greeks` 时始终为 1）。 |
-| `underlying_price`  | `float`         | 计算中使用的标的价格。                            |
-| `interest_rate`     | `float`         | 使用的利率。                                      |
-| `cost_of_carry`     | `float`         | 持有成本（r - 股息率；期货为 0）。               |
-| `vol`               | `float`         | 隐含波动率。                                      |
-| `pnl`               | `float`         | 相对于持仓入场的盈亏（如果提供了持仓）。          |
-| `price`             | `float`         | 模型价格。                                        |
-| `delta`             | `float`         | Delta。                                           |
-| `gamma`             | `float`         | Gamma。                                           |
-| `vega`              | `float`         | Vega（dV / 波动率变化 1%）。                      |
-| `theta`             | `float`         | Theta（每日衰减）。                               |
-| `itm_prob`          | `float`         | 实值概率 (in-the-money probability)。            |
+| 字段                 | 类型             | 描述                                   |
+| ------------------ | -------------- | ------------------------------------ |
+| `instrument_id`    | `InstrumentId` | 该工具。                                 |
+| `is_call`          | `bool`         | 看涨为 True，看跌为 False。                  |
+| `strike`           | `float`        | 行权价。                                 |
+| `expiry`           | `int`          | 到期日，以 YYYYMMDD 整数表示。                 |
+| `expiry_in_days`   | `int`          | 距到期的天数。                              |
+| `expiry_in_years`  | `float`        | 距到期的年数（天数 / 365.25）。                 |
+| `multiplier`       | `float`        | 合约乘数。                                |
+| `quantity`         | `float`        | 持仓数量（来自 `instrument_greeks` 时始终为 1）。 |
+| `underlying_price` | `float`        | 计算中使用的标的价格。                          |
+| `interest_rate`    | `float`        | 使用的利率。                               |
+| `cost_of_carry`    | `float`        | 持有成本（r - 股息率；期货为 0）。                 |
+| `vol`              | `float`        | 隐含波动率。                               |
+| `pnl`              | `float`        | 相对于持仓入场的盈亏（如果提供了持仓）。                 |
+| `price`            | `float`        | 模型价格。                                |
+| `delta`            | `float`        | Delta。                               |
+| `gamma`            | `float`        | Gamma。                               |
+| `vega`             | `float`        | Vega（dV / 波动率变化 1%）。                 |
+| `theta`            | `float`        | Theta（每日衰减）。                         |
+| `itm_prob`         | `float`        | 实值概率 (in-the-money probability)。     |
 
 `GreeksData` 通过其 `to_portfolio_greeks()` 方法扩展到组合层面，该方法将所有值乘以
 合约 `multiplier`。`*` 运算符用于应用持仓数量：
@@ -271,14 +272,14 @@ position_greeks = signed_qty * instrument_greeks  # 返回 PortfolioGreeks
 `PortfolioGreeks` 是 `portfolio_greeks()` 的聚合结果。它支持加法（`+`）以合并持仓，
 以及标量乘法（`*`）以进行缩放：
 
-| 字段    | 类型    | 描述           |
-|---------|---------|----------------|
+| 字段      | 类型      | 描述        |
+| ------- | ------- | --------- |
 | `pnl`   | `float` | 聚合盈亏。     |
-| `price` | `float` | 聚合模型价值。 |
-| `delta` | `float` | 组合 delta。   |
-| `gamma` | `float` | 组合 gamma。   |
-| `vega`  | `float` | 组合 vega。    |
-| `theta` | `float` | 组合 theta。   |
+| `price` | `float` | 聚合模型价值。   |
+| `delta` | `float` | 组合 delta。 |
+| `gamma` | `float` | 组合 gamma。 |
+| `vega`  | `float` | 组合 vega。  |
+| `theta` | `float` | 组合 theta。 |
 
 ### YieldCurveData
 
@@ -303,30 +304,30 @@ rate = curve(0.75)  # 二次插值
 
 ## 在两条路径之间做选择 (Choosing between the two paths)
 
-| 标准                         | 场所提供 (`OptionGreeks`)              | 本地计算器 (`GreeksCalculator`)          |
-|------------------------------|----------------------------------------|------------------------------------------|
-| 计算                         | 由场所完成                             | 本地 Black-Scholes                       |
-| 延迟                         | 随市场数据一同到达                     | 按需计算                                 |
-| 场所                         | Deribit、Bybit、OKX                    | 任何带期权工具的场所                     |
-| 冲击情景                     | 不支持                                 | 现货、波动率和时间冲击                   |
-| 组合聚合                     | 手动（遍历 `OptionChainSlice`）        | 通过 `portfolio_greeks()` 内置           |
-| Beta 加权                    | 不支持                                 | 内置                                     |
-| 回测支持                     | 通过录制的 `OptionGreeks` 数据         | 基于任意时间点的缓存价格                 |
-| 可用的希腊字母               | delta, gamma, vega, theta, rho, IV, OI | delta, gamma, vega, theta, itm_prob, vol |
-| 数据类型                     | `OptionGreeks` (Rust/PyO3)             | `GreeksData` / `PortfolioGreeks`         |
+| 标准      | 场所提供 (`OptionGreeks`)                  | 本地计算器 (`GreeksCalculator`)               |
+| ------- | -------------------------------------- | ---------------------------------------- |
+| 计算      | 由场所完成                                  | 本地 Black-Scholes                         |
+| 延迟      | 随市场数据一同到达                              | 按需计算                                     |
+| 场所      | Deribit、Bybit、OKX                      | 任何带期权工具的场所                               |
+| 冲击情景    | 不支持                                    | 现货、波动率和时间冲击                              |
+| 组合聚合    | 手动（遍历 `OptionChainSlice`）              | 通过 `portfolio_greeks()` 内置               |
+| Beta 加权 | 不支持                                    | 内置                                       |
+| 回测支持    | 通过录制的 `OptionGreeks` 数据                | 基于任意时间点的缓存价格                             |
+| 可用的希腊字母 | delta, gamma, vega, theta, rho, IV, OI | delta, gamma, vega, theta, itm_prob, vol |
+| 数据类型    | `OptionGreeks` (Rust/PyO3)             | `GreeksData` / `PortfolioGreeks`         |
 
 ## 希腊字母定义 (Greek definitions)
 
 供参考，Nautilus 计算的希腊字母如下：
 
-| 希腊字母   | 符号   | 定义                                                                          |
-|------------|--------|-------------------------------------------------------------------------------|
-| Delta      | `d`    | 期权价格对标的价格的一阶导数（dV/dS）。                                        |
-| Gamma      | `g`    | 期权价格对标的价格的二阶导数（d2V/dS2）。                                      |
-| Vega       | `v`    | 对隐含波动率变化 1 个百分点的敏感度（dV/dVol）。                               |
-| Theta      | `t`    | 每日时间衰减：期权价格每个日历日的变化（dV/dt / 365.25）。                     |
-| Rho        | `r`    | 对无风险利率变化的敏感度（dV/dr）。                                            |
-| ITM 概率   | -      | 期权到期时处于实值的概率：P(ϕS_T > ϕK)，其中看涨时 ϕ = 1，看跌时 ϕ = -1。      |
+| 希腊字母   | 符号  | 定义                                                |
+| ------ | --- | ------------------------------------------------- |
+| Delta  | `d` | 期权价格对标的价格的一阶导数（dV/dS）。                            |
+| Gamma  | `g` | 期权价格对标的价格的二阶导数（d2V/dS2）。                          |
+| Vega   | `v` | 对隐含波动率变化 1 个百分点的敏感度（dV/dVol）。                     |
+| Theta  | `t` | 每日时间衰减：期权价格每个日历日的变化（dV/dt / 365.25）。              |
+| Rho    | `r` | 对无风险利率变化的敏感度（dV/dr）。                              |
+| ITM 概率 | -   | 期权到期时处于实值的概率：P(ϕS_T > ϕK)，其中看涨时 ϕ = 1，看跌时 ϕ = -1。 |
 
 ## 示例 (Examples)
 

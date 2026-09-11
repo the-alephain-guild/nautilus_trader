@@ -11,15 +11,16 @@
 :::note
 **三种消息模式的区别**
 
-| | **点对点** | **发布/订阅** | **请求/响应** |
-|---|---|---|---|
-| 内部存储 | `endpoints: IndexMap<端点名, 处理器>` | `subscriptions` + `topics` 缓存 | `correlation_index: AHashMap<UUID4, 回调>` |
-| 接收者数量 | 一个（端点只能注册一个处理器） | 多个（所有匹配订阅者） | 一个（异步回调） |
-| 通配符支持 | 否 | 是（`*`、`?`） | 否 |
-| 是否阻塞 | 否（fire-and-forget） | 否 | 否（纯异步回调，非阻塞） |
-| 典型用途 | 发送命令（下单、取消订单） | 广播市场数据、事件 | 查询数据（如 `request_bars()`） |
+|       | **点对点**                         | **发布/订阅**                     | **请求/响应**                                |
+| ----- | ------------------------------- | ----------------------------- | ---------------------------------------- |
+| 内部存储  | `endpoints: IndexMap<端点名, 处理器>` | `subscriptions` + `topics` 缓存 | `correlation_index: AHashMap<UUID4, 回调>` |
+| 接收者数量 | 一个（端点只能注册一个处理器）                 | 多个（所有匹配订阅者）                   | 一个（异步回调）                                 |
+| 通配符支持 | 否                               | 是（`*`、`?`）                    | 否                                        |
+| 是否阻塞  | 否（fire-and-forget）              | 否                             | 否（纯异步回调，非阻塞）                             |
+| 典型用途  | 发送命令（下单、取消订单）                   | 广播市场数据、事件                     | 查询数据（如 `request_bars()`）                 |
 
 **请求/响应的真实流程**（源自 `crates/common/src/msgbus/`）：
+
 1. 请求方创建 UUID4 作为关联 ID，并注册回调函数（存入 `correlation_index`）
 2. 将请求发送到端点（走点对点），附带关联 ID
 3. 响应方处理完后调用 `send_response(correlation_id, response)`
@@ -83,11 +84,11 @@ NautilusTrader 是一个**事件驱动 (event-driven)** 框架，组件之间通
 
 本指南介绍 NautilusTrader 中三种主要的消息模式：
 
-| **消息风格**                              | **用途**                         | **适用场景**                                    |
-|:------------------------------------------|:---------------------------------|:------------------------------------------------|
-| **MessageBus - 发布/订阅主题**            | 底层，直接访问消息总线           | 自定义事件，系统级通信                          |
-| **基于 Actor - 发布/订阅数据**            | 结构化交易数据交换               | 交易指标、指示器、需要持久化的数据              |
-| **基于 Actor - 发布/订阅信号**            | 轻量级通知                       | 简单警报、标志、状态更新                        |
+| **消息风格**                 | **用途**      | **适用场景**          |
+| :----------------------- | :---------- | :---------------- |
+| **MessageBus - 发布/订阅主题** | 底层，直接访问消息总线 | 自定义事件，系统级通信       |
+| **基于 Actor - 发布/订阅数据**   | 结构化交易数据交换   | 交易指标、指示器、需要持久化的数据 |
+| **基于 Actor - 发布/订阅信号**   | 轻量级通知       | 简单警报、标志、状态更新      |
 
 每种方法服务于不同的目的。本节将帮助你决定使用哪种模式。
 
@@ -118,11 +119,14 @@ NautilusTrader 是一个**事件驱动 (event-driven)** 框架，组件之间通
 ```python
 from nautilus_trader.core.message import Event
 
+
 # 定义一个自定义事件
 class Each10thBarEvent(Event):
     TOPIC = "each_10th_bar"  # 主题名称
+
     def __init__(self, bar):
         self.bar = bar
+
 
 # 在组件中订阅（在策略中）
 self.msgbus.subscribe(Each10thBarEvent.TOPIC, self.on_each_10th_bar)
@@ -130,6 +134,7 @@ self.msgbus.subscribe(Each10thBarEvent.TOPIC, self.on_each_10th_bar)
 # 发布一个事件（在策略中）
 event = Each10thBarEvent(bar)
 self.msgbus.publish(Each10thBarEvent.TOPIC, event)
+
 
 # 处理器（在策略中）
 def on_each_10th_bar(self, event: Each10thBarEvent):
@@ -178,17 +183,22 @@ def on_each_10th_bar(self, event: Each10thBarEvent):
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.custom import customdataclass
 
+
 @customdataclass
 class GreeksData(Data):
     delta: float
     gamma: float
 
+
 # 发布数据（在 Actor / Strategy 中）
-data = GreeksData(delta=0.75, gamma=0.1, ts_event=1_630_000_000_000_000_000, ts_init=1_630_000_000_000_000_000)
+data = GreeksData(
+    delta=0.75, gamma=0.1, ts_event=1_630_000_000_000_000_000, ts_init=1_630_000_000_000_000_000
+)
 self.publish_data(GreeksData, data)
 
 # 订阅接收数据（在 Actor / Strategy 中）
 self.subscribe_data(GreeksData)
+
 
 # 处理器（这是一个固定名称的静态回调函数）
 def on_data(self, data: Data):
@@ -245,6 +255,7 @@ self.publish_signal(
     ts_event=bar.ts_event,  # 触发事件的时间戳
 )
 
+
 # 处理器（这是一个固定名称的静态回调函数）
 def on_signal(self, signal):
     # 重要：我们匹配的是 signal.value，而不是 signal.name
@@ -254,14 +265,14 @@ def on_signal(self, signal):
                 f"New highest price was reached. | "
                 f"Signal value: {signal.value} | "
                 f"Signal time: {unix_nanos_to_dt(signal.ts_event)}",
-                color=LogColor.GREEN
+                color=LogColor.GREEN,
             )
         case signals.NEW_LOWEST_PRICE:
             self.log.info(
                 f"New lowest price was reached. | "
                 f"Signal value: {signal.value} | "
                 f"Signal time: {unix_nanos_to_dt(signal.ts_event)}",
-                color=LogColor.RED
+                color=LogColor.RED,
             )
 ```
 
@@ -275,11 +286,11 @@ def on_signal(self, signal):
 
 #### 决策指南：如何选择？
 
-| **用例**                         | **推荐方法**                                                                      | **所需设置**      |
-|:---------------------------------|:----------------------------------------------------------------------------------|:------------------|
-| 自定义事件或系统级通信           | `MessageBus` + 发布/订阅主题                                                      | 主题 + 处理器管理 |
-| 结构化交易数据                   | `Actor` + 发布/订阅数据 + 可选 `@customdataclass`（如需序列化）                   | 继承自 `Data` 的新类定义（处理器 `on_data` 已预定义） |
-| 简单警报/通知                    | `Actor` + 发布/订阅信号                                                           | 仅需信号名称 |
+| **用例**      | **推荐方法**                                         | **所需设置**                             |
+| :---------- | :----------------------------------------------- | :----------------------------------- |
+| 自定义事件或系统级通信 | `MessageBus` + 发布/订阅主题                           | 主题 + 处理器管理                           |
+| 结构化交易数据     | `Actor` + 发布/订阅数据 + 可选 `@customdataclass`（如需序列化） | 继承自 `Data` 的新类定义（处理器 `on_data` 已预定义） |
+| 简单警报/通知     | `Actor` + 发布/订阅信号                                | 仅需信号名称                               |
 
 ## 外部发布
 
@@ -300,6 +311,7 @@ Redis 目前支持所有可序列化的外部发布消息。
 ```
 
 实现步骤：
+
 1. 按正常方式配置 `MessageBusConfig`，启用 Redis 外部发布
 2. 在策略中通过 `publish_signal` 或 `msgbus.publish` 发布性能指标
 3. 编写独立消费者进程，从 Redis Stream 读取消息并转发到 Telegram/Discord
@@ -325,8 +337,7 @@ def register_serializable_type(
     cls,
     to_dict: Callable[[Any], dict[str, Any]],
     from_dict: Callable[[dict[str, Any]], Any],
-):
-    ...
+): ...
 ```
 
 - `cls`：要注册的类型。
@@ -339,7 +350,7 @@ def register_serializable_type(
 
 ```python
 ...  # 其他配置省略
-message_bus=MessageBusConfig(
+message_bus = MessageBusConfig(
     database=DatabaseConfig(),
     encoding="json",
     timestamps_as_iso8601=True,
@@ -422,9 +433,7 @@ from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 
 # 创建一个带有类型过滤的 MessageBusConfig 实例
-message_bus = MessageBusConfig(
-    types_filter=[QuoteTick, TradeTick]
-)
+message_bus = MessageBusConfig(types_filter=[QuoteTick, TradeTick])
 ```
 
 ### 流自动修剪
@@ -464,18 +473,20 @@ flowchart TB
 我们配置生产者节点的 `MessageBus` 发布到 `"binance"` 流。`use_trader_id`、`use_trader_prefix` 和 `use_instance_id` 设置均为 `False`，以确保消费者节点可以注册的简单且可预测的流键。
 
 ```python
-message_bus=MessageBusConfig(
-    database=DatabaseConfig(
-        connection_timeout=2,
-        response_timeout=2,
+message_bus = (
+    MessageBusConfig(
+        database=DatabaseConfig(
+            connection_timeout=2,
+            response_timeout=2,
+        ),
+        use_trader_id=False,
+        use_trader_prefix=False,
+        use_instance_id=False,
+        streams_prefix="binance",  # <---
+        stream_per_topic=False,
+        autotrim_mins=30,
     ),
-    use_trader_id=False,
-    use_trader_prefix=False,
-    use_instance_id=False,
-    streams_prefix="binance",  # <---
-    stream_per_topic=False,
-    autotrim_mins=30,
-),
+)
 ```
 
 #### 消费者节点
@@ -483,16 +494,20 @@ message_bus=MessageBusConfig(
 我们配置消费者节点的 `MessageBus` 从同一个 `"binance"` 流接收消息。该节点将监听外部流键，以将这些消息发布到其内部消息总线上。此外，我们将客户端 ID `"BINANCE_EXT"` 声明为外部客户端。这确保 `DataEngine` 不会尝试向此客户端 ID 发送数据命令，因为我们期望这些消息从外部流发布到内部消息总线上，节点已订阅了相关主题。
 
 ```python
-data_engine=LiveDataEngineConfig(
-    external_clients=[ClientId("BINANCE_EXT")],
-),
-message_bus=MessageBusConfig(
-    database=DatabaseConfig(
-        connection_timeout=2,
-        response_timeout=2,
+data_engine = (
+    LiveDataEngineConfig(
+        external_clients=[ClientId("BINANCE_EXT")],
     ),
-    external_streams=["binance"],  # <---
-),
+)
+message_bus = (
+    MessageBusConfig(
+        database=DatabaseConfig(
+            connection_timeout=2,
+            response_timeout=2,
+        ),
+        external_streams=["binance"],  # <---
+    ),
+)
 ```
 
 ## 相关指南

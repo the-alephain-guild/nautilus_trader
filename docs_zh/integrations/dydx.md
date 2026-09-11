@@ -20,11 +20,11 @@ dYdX 是最大的去中心化加密货币衍生品交易所之一。本集成（
 
 ### 产品支持
 
-| 产品类型          | 数据推送 | 交易 | 备注                                   |
-|-------------------|---------|------|----------------------------------------|
-| 永续期货（Perpetual Futures） | ✓       | ✓    | 所有永续合约均以 USDC 结算。            |
-| 现货（Spot）      | -       | -    | dYdX 在 Solana 上提供现货；本适配器不支持。 |
-| 期权（Options）   | -       | -    | *dYdX 上不提供*。                       |
+| 产品类型                    | 数据推送 | 交易  | 备注                           |
+| ----------------------- | ---- | --- | ---------------------------- |
+| 永续期货（Perpetual Futures） | ✓    | ✓   | 所有永续合约均以 USDC 结算。            |
+| 现货（Spot）                | -    | -   | dYdX 在 Solana 上提供现货；本适配器不支持。 |
+| 期权（Options）             | -    | -   | *dYdX 上不提供*。                 |
 
 :::note
 该适配器仅支持永续期货。所有市场以 USD 计价，以 USDC 结算。
@@ -55,11 +55,11 @@ dYdX 是最大的去中心化加密货币衍生品交易所之一。本集成（
                          └─────────────────────────────────────────────┘
 ```
 
-| 传输层    | 目标      | 方向   | 用途                                                |
-|-----------|-----------|--------|-----------------------------------------------------|
-| HTTP      | Indexer   | 只读   | 金融工具元数据、历史数据、账户状态。                |
-| WebSocket | Indexer   | 只读   | 实时市场数据、订单/成交/持仓更新。                  |
-| gRPC      | Validator | 写入   | 下单、撤单及批量操作。                              |
+| 传输层       | 目标        | 方向  | 用途                 |
+| --------- | --------- | --- | ------------------ |
+| HTTP      | Indexer   | 只读  | 金融工具元数据、历史数据、账户状态。 |
+| WebSocket | Indexer   | 只读  | 实时市场数据、订单/成交/持仓更新。 |
+| gRPC      | Validator | 写入  | 下单、撤单及批量操作。        |
 
 ### 基于区块的结算
 
@@ -141,57 +141,57 @@ dYdX 支持永续期货交易，提供完整的订单类型和执行功能。Rus
 
 ### 订单类型
 
-| 订单类型               | 永续合约 | 备注                                               |
-|------------------------|---------|----------------------------------------------------|
-| `MARKET`               | ✓       | 以当前最优可用价格立即执行。                        |
-| `LIMIT`                | ✓       |                                                    |
-| `STOP_MARKET`          | ✓       | 止损（Stop-loss）条件订单，始终为长期订单。         |
-| `STOP_LIMIT`           | ✓       | 条件订单，始终为长期订单。                          |
-| `MARKET_IF_TOUCHED`    | ✓       | 止盈（Take-profit）市价单，触及价格时触发。         |
-| `LIMIT_IF_TOUCHED`     | ✓       | 止盈限价单，触及价格时触发。                        |
-| `TRAILING_STOP_MARKET` | -       | *不支持*。                                          |
+| 订单类型                   | 永续合约 | 备注                          |
+| ---------------------- | ---- | --------------------------- |
+| `MARKET`               | ✓    | 以当前最优可用价格立即执行。              |
+| `LIMIT`                | ✓    |                             |
+| `STOP_MARKET`          | ✓    | 止损（Stop-loss）条件订单，始终为长期订单。  |
+| `STOP_LIMIT`           | ✓    | 条件订单，始终为长期订单。               |
+| `MARKET_IF_TOUCHED`    | ✓    | 止盈（Take-profit）市价单，触及价格时触发。 |
+| `LIMIT_IF_TOUCHED`     | ✓    | 止盈限价单，触及价格时触发。              |
+| `TRAILING_STOP_MARKET` | -    | *不支持*。                      |
 
 ### 执行指令
 
-| 指令          | 永续合约 | 备注                                                                                 |
-|---------------|---------|--------------------------------------------------------------------------------------|
-| `post_only`   | ✓       | 在 LIMIT、STOP_LIMIT 和 LIMIT_IF_TOUCHED 订单上受支持。一个定价会穿越价差的 post-only 订单会被交易场所**先接受再立即取消**（而不是带原因拒绝）。 |
-| `reduce_only` | ✓       | 对所有订单类型传递。dYdX 将其作为**成交时的钳制（fill-time clamp）**而非下单时的前置条件来执行：一个针对无持仓的 reduce-only 订单仍会正常成交。 |
+| 指令            | 永续合约 | 备注                                                                                                |
+| ------------- | ---- | ------------------------------------------------------------------------------------------------- |
+| `post_only`   | ✓    | 在 LIMIT、STOP_LIMIT 和 LIMIT_IF_TOUCHED 订单上受支持。一个定价会穿越价差的 post-only 订单会被交易场所**先接受再立即取消**（而不是带原因拒绝）。 |
+| `reduce_only` | ✓    | 对所有订单类型传递。dYdX 将其作为**成交时的钳制（fill-time clamp）**而非下单时的前置条件来执行：一个针对无持仓的 reduce-only 订单仍会正常成交。        |
 
 ### 有效时间选项
 
-| 有效时间 | 永续合约 | 备注                                                                       |
-|---------|---------|----------------------------------------------------------------------------|
-| `GTC`   | ✓       | 撤销前有效（Good Till Canceled）。                                          |
-| `GTD`   | ✓       | 到期前有效（Good Till Date）。交易场所将过期上报为一个取消事件；当订单的 `expire_time` 已过时，适配器会将其映射为 `OrderExpired`（而非 `OrderCanceled`）。 |
-| `IOC`   | ✓       | 立即成交或撤销（Immediate or Cancel）。                                     |
-| `FOK`   | -       | *已被 dYdX v4 弃用*。链会以 `code=48` 拒绝 FOK 订单；适配器在本地生成 `OrderDenied` 而不广播。 |
-| `DAY`   | -       | *不支持*。适配器在本地生成 `OrderDenied` 而不广播。                         |
+| 有效时间  | 永续合约 | 备注                                                                                                          |
+| ----- | ---- | ----------------------------------------------------------------------------------------------------------- |
+| `GTC` | ✓    | 撤销前有效（Good Till Canceled）。                                                                                  |
+| `GTD` | ✓    | 到期前有效（Good Till Date）。交易场所将过期上报为一个取消事件；当订单的 `expire_time` 已过时，适配器会将其映射为 `OrderExpired`（而非 `OrderCanceled`）。 |
+| `IOC` | ✓    | 立即成交或撤销（Immediate or Cancel）。                                                                               |
+| `FOK` | -    | *已被 dYdX v4 弃用*。链会以 `code=48` 拒绝 FOK 订单；适配器在本地生成 `OrderDenied` 而不广播。                                        |
+| `DAY` | -    | *不支持*。适配器在本地生成 `OrderDenied` 而不广播。                                                                          |
 
 ### 高级订单功能
 
-| 功能            | 永续合约 | 备注             |
-|----------------|---------|------------------|
-| 订单修改        | -       | 不支持。dYdX 支持短期订单的[替换（replacement）](https://docs.dydx.xyz/concepts/trading/limit-orderbook#replacements)（相同 ID、更高的 GTB）；目前尚未以 `ModifyOrder` 形式暴露。 |
-| 组合/OCO 订单   | -       | *不支持*。       |
-| 冰山订单        | -       | *不支持*。       |
+| 功能        | 永续合约 | 备注                                                                                                                                              |
+| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 订单修改      | -    | 不支持。dYdX 支持短期订单的[替换（replacement）](https://docs.dydx.xyz/concepts/trading/limit-orderbook#replacements)（相同 ID、更高的 GTB）；目前尚未以 `ModifyOrder` 形式暴露。 |
+| 组合/OCO 订单 | -    | *不支持*。                                                                                                                                          |
+| 冰山订单      | -    | *不支持*。                                                                                                                                          |
 
 ### 批量操作
 
-| 操作          | 永续合约 | 备注                                                                                                                  |
-|--------------|---------|----------------------------------------------------------------------------------------------------------------------|
-| 批量提交      | ✓       | 支持长期 `LIMIT` 订单。短期订单逐个单独提交。                                                                          |
-| 批量修改      | -       | *不支持*。                                                                                                            |
-| 批量取消      | ✓       | 分区处理：短期订单使用 `MsgBatchCancel`（单次 gRPC 调用），长期订单使用批量的 `MsgCancelOrder`。                       |
+| 操作   | 永续合约 | 备注                                                                   |
+| ---- | ---- | -------------------------------------------------------------------- |
+| 批量提交 | ✓    | 支持长期 `LIMIT` 订单。短期订单逐个单独提交。                                          |
+| 批量修改 | -    | *不支持*。                                                               |
+| 批量取消 | ✓    | 分区处理：短期订单使用 `MsgBatchCancel`（单次 gRPC 调用），长期订单使用批量的 `MsgCancelOrder`。 |
 
 ### 持仓管理
 
-| 功能          | 永续合约 | 备注                          |
-|--------------|---------|-------------------------------|
-| 查询持仓      | ✓       | 实时持仓更新。                |
-| 持仓模式      | -       | 仅支持净持仓（见下文）。      |
-| 杠杆控制      | ✓       | 按市场的杠杆设置。            |
-| 保证金模式    | -       | 仅支持全仓保证金。            |
+| 功能    | 永续合约 | 备注           |
+| ----- | ---- | ------------ |
+| 查询持仓  | ✓    | 实时持仓更新。      |
+| 持仓模式  | -    | 仅支持净持仓（见下文）。 |
+| 杠杆控制  | ✓    | 按市场的杠杆设置。    |
+| 保证金模式 | -    | 仅支持全仓保证金。    |
 
 :::note
 dYdX 在交易场所层面支持净持仓（netting，每个金融工具一个持仓）。适配器目前仅以 `NETTING` 模式运行。对冲（hedging）支持计划在未来版本中提供。
@@ -199,21 +199,21 @@ dYdX 在交易场所层面支持净持仓（netting，每个金融工具一个�
 
 ### 订单查询
 
-| 功能             | 永续合约 | 备注                          |
-|-----------------|---------|-------------------------------|
-| 查询未结订单     | ✓       | 列出所有活动订单。            |
-| 查询历史订单     | ✓       | 历史订单数据。                |
-| 订单状态更新     | ✓       | 实时订单状态变更。            |
-| 交易历史         | ✓       | 执行与成交报告。              |
+| 功能     | 永续合约 | 备注        |
+| ------ | ---- | --------- |
+| 查询未结订单 | ✓    | 列出所有活动订单。 |
+| 查询历史订单 | ✓    | 历史订单数据。   |
+| 订单状态更新 | ✓    | 实时订单状态变更。 |
+| 交易历史   | ✓    | 执行与成交报告。  |
 
 ### 关联订单（Contingent orders）
 
-| 功能            | 永续合约 | 备注                                            |
-|----------------|---------|-------------------------------------------------|
-| 订单列表        | -       | *不支持*。                                       |
-| OCO 订单       | -       | *不支持*。                                       |
-| 组合订单        | -       | *不支持*。                                       |
-| 条件订单        | ✓       | 止损、止盈市价单和止盈限价单。                    |
+| 功能     | 永续合约 | 备注              |
+| ------ | ---- | --------------- |
+| 订单列表   | -    | *不支持*。          |
+| OCO 订单 | -    | *不支持*。          |
+| 组合订单   | -    | *不支持*。          |
+| 条件订单   | ✓    | 止损、止盈市价单和止盈限价单。 |
 
 ### 权益层级限制（Equity tier limit）
 
@@ -232,13 +232,13 @@ dYdX v4 应用两个先后执行的风险机制：
 
 Indexer 通过每条 `Fill` 记录上的 `type` 字段（`DydxFillType`）暴露这一分类：
 
-| `type`         | 含义                                                  |
-|----------------|-------------------------------------------------------|
-| `LIMIT`        | 正常成交。                                            |
-| `LIQUIDATED`   | 清算的吃单方（taker，抵押不足）。                     |
-| `LIQUIDATION`  | 清算的挂单方（maker，保险基金）。                     |
-| `DELEVERAGED`  | 自动减仓的吃单方（taker，ADL 平仓）。                |
-| `OFFSETTING`   | 自动减仓的挂单方（maker，反向账户）。                |
+| `type`        | 含义                      |
+| ------------- | ----------------------- |
+| `LIMIT`       | 正常成交。                   |
+| `LIQUIDATED`  | 清算的吃单方（taker，抵押不足）。     |
+| `LIQUIDATION` | 清算的挂单方（maker，保险基金）。     |
+| `DELEVERAGED` | 自动减仓的吃单方（taker，ADL 平仓）。 |
+| `OFFSETTING`  | 自动减仓的挂单方（maker，反向账户）。   |
 
 对于每一笔清算/自动减仓成交，适配器都会记录一条包含金融工具、方向、数量和价格的警告日志，然后通过正常路径发出 `FillReport`。`DydxPerpetualPositionStatus::Liquidated` 会平掉对应的持仓报告。
 
@@ -251,11 +251,11 @@ Indexer 通过每条 `Fill` 记录上的 `type` 字段（`DydxFillType`）暴露
 
 dYdX 将每个订单归入三种链上类别之一。Rust 适配器会根据有效时间和过期时间自动判定类别，因此无需手动配置。
 
-| 类别            | 下单位置    | 过期方式          | 典型用途                                       |
-|-----------------|-------------|-------------------|-----------------------------------------------|
-| 短期（Short-term） | 内存中      | 区块高度          | IOC/FOK，或在 40 个区块内过期的订单。         |
-| 长期（Long-term）  | 链上        | 时间戳（UTC）     | 过期时间超出短期窗口（约 20 秒，按 ~0.5 秒/区块）的 GTC/GTD。 |
-| 条件（Conditional）| 链上        | 时间戳（UTC）     | 止损和止盈触发器。                            |
+| 类别              | 下单位置 | 过期方式     | 典型用途                                     |
+| --------------- | ---- | -------- | ---------------------------------------- |
+| 短期（Short-term）  | 内存中  | 区块高度     | IOC/FOK，或在 40 个区块内过期的订单。                 |
+| 长期（Long-term）   | 链上   | 时间戳（UTC） | 过期时间超出短期窗口（约 20 秒，按 ~0.5 秒/区块）的 GTC/GTD。 |
+| 条件（Conditional） | 链上   | 时间戳（UTC） | 止损和止盈触发器。                                |
 
 在协议层面，**所有 dYdX 订单都是限价单**。`MARKET` 订单类型是 Nautilus 提供的便利封装，适配器将其实现为一个定价远穿订单簿的激进 IOC 限价单。这意味着市价单遵循与限价单相同的 `Submitted > Accepted > Filled` 生命周期（在成交之前预期会有一个 `OrderAccepted` 事件）。
 
@@ -321,10 +321,10 @@ dYdX 在链上要求 `u32` 的客户端 ID，但 Nautilus 使用基于字符串�
 
 对于标准的 O 格式（`O-YYYYMMDD-HHMMSS-TTT-SSS-CCC`），其编码是确定性的：
 
-| dYdX 字段         | 位数 | 内容                                               |
-|-------------------|------|----------------------------------------------------|
-| `client_id`       | 32   | `[trader:10][strategy:10][count:12]`（唯一键）。    |
-| `client_metadata` | 32   | 自 2020-01-01 UTC 起的秒数（时间戳）。             |
+| dYdX 字段           | 位数  | 内容                                         |
+| ----------------- | --- | ------------------------------------------ |
+| `client_id`       | 32  | `[trader:10][strategy:10][count:12]`（唯一键）。 |
+| `client_metadata` | 32  | 自 2020-01-01 UTC 起的秒数（时间戳）。                |
 
 由于编码是确定性的，适配器无需数据库或映射文件，即可将任何已对账的订单解码回其原始的 `ClientOrderId` 字符串。
 
@@ -362,10 +362,10 @@ dYdX 在链上要求 `u32` 的客户端 ID，但 Nautilus 使用基于字符串�
 
 ### 序列号不匹配检测
 
-| 错误码     | 来源                 | 含义                                             |
-|------------|----------------------|--------------------------------------------------|
-| `code=32`  | Cosmos SDK           | 账户序列号不匹配                                  |
-| `code=104` | dYdX authenticator   | 签名验证失败（与序列号相关）                      |
+| 错误码        | 来源                 | 含义             |
+| ---------- | ------------------ | -------------- |
+| `code=32`  | Cosmos SDK         | 账户序列号不匹配       |
+| `code=104` | dYdX authenticator | 签名验证失败（与序列号相关） |
 
 两者都会通过 `RetryManager` 触发自动重新同步 + 重试。
 
@@ -373,11 +373,11 @@ dYdX 在链上要求 `u32` 的客户端 ID，但 Nautilus 使用基于字符串�
 
 短期取消操作期间出现的以下错误被视为**成功**：
 
-| 错误码      | 含义                                                          |
-|-------------|---------------------------------------------------------------|
-| `code=19`   | 交易已在 mempool 缓存中（重复交易）                          |
-| `code=9`    | memclob 中已存在 GoodTilBlock >= 的取消                       |
-| `code=3006` | 待取消的订单不存在（已成交/已过期/已取消）                    |
+| 错误码         | 含义                               |
+| ----------- | -------------------------------- |
+| `code=19`   | 交易已在 mempool 缓存中（重复交易）           |
+| `code=9`    | memclob 中已存在 GoodTilBlock >= 的取消 |
+| `code=3006` | 待取消的订单不存在（已成交/已过期/已取消）           |
 
 ### 批量取消的分区
 
@@ -398,19 +398,19 @@ dYdX 永续期货使用固定的 1 小时资金费率结算周期。对于 WebSo
 
 适配器对 gRPC 的 `broadcast_tx` 调用进行速率限制，以防止验证者节点返回 `ResourceExhausted`（429）错误。
 
-| 设置                          | 默认值 | 描述                                       |
-|-------------------------------|--------|--------------------------------------------|
-| `grpc_rate_limit_per_second`  | `4`    | 每秒最大 gRPC 广播请求数。设为 `None` 可禁用。 |
+| 设置                           | 默认值 | 描述                             |
+| ---------------------------- | --- | ------------------------------ |
+| `grpc_rate_limit_per_second` | `4` | 每秒最大 gRPC 广播请求数。设为 `None` 可禁用。 |
 
 ### 提供商限制
 
 公共 gRPC 提供商的已知速率限制：
 
-| 提供商     | 限制                 | 备注            |
-|------------|----------------------|-----------------|
-| Polkachu   | 300 次/分钟（~5/秒）  |                 |
-| KingNodes  | 250 次/分钟（~4.2/秒）|                 |
-| AutoStake  | 4 次/秒              |                 |
+| 提供商       | 限制               | 备注  |
+| --------- | ---------------- | --- |
+| Polkachu  | 300 次/分钟（~5/秒）   |     |
+| KingNodes | 250 次/分钟（~4.2/秒） |     |
+| AutoStake | 4 次/秒            |     |
 
 默认值 4 次/秒较为保守，可在所有公共提供商上正常工作。
 
@@ -433,12 +433,12 @@ dYdX 对价格和数量使用基于整数的量化。适配器通过 `OrderMessa
 
 ### 市场参数
 
-| 参数                           | 描述                                                     |
-|--------------------------------|----------------------------------------------------------|
-| `atomic_resolution`            | 将人类可读的数量转换为 quantums 的指数                    |
-| `quantum_conversion_exponent`  | 将 quantums 转换为代币的指数                              |
-| `step_base_quantums`           | 以 quantums 表示的最小订单数量步长                        |
-| `subticks_per_tick`            | 每个 tick 内的价格粒度                                    |
+| 参数                            | 描述                       |
+| ----------------------------- | ------------------------ |
+| `atomic_resolution`           | 将人类可读的数量转换为 quantums 的指数 |
+| `quantum_conversion_exponent` | 将 quantums 转换为代币的指数      |
+| `step_base_quantums`          | 以 quantums 表示的最小订单数量步长   |
+| `subticks_per_tick`           | 每个 tick 内的价格粒度           |
 
 ### 市价单定价
 
@@ -457,29 +457,29 @@ dYdX 对价格和数量使用基于整数的量化。适配器通过 `OrderMessa
 
 v4 适配器支持以下数据订阅：
 
-| 数据类型             | 订阅 | 历史请求 | 备注                                            |
-|----------------------|------|----------|-------------------------------------------------|
-| 成交 tick（Trade ticks） | ✓    | ✓        |                                                 |
-| 报价 tick（Quote ticks） | ✓    | -        | 由订单簿最优价格（top-of-book）合成。           |
-| 订单簿增量（Order book deltas） | ✓    | -        | 仅 L2 深度。                                     |
-| 订单簿快照（Order book snapshots） | -    | ✓        | 通过 HTTP 请求获取一次性快照。                  |
-| K 线（Bars）          | ✓    | ✓        | 见下文支持的分辨率。                            |
-| 标记价格（Mark prices） | ✓    | -        | 通过 markets 频道。                             |
-| 指数价格（Index prices） | ✓    | -        | 通过 markets 频道。                             |
-| 资金费率（Funding rates） | ✓    | ✓        | 实时通过 markets 频道，历史通过 HTTP。          |
-| 金融工具状态（Instrument status） | ✓    | -        | 通过 markets 频道。                             |
+| 数据类型                        | 订阅  | 历史请求 | 备注                         |
+| --------------------------- | --- | ---- | -------------------------- |
+| 成交 tick（Trade ticks）        | ✓   | ✓    |                            |
+| 报价 tick（Quote ticks）        | ✓   | -    | 由订单簿最优价格（top-of-book）合成。   |
+| 订单簿增量（Order book deltas）    | ✓   | -    | 仅 L2 深度。                   |
+| 订单簿快照（Order book snapshots） | -   | ✓    | 通过 HTTP 请求获取一次性快照。         |
+| K 线（Bars）                   | ✓   | ✓    | 见下文支持的分辨率。                 |
+| 标记价格（Mark prices）           | ✓   | -    | 通过 markets 频道。             |
+| 指数价格（Index prices）          | ✓   | -    | 通过 markets 频道。             |
+| 资金费率（Funding rates）         | ✓   | ✓    | 实时通过 markets 频道，历史通过 HTTP。 |
+| 金融工具状态（Instrument status）   | ✓   | -    | 通过 markets 频道。             |
 
 ### 支持的 K 线分辨率
 
-| 分辨率     | dYdX K 线  |
-|------------|-------------|
-| 1-MINUTE   | `1MIN`      |
-| 5-MINUTE   | `5MINS`     |
-| 15-MINUTE  | `15MINS`    |
-| 30-MINUTE  | `30MINS`    |
-| 1-HOUR     | `1HOUR`     |
-| 4-HOUR     | `4HOURS`    |
-| 1-DAY      | `1DAY`      |
+| 分辨率       | dYdX K 线 |
+| --------- | -------- |
+| 1-MINUTE  | `1MIN`   |
+| 5-MINUTE  | `5MINS`  |
+| 15-MINUTE | `15MINS` |
+| 30-MINUTE | `30MINS` |
+| 1-HOUR    | `1HOUR`  |
+| 4-HOUR    | `4HOURS` |
+| 1-DAY     | `1DAY`   |
 
 ## 子账户（Subaccounts）
 
@@ -578,7 +578,7 @@ config = TradingNodeConfig(
     exec_clients={
         DYDX: DydxExecClientConfig(
             wallet_address=None,  # 回退到 DYDX_TESTNET_WALLET_ADDRESS 环境变量
-            private_key=None,     # 回退到 DYDX_TESTNET_PRIVATE_KEY 环境变量
+            private_key=None,  # 回退到 DYDX_TESTNET_PRIVATE_KEY 环境变量
             subaccount=0,
             instrument_provider=InstrumentProviderConfig(load_all=True),
             environment=DydxNetwork.TESTNET,
@@ -591,23 +591,23 @@ config = TradingNodeConfig(
 
 默认测试网端点会被自动使用。如有需要，可在各自的配置上通过 `base_url_http`、`base_url_ws` 或 `base_url_grpc`（仅执行）进行覆盖。
 
-| 服务      | 默认 URL                                             |
-|-----------|------------------------------------------------------|
-| HTTP      | `https://indexer.v4testnet.dydx.exchange`            |
-| WebSocket | `wss://indexer.v4testnet.dydx.exchange/v4/ws`        |
-| gRPC      | `https://test-dydx-grpc.kingnodes.com:443`（主）     |
-| Faucet    | `https://faucet.v4testnet.dydx.exchange`             |
-| 网页应用  | `https://v4.testnet.dydx.exchange`                   |
+| 服务        | 默认 URL                                        |
+| --------- | --------------------------------------------- |
+| HTTP      | `https://indexer.v4testnet.dydx.exchange`     |
+| WebSocket | `wss://indexer.v4testnet.dydx.exchange/v4/ws` |
+| gRPC      | `https://test-dydx-grpc.kingnodes.com:443`（主） |
+| Faucet    | `https://faucet.v4testnet.dydx.exchange`      |
+| 网页应用      | `https://v4.testnet.dydx.exchange`            |
 
 ### 主网端点
 
 默认主网端点会被自动使用。如有需要，可在各自的配置上通过 `base_url_http`、`base_url_ws` 或 `base_url_grpc`（仅执行）进行覆盖。
 
-| 服务      | 默认 URL                                            |
-|-----------|-----------------------------------------------------|
-| HTTP      | `https://indexer.dydx.trade`                        |
-| WebSocket | `wss://indexer.dydx.trade/v4/ws`                    |
-| gRPC      | `https://dydx-ops-grpc.kingnodes.com:443`（主）     |
+| 服务        | 默认 URL                                       |
+| --------- | -------------------------------------------- |
+| HTTP      | `https://indexer.dydx.trade`                 |
+| WebSocket | `wss://indexer.dydx.trade/v4/ws`             |
+| gRPC      | `https://dydx-ops-grpc.kingnodes.com:443`（主） |
 
 ## 配置
 
@@ -615,37 +615,37 @@ config = TradingNodeConfig(
 
 ### 数据客户端配置选项
 
-| 选项                      | 默认值    | 描述                                                                                        |
-|---------------------------|-----------|---------------------------------------------------------------------------------------------|
-| `wallet_address`          | `None`    | 旧版 Python 配置字段。公共数据客户端不使用钱包凭证。                                         |
-| `environment`             | `None`    | `DydxNetwork.MAINNET` 或 `DydxNetwork.TESTNET`。                                            |
-| `bars_timestamp_on_close` | `True`    | K 线的 `ts_event` 是否应为 K 线收盘时间。设为 `False` 可使用交易场所原生的开盘时间。         |
-| `base_url_http`           | `None`    | HTTP API 端点覆盖。`None` 表示为所选网络选用默认值。                                         |
-| `base_url_ws`             | `None`    | WebSocket 端点覆盖。`None` 表示为所选网络选用默认值。                                        |
-| `proxy_url`               | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                                       |
-| `max_retries`             | `3`       | REST/WebSocket 恢复的最大重试次数。                                                          |
-| `retry_delay_initial_ms`  | `1,000`   | 重试间的初始延迟（毫秒）。                                                                   |
-| `retry_delay_max_ms`      | `10,000`  | 重试间的最大延迟（毫秒）。                                                                   |
-| `transport_backend`       | `Sockudo` | WebSocket 传输后端。                                                                         |
+| 选项                        | 默认值       | 描述                                                      |
+| ------------------------- | --------- | ------------------------------------------------------- |
+| `wallet_address`          | `None`    | 旧版 Python 配置字段。公共数据客户端不使用钱包凭证。                          |
+| `environment`             | `None`    | `DydxNetwork.MAINNET` 或 `DydxNetwork.TESTNET`。          |
+| `bars_timestamp_on_close` | `True`    | K 线的 `ts_event` 是否应为 K 线收盘时间。设为 `False` 可使用交易场所原生的开盘时间。 |
+| `base_url_http`           | `None`    | HTTP API 端点覆盖。`None` 表示为所选网络选用默认值。                      |
+| `base_url_ws`             | `None`    | WebSocket 端点覆盖。`None` 表示为所选网络选用默认值。                     |
+| `proxy_url`               | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                           |
+| `max_retries`             | `3`       | REST/WebSocket 恢复的最大重试次数。                               |
+| `retry_delay_initial_ms`  | `1,000`   | 重试间的初始延迟（毫秒）。                                           |
+| `retry_delay_max_ms`      | `10,000`  | 重试间的最大延迟（毫秒）。                                           |
+| `transport_backend`       | `Sockudo` | WebSocket 传输后端。                                         |
 
 ### 执行客户端配置选项
 
-| 选项                           | 默认值    | 描述                                                                                               |
-|--------------------------------|-----------|----------------------------------------------------------------------------------------------------|
-| `wallet_address`               | `None`    | dYdX 钱包地址。回退到 `DYDX_WALLET_ADDRESS` / `DYDX_TESTNET_WALLET_ADDRESS` 环境变量。              |
-| `subaccount`                   | `0`       | 子账户编号（0-127）。子账户 0 为默认。                                                              |
-| `private_key`                  | `None`    | 用于签名的十六进制编码私钥。回退到 `DYDX_PRIVATE_KEY` / `DYDX_TESTNET_PRIVATE_KEY`。                |
-| `authenticator_ids`            | `None`    | 用于授权密钥交易（机构配置）的 authenticator ID 列表。                                              |
-| `environment`                  | `None`    | `DydxNetwork.MAINNET` 或 `DydxNetwork.TESTNET`。                                                   |
-| `base_url_http`                | `None`    | HTTP 客户端自定义端点覆盖。`None` 表示为所选网络选用默认值。                                        |
-| `base_url_ws`                  | `None`    | WebSocket 客户端自定义端点覆盖。`None` 表示为所选网络选用默认值。                                   |
-| `base_url_grpc`                | `None`    | gRPC 客户端自定义端点覆盖。`None` 表示为所选网络选用默认值。                                        |
-| `proxy_url`                    | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                                             |
-| `max_retries`                  | `3`       | 提交/取消/修改订单操作的最大重试次数。                                                             |
-| `retry_delay_initial_ms`       | `1,000`   | 重试间的初始延迟（毫秒）。                                                                         |
-| `retry_delay_max_ms`           | `10,000`  | 重试间的最大延迟（毫秒）。                                                                         |
-| `grpc_rate_limit_per_second`   | `4`       | 每秒最大 gRPC 请求数。设为 `None` 可禁用。                                                         |
-| `transport_backend`            | `Sockudo` | WebSocket 传输后端。                                                                               |
+| 选项                           | 默认值       | 描述                                                                        |
+| ---------------------------- | --------- | ------------------------------------------------------------------------- |
+| `wallet_address`             | `None`    | dYdX 钱包地址。回退到 `DYDX_WALLET_ADDRESS` / `DYDX_TESTNET_WALLET_ADDRESS` 环境变量。 |
+| `subaccount`                 | `0`       | 子账户编号（0-127）。子账户 0 为默认。                                                   |
+| `private_key`                | `None`    | 用于签名的十六进制编码私钥。回退到 `DYDX_PRIVATE_KEY` / `DYDX_TESTNET_PRIVATE_KEY`。        |
+| `authenticator_ids`          | `None`    | 用于授权密钥交易（机构配置）的 authenticator ID 列表。                                      |
+| `environment`                | `None`    | `DydxNetwork.MAINNET` 或 `DydxNetwork.TESTNET`。                            |
+| `base_url_http`              | `None`    | HTTP 客户端自定义端点覆盖。`None` 表示为所选网络选用默认值。                                      |
+| `base_url_ws`                | `None`    | WebSocket 客户端自定义端点覆盖。`None` 表示为所选网络选用默认值。                                 |
+| `base_url_grpc`              | `None`    | gRPC 客户端自定义端点覆盖。`None` 表示为所选网络选用默认值。                                      |
+| `proxy_url`                  | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                             |
+| `max_retries`                | `3`       | 提交/取消/修改订单操作的最大重试次数。                                                      |
+| `retry_delay_initial_ms`     | `1,000`   | 重试间的初始延迟（毫秒）。                                                             |
+| `retry_delay_max_ms`         | `10,000`  | 重试间的最大延迟（毫秒）。                                                             |
+| `grpc_rate_limit_per_second` | `4`       | 每秒最大 gRPC 请求数。设为 `None` 可禁用。                                              |
+| `transport_backend`          | `Sockudo` | WebSocket 传输后端。                                                           |
 
 ### 基本设置
 
@@ -671,7 +671,7 @@ config = TradingNodeConfig(
     exec_clients={
         DYDX: DydxExecClientConfig(
             wallet_address=None,  # 回退到环境变量
-            private_key=None,     # 回退到环境变量
+            private_key=None,  # 回退到环境变量
             subaccount=0,
             instrument_provider=InstrumentProviderConfig(load_all=True),
             environment=DydxNetwork.MAINNET,
@@ -702,12 +702,12 @@ node.build()
 
 #### 环境变量
 
-| 变量                            | 网络     | 描述                                           |
-|---------------------------------|----------|------------------------------------------------|
-| `DYDX_WALLET_ADDRESS`           | 主网     | Bech32 编码的钱包地址（`dydx1...`）。           |
-| `DYDX_PRIVATE_KEY`              | 主网     | 用于签名的十六进制编码 secp256k1 私钥。         |
-| `DYDX_TESTNET_WALLET_ADDRESS`   | 测试网   | 测试网钱包地址（`dydx1...`）。                  |
-| `DYDX_TESTNET_PRIVATE_KEY`      | 测试网   | 测试网私钥。                                    |
+| 变量                            | 网络  | 描述                          |
+| ----------------------------- | --- | --------------------------- |
+| `DYDX_WALLET_ADDRESS`         | 主网  | Bech32 编码的钱包地址（`dydx1...`）。 |
+| `DYDX_PRIVATE_KEY`            | 主网  | 用于签名的十六进制编码 secp256k1 私钥。   |
+| `DYDX_TESTNET_WALLET_ADDRESS` | 测试网 | 测试网钱包地址（`dydx1...`）。        |
+| `DYDX_TESTNET_PRIVATE_KEY`    | 测试网 | 测试网私钥。                      |
 
 #### 解析优先级
 
@@ -738,8 +738,8 @@ API 交易密钥让您能够在不共享主钱包助记词的前提下，将交�
 
 ```python
 config = DydxExecClientConfig(
-    wallet_address="dydx1owner...",   # 所有者账户（持有保证金）
-    private_key="0xapikey...",         # API 交易密钥私钥
+    wallet_address="dydx1owner...",  # 所有者账户（持有保证金）
+    private_key="0xapikey...",  # API 交易密钥私钥
     # authenticator_ids 自动解析
 )
 ```

@@ -131,14 +131,14 @@ cargo install cargo-binstall --locked
 仓库清单文件（manifest）是依赖和工具版本的权威来源。除非没有基于清单文件读取版本的方法，
 否则不要将当前的版本号复制到文档、运行器镜像或脚本中。
 
-| 源文件或区段                                   | 定义内容                                              |
-|----------------------------------------------|-------------------------------------------------------|
-| `rust-toolchain.toml`                        | Rust 工具链。                                          |
-| `Cargo.toml` 和 `Cargo.lock`                 | Rust 工作区依赖及精确解析结果。                          |
-| `Cargo.toml` `[workspace.metadata.tools]`    | 可通过 Cargo 安装的开发工具。                            |
-| `pyproject.toml` 和 `python/pyproject.toml`  | Python 依赖、支持的 Python 范围以及 uv。                |
-| `uv.lock` 和 `python/uv.lock`                | 精确的 Python 依赖解析结果。                            |
-| `tools.toml`                                 | 没有原生清单文件的外部 CLI 和二进制文件。                |
+| 源文件或区段                                     | 定义内容                          |
+| ------------------------------------------ | ----------------------------- |
+| `rust-toolchain.toml`                      | Rust 工具链。                     |
+| `Cargo.toml` 和 `Cargo.lock`                | Rust 工作区依赖及精确解析结果。            |
+| `Cargo.toml` `[workspace.metadata.tools]`  | 可通过 Cargo 安装的开发工具。            |
+| `pyproject.toml` 和 `python/pyproject.toml` | Python 依赖、支持的 Python 范围以及 uv。 |
+| `uv.lock` 和 `python/uv.lock`               | 精确的 Python 依赖解析结果。            |
+| `tools.toml`                               | 没有原生清单文件的外部 CLI 和二进制文件。       |
 
 `tools.toml` 中的外部工具固定项包括 `prek`、`pip-audit`、`pypi-attestations`、
 `maturin`、`osv-scanner` 和 `capnp`。

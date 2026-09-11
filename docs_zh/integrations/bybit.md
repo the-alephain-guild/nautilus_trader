@@ -39,14 +39,14 @@ Bybit 为用户提供了详尽的文档，可在 [Bybit 帮助中心](https://ww
 
 Bybit 支持以下产品类型：
 
-| 产品类型 | 支持 | 备注 |
-|---------|------|------|
-| 现货(spot)加密货币 | ✓ | 原生现货市场，支持保证金(margin)。 |
-| 正向永续合约(linear perpetual) | ✓ | USDT/USDC 保证金永续互换。 |
-| 正向期货合约(linear futures) | ✓ | 交割结算的正向期货。 |
-| 反向永续合约(inverse perpetual) | ✓ | 币本位保证金永续互换。 |
-| 反向期货合约(inverse futures) | ✓ | 币本位交割期货。 |
-| 期权合约(option) | ✓ | USDT 结算的欧式期权。 |
+| 产品类型                      | 支持  | 备注                    |
+| ------------------------- | --- | --------------------- |
+| 现货(spot)加密货币              | ✓   | 原生现货市场，支持保证金(margin)。 |
+| 正向永续合约(linear perpetual)  | ✓   | USDT/USDC 保证金永续互换。    |
+| 正向期货合约(linear futures)    | ✓   | 交割结算的正向期货。            |
+| 反向永续合约(inverse perpetual) | ✓   | 币本位保证金永续互换。           |
+| 反向期货合约(inverse futures)   | ✓   | 币本位交割期货。              |
+| 期权合约(option)              | ✓   | USDT 结算的欧式期权。         |
 
 ## 符号体系
 
@@ -110,11 +110,11 @@ BybitDataClientConfig(
 Bybit 提供三种交易环境。通过客户端配置上的 `environment` 枚举
 配置合适的环境。
 
-| 环境 | 配置 | 描述 |
-|------|------|------|
-| **Mainnet** | `BybitEnvironment.MAINNET` | 使用真实资金的生产交易。 |
-| **Demo** | `BybitEnvironment.DEMO` | 在主网基础设施上使用模拟资金进行练习交易。 |
-| **Testnet** | `BybitEnvironment.TESTNET` | 用于开发和集成测试的独立测试网络。 |
+| 环境          | 配置                         | 描述                    |
+| ----------- | -------------------------- | --------------------- |
+| **Mainnet** | `BybitEnvironment.MAINNET` | 使用真实资金的生产交易。          |
+| **Demo**    | `BybitEnvironment.DEMO`    | 在主网基础设施上使用模拟资金进行练习交易。 |
+| **Testnet** | `BybitEnvironment.TESTNET` | 用于开发和集成测试的独立测试网络。     |
 
 ### Mainnet（生产）
 
@@ -224,56 +224,56 @@ Bybit 提供了灵活的触发类型组合，使得 Nautilus 支持更广泛的�
 
 ### 订单类型
 
-| 订单类型 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|---------|------|------|------|------|------|
-| `MARKET` | ✓ | ✓ | ✓ | ✓ | 支持报价数量。 |
-| `LIMIT` | ✓ | ✓ | ✓ | ✓ | |
-| `STOP_MARKET` | ✓ | ✓ | ✓ | - | *期权不支持*。 |
-| `STOP_LIMIT` | ✓ | ✓ | ✓ | - | *期权不支持*。 |
-| `MARKET_IF_TOUCHED` | ✓ | ✓ | ✓ | - | *期权不支持*。 |
-| `LIMIT_IF_TOUCHED` | ✓ | ✓ | ✓ | - | *期权不支持*。 |
-| `TRAILING_STOP_MARKET` | - | ✓ | ✓ | - | *现货/期权不支持*。 |
+| 订单类型                   | 现货  | 正向  | 反向  | 期权  | 备注          |
+| ---------------------- | --- | --- | --- | --- | ----------- |
+| `MARKET`               | ✓   | ✓   | ✓   | ✓   | 支持报价数量。     |
+| `LIMIT`                | ✓   | ✓   | ✓   | ✓   |             |
+| `STOP_MARKET`          | ✓   | ✓   | ✓   | -   | *期权不支持*。    |
+| `STOP_LIMIT`           | ✓   | ✓   | ✓   | -   | *期权不支持*。    |
+| `MARKET_IF_TOUCHED`    | ✓   | ✓   | ✓   | -   | *期权不支持*。    |
+| `LIMIT_IF_TOUCHED`     | ✓   | ✓   | ✓   | -   | *期权不支持*。    |
+| `TRAILING_STOP_MARKET` | -   | ✓   | ✓   | -   | *现货/期权不支持*。 |
 
 ### 执行指令
 
-| 指令 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| `post_only` | ✓ | ✓ | ✓ | ✓ | 仅支持 `LIMIT` 订单。 |
-| `reduce_only` | - | ✓ | ✓ | ✓ | *现货不支持*。 |
+| 指令            | 现货  | 正向  | 反向  | 期权  | 备注              |
+| ------------- | --- | --- | --- | --- | --------------- |
+| `post_only`   | ✓   | ✓   | ✓   | ✓   | 仅支持 `LIMIT` 订单。 |
+| `reduce_only` | -   | ✓   | ✓   | ✓   | *现货不支持*。        |
 
 ### 有效时间
 
-| 有效时间 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|---------|------|------|------|------|------|
-| `GTC` | ✓ | ✓ | ✓ | ✓ | 撤单前有效(Good Till Canceled)。 |
-| `GTD` | - | - | - | - | *不支持*。 |
-| `FOK` | ✓ | ✓ | ✓ | ✓ | 全部成交或撤销(Fill or Kill)。 |
-| `IOC` | ✓ | ✓ | ✓ | ✓ | 立即成交或撤销(Immediate or Cancel)。 |
+| 有效时间  | 现货  | 正向  | 反向  | 期权  | 备注                            |
+| ----- | --- | --- | --- | --- | ----------------------------- |
+| `GTC` | ✓   | ✓   | ✓   | ✓   | 撤单前有效(Good Till Canceled)。    |
+| `GTD` | -   | -   | -   | -   | *不支持*。                        |
+| `FOK` | ✓   | ✓   | ✓   | ✓   | 全部成交或撤销(Fill or Kill)。        |
+| `IOC` | ✓   | ✓   | ✓   | ✓   | 立即成交或撤销(Immediate or Cancel)。 |
 
 ### 高级订单功能
 
-| 功能 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| 订单修改 | ✓ | ✓ | ✓ | ✓ | 价格和数量修改。 |
-| 括号/OCO 订单 | ✓ | ✓ | ✓ | - | 仅限 UI；API 用户需手动实现。 |
-| 冰山订单 | ✓ | ✓ | ✓ | - | 每账户最多 10 个，每符号 1 个。 |
+| 功能        | 现货  | 正向  | 反向  | 期权  | 备注                  |
+| --------- | --- | --- | --- | --- | ------------------- |
+| 订单修改      | ✓   | ✓   | ✓   | ✓   | 价格和数量修改。            |
+| 括号/OCO 订单 | ✓   | ✓   | ✓   | -   | 仅限 UI；API 用户需手动实现。  |
+| 冰山订单      | ✓   | ✓   | ✓   | -   | 每账户最多 10 个，每符号 1 个。 |
 
 ### 批量操作
 
-| 操作 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| 批量提交 | ✓ | ✓ | ✓ | ✓ | 单次请求提交多个订单。 |
-| 批量修改 | ✓ | ✓ | ✓ | ✓ | 单次请求修改多个订单。 |
-| 批量取消 | ✓ | ✓ | ✓ | ✓ | 单次请求取消多个订单。 |
+| 操作   | 现货  | 正向  | 反向  | 期权  | 备注          |
+| ---- | --- | --- | --- | --- | ----------- |
+| 批量提交 | ✓   | ✓   | ✓   | ✓   | 单次请求提交多个订单。 |
+| 批量修改 | ✓   | ✓   | ✓   | ✓   | 单次请求修改多个订单。 |
+| 批量取消 | ✓   | ✓   | ✓   | ✓   | 单次请求取消多个订单。 |
 
 ### 持仓管理
 
-| 功能 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| 查询持仓 | - | ✓ | ✓ | ✓ | 实时持仓更新。 |
-| 持仓模式 | - | ✓ | ✓ | - | 期权仅支持单向。 |
-| 杠杆(leverage)控制 | - | ✓ | ✓ | - | 不适用于期权。 |
-| 保证金模式 | - | ✓ | ✓ | ✓ | 全仓、逐仓或组合保证金。 |
+| 功能             | 现货  | 正向  | 反向  | 期权  | 备注           |
+| -------------- | --- | --- | --- | --- | ------------ |
+| 查询持仓           | -   | ✓   | ✓   | ✓   | 实时持仓更新。      |
+| 持仓模式           | -   | ✓   | ✓   | -   | 期权仅支持单向。     |
+| 杠杆(leverage)控制 | -   | ✓   | ✓   | -   | 不适用于期权。      |
+| 保证金模式          | -   | ✓   | ✓   | ✓   | 全仓、逐仓或组合保证金。 |
 
 #### 对冲模式（BothSides）
 
@@ -304,16 +304,16 @@ API 中对此有文档说明：`mode=3` 启用 Both Sides，且对冲模式订�
 要覆盖此行为，可通过 `params` 传递 `position_idx`：
 
 ```python
-params={"position_idx": 1}  # 0 单向, 1 多头, 2 空头
+params = {"position_idx": 1}  # 0 单向, 1 多头, 2 空头
 ```
 
 ### 风险事件
 
-| 功能 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| 强平处理 | - | ✓ | ✓ | ✓ | 接管成交被标记为交易所生成。 |
-| ADL 处理 | - | ✓ | ✓ | ✓ | 自动减仓成交被标记并记录日志。 |
-| ADL 排名警告 | - | ✓ | ✓ | ✓ | 当 `adlRankIndicator >= 4` 时记录持仓报告日志。 |
+| 功能       | 现货  | 正向  | 反向  | 期权  | 备注                                   |
+| -------- | --- | --- | --- | --- | ------------------------------------ |
+| 强平处理     | -   | ✓   | ✓   | ✓   | 接管成交被标记为交易所生成。                       |
+| ADL 处理   | -   | ✓   | ✓   | ✓   | 自动减仓成交被标记并记录日志。                      |
+| ADL 排名警告 | -   | ✓   | ✓   | ✓   | 当 `adlRankIndicator >= 4` 时记录持仓报告日志。 |
 
 Bybit 会发出由交易所发起的成交，其 `execType` 设置为：
 
@@ -342,43 +342,43 @@ Bybit 还会在持仓更新时通过 `adlRankIndicator` 字段发布 ADL 排名�
 
 ### 订单查询
 
-| 功能 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| 查询未结订单 | ✓ | ✓ | ✓ | ✓ | 列出所有活跃订单。 |
-| 查询订单历史 | ✓ | ✓ | ✓ | ✓ | 历史订单数据。 |
-| 订单状态更新 | ✓ | ✓ | ✓ | ✓ | 实时订单状态变更。 |
-| 成交历史 | ✓ | ✓ | ✓ | ✓ | 执行和成交报告。 |
+| 功能     | 现货  | 正向  | 反向  | 期权  | 备注        |
+| ------ | --- | --- | --- | --- | --------- |
+| 查询未结订单 | ✓   | ✓   | ✓   | ✓   | 列出所有活跃订单。 |
+| 查询订单历史 | ✓   | ✓   | ✓   | ✓   | 历史订单数据。   |
+| 订单状态更新 | ✓   | ✓   | ✓   | ✓   | 实时订单状态变更。 |
+| 成交历史   | ✓   | ✓   | ✓   | ✓   | 执行和成交报告。  |
 
 ### 条件订单
 
-| 功能 | 现货 | 正向 | 反向 | 期权 | 备注 |
-|------|------|------|------|------|------|
-| 订单列表 | ✓ | ✓ | ✓ | ✓ | 通过 WebSocket 以批量方式提交。 |
-| OCO 订单 | ✓ | ✓ | ✓ | - | 仅限 UI；API 用户需手动实现。 |
-| 括号订单 | ✓ | ✓ | ✓ | - | 仅限 UI；API 用户需手动实现。 |
-| 条件订单 | ✓ | ✓ | ✓ | - | 止损和触价限价订单。 |
+| 功能     | 现货  | 正向  | 反向  | 期权  | 备注                    |
+| ------ | --- | --- | --- | --- | --------------------- |
+| 订单列表   | ✓   | ✓   | ✓   | ✓   | 通过 WebSocket 以批量方式提交。 |
+| OCO 订单 | ✓   | ✓   | ✓   | -   | 仅限 UI；API 用户需手动实现。    |
+| 括号订单   | ✓   | ✓   | ✓   | -   | 仅限 UI；API 用户需手动实现。    |
+| 条件订单   | ✓   | ✓   | ✓   | -   | 止损和触价限价订单。            |
 
 ### 订单参数
 
 提交订单时，可以使用 `params` 字典自定义单个订单：
 
-| 参数 | 类型 | 描述 |
-|------|------|------|
-| `is_leverage` | `bool` | 仅适用于现货。启用保证金交易（借款）。默认值：`False`。 |
-| `take_profit` | `str` 或 `float` | TP 触发价格。为订单附加原生 TP。 |
-| `stop_loss` | `str` 或 `float` | SL 触发价格。为订单附加原生 SL。 |
-| `tp_trigger_by` | `str` | TP 触发类型：`"LastPrice"`、`"IndexPrice"` 或 `"MarkPrice"`。 |
-| `sl_trigger_by` | `str` | SL 触发类型：`"LastPrice"`、`"IndexPrice"` 或 `"MarkPrice"`。 |
-| `tp_order_type` | `str` | TP 执行类型：`"Market"` 或 `"Limit"`。默认值：`"Market"`。 |
-| `sl_order_type` | `str` | SL 执行类型：`"Market"` 或 `"Limit"`。默认值：`"Market"`。 |
-| `tp_limit_price` | `str` 或 `float` | 当 `tp_order_type` 为 `"Limit"` 时 TP 的限价。 |
-| `sl_limit_price` | `str` 或 `float` | 当 `sl_order_type` 为 `"Limit"` 时 SL 的限价。 |
-| `tp_trigger_price` | `str` 或 `float` | 自定义 TP 触发价格（覆盖 `take_profit`）。 |
-| `sl_trigger_price` | `str` 或 `float` | 自定义 SL 触发价格（覆盖 `stop_loss`）。 |
-| `close_on_trigger` | `bool` | 当 TP/SL 触发时关闭持仓。默认值：`False`。 |
-| `position_idx` | `int` | 对冲模式持仓索引。参见[对冲模式](#hedge-mode-bothsides)。 |
-| `bbo_side_type` | `str` | 正向/反向 BBO 方向：`"Queue"` 或 `"Counterparty"`。 |
-| `bbo_level` | `str` 或 `int` | 正向/反向 BBO 盘口档位：`"1"` 到 `"5"`。 |
+| 参数                 | 类型              | 描述                                                    |
+| ------------------ | --------------- | ----------------------------------------------------- |
+| `is_leverage`      | `bool`          | 仅适用于现货。启用保证金交易（借款）。默认值：`False`。                       |
+| `take_profit`      | `str` 或 `float` | TP 触发价格。为订单附加原生 TP。                                   |
+| `stop_loss`        | `str` 或 `float` | SL 触发价格。为订单附加原生 SL。                                   |
+| `tp_trigger_by`    | `str`           | TP 触发类型：`"LastPrice"`、`"IndexPrice"` 或 `"MarkPrice"`。 |
+| `sl_trigger_by`    | `str`           | SL 触发类型：`"LastPrice"`、`"IndexPrice"` 或 `"MarkPrice"`。 |
+| `tp_order_type`    | `str`           | TP 执行类型：`"Market"` 或 `"Limit"`。默认值：`"Market"`。        |
+| `sl_order_type`    | `str`           | SL 执行类型：`"Market"` 或 `"Limit"`。默认值：`"Market"`。        |
+| `tp_limit_price`   | `str` 或 `float` | 当 `tp_order_type` 为 `"Limit"` 时 TP 的限价。               |
+| `sl_limit_price`   | `str` 或 `float` | 当 `sl_order_type` 为 `"Limit"` 时 SL 的限价。               |
+| `tp_trigger_price` | `str` 或 `float` | 自定义 TP 触发价格（覆盖 `take_profit`）。                        |
+| `sl_trigger_price` | `str` 或 `float` | 自定义 SL 触发价格（覆盖 `stop_loss`）。                          |
+| `close_on_trigger` | `bool`          | 当 TP/SL 触发时关闭持仓。默认值：`False`。                          |
+| `position_idx`     | `int`           | 对冲模式持仓索引。参见[对冲模式](#hedge-mode-bothsides)。             |
+| `bbo_side_type`    | `str`           | 正向/反向 BBO 方向：`"Queue"` 或 `"Counterparty"`。            |
+| `bbo_level`        | `str` 或 `int`   | 正向/反向 BBO 盘口档位：`"1"` 到 `"5"`。                         |
 
 :::note
 原生 TP/SL 参数在 Demo 模式下不受支持。`is_leverage` 参数仅适用于
@@ -428,7 +428,7 @@ order = strategy.order_factory.market(
     instrument_id=InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
     order_side=OrderSide.BUY,
     quantity=Quantity.from_str("0.1"),
-    params={"is_leverage": True}  # 为此订单启用保证金
+    params={"is_leverage": True},  # 为此订单启用保证金
 )
 strategy.submit_order(order)
 ```
@@ -479,11 +479,11 @@ config = BybitExecClientConfig(
 
 策略可以通过 `query_account` 配合 `BybitMarginAction` 枚举直接控制保证金借款和还款：
 
-| 操作 | 描述 |
-|------|------|
-| `BybitMarginAction.BORROW` | 为保证金交易借入资金。 |
-| `BybitMarginAction.REPAY` | 偿还借入的资金。 |
-| `BybitMarginAction.GET_BORROW_AMOUNT` | 查询当前借款金额。 |
+| 操作                                    | 描述          |
+| ------------------------------------- | ----------- |
+| `BybitMarginAction.BORROW`            | 为保证金交易借入资金。 |
+| `BybitMarginAction.REPAY`             | 偿还借入的资金。    |
+| `BybitMarginAction.GET_BORROW_AMOUNT` | 查询当前借款金额。   |
 
 #### 借款
 
@@ -570,8 +570,8 @@ Skipping borrow repayment for BTC due to Bybit blackout window (04:00-05:30 UTC 
 
 ### 配置选项
 
-| 选项 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
+| 选项                        | 类型     | 默认值    | 描述                                                    |
+| ------------------------- | ------ | ------ | ----------------------------------------------------- |
 | `auto_repay_spot_borrows` | `bool` | `True` | 如果为 `True`，在买入订单成交后自动偿还现货保证金借款。防止借入代币产生利息。停服窗口期间跳过还款。 |
 
 ### 重要说明
@@ -598,15 +598,15 @@ Bybit 上架了 BTC 和 ETH 的欧式期权，以 USDT 或 USDC 结算。
 
 适配器通过 WebSocket ticker 通道支持实时期权市场数据：
 
-| 数据类型 | 描述 |
-|---------|------|
-| 报价（买价/卖价） | 每个期权合约的盘口价格和数量。 |
-| 希腊值 | Delta、gamma、vega、theta，以及买价/卖价/标记 IV。 |
-| 标记价格 | 每个期权合约的交易所标记价格。 |
-| 指数价格 | 标的指数价格。 |
-| 标的（远期）价格 | 按到期日的远期价格，用于确定 ATM。 |
-| 未平仓合约量 | 每个合约的未平仓合约量。 |
-| 订单簿增量 | 来自期权订单簿流的 L2 MBP 更新。 |
+| 数据类型      | 描述                                    |
+| --------- | ------------------------------------- |
+| 报价（买价/卖价） | 每个期权合约的盘口价格和数量。                       |
+| 希腊值       | Delta、gamma、vega、theta，以及买价/卖价/标记 IV。 |
+| 标记价格      | 每个期权合约的交易所标记价格。                       |
+| 指数价格      | 标的指数价格。                               |
+| 标的（远期）价格  | 按到期日的远期价格，用于确定 ATM。                   |
+| 未平仓合约量    | 每个合约的未平仓合约量。                          |
+| 订单簿增量     | 来自期权订单簿流的 L2 MBP 更新。                  |
 
 订阅按金融工具的希腊值，或将它们聚合为带 ATM 相对行权价过滤的
 期权链快照。订阅模式参见
@@ -620,10 +620,10 @@ Bybit 上架了 BTC 和 ETH 的欧式期权，以 USDT 或 USDC 结算。
 
 除标准订单参数外，期权订单还接受：
 
-| 参数 | 类型 | 描述 |
-|------|------|------|
-| `order_iv` | `str` 或 `float` | 按隐含波动率而非价格下单或修改订单。 |
-| `mmp` | `bool` | 为订单启用做市商保护（Market Maker Protection）。 |
+| 参数         | 类型              | 描述                                   |
+| ---------- | --------------- | ------------------------------------ |
+| `order_iv` | `str` 或 `float` | 按隐含波动率而非价格下单或修改订单。                   |
+| `mmp`      | `bool`          | 为订单启用做市商保护（Market Maker Protection）。 |
 
 这些参数通过 `SubmitOrder` 上的 `params` 传递，并在主网上通过
 WebSocket 交易通道流转。它们在 Demo 模式下不受支持。
@@ -666,16 +666,16 @@ WebSocket 流接收资金费率数据。Bybit 在 ticker 更新中提供 `fundin
 
 每个 HTTP 调用都会消耗全局令牌桶以及任何带键的配额。当使用量超过某个桶时，请求会自动排队，因此通常不需要手动节流。
 
-| 键 / 端点 | 限制（请求/秒） | 备注 |
-|-----------|----------------|------|
-| `bybit:global` | 120 | 交易所全局上限 600 请求 / 5 秒。 |
-| `/v5/market/kline` | 20 | 历史数据扫描的节流略低于全局限制。 |
-| `/v5/market/trades` | 24 | 与全局配额一致。 |
-| `/v5/order/create` | 10 | 标准下单。 |
-| `/v5/order/cancel` | 10 | 单笔订单取消。 |
-| `/v5/order/create-batch` | 5 | 批量下单端点。 |
-| `/v5/order/cancel-batch` | 5 | 批量取消端点。 |
-| `/v5/order/cancel-all` | 2 | 全部取消以配合 Bybit 指南。 |
+| 键 / 端点                   | 限制（请求/秒） | 备注                    |
+| ------------------------ | -------- | --------------------- |
+| `bybit:global`           | 120      | 交易所全局上限 600 请求 / 5 秒。 |
+| `/v5/market/kline`       | 20       | 历史数据扫描的节流略低于全局限制。     |
+| `/v5/market/trades`      | 24       | 与全局配额一致。              |
+| `/v5/order/create`       | 10       | 标准下单。                 |
+| `/v5/order/cancel`       | 10       | 单笔订单取消。               |
+| `/v5/order/create-batch` | 5        | 批量下单端点。               |
+| `/v5/order/cancel-batch` | 5        | 批量取消端点。               |
+| `/v5/order/cancel-all`   | 2        | 全部取消以配合 Bybit 指南。     |
 
 :::warning
 当速率限制被超出时，Bybit 会响应错误码 `10016`，如果请求在没有退避的情况下继续发送，可能会暂时封禁 IP。
@@ -750,11 +750,11 @@ WebSocket 流接收资金费率数据。Bybit 在 ticker 更新中提供 `fundin
 
 对于所有衍生品产品（LINEAR、INVERSE、OPTION），手续费始终以**结算币种**收取：
 
-| 产品类型 | 结算币种 | 手续费币种 |
-|---------|---------|-----------|
-| LINEAR | USDT（通常） | USDT |
-| INVERSE | 基础代币（例如 BTCUSD 的 BTC） | 基础代币 |
-| OPTION | USDT | USDT |
+| 产品类型    | 结算币种                  | 手续费币种 |
+| ------- | --------------------- | ----- |
+| LINEAR  | USDT（通常）              | USDT  |
+| INVERSE | 基础代币（例如 BTCUSD 的 BTC） | 基础代币  |
+| OPTION  | USDT                  | USDT  |
 
 ### 手续费计算
 
@@ -782,53 +782,53 @@ WebSocket 流接收资金费率数据。Bybit 在 ticker 更新中提供 `fundin
 
 ### 数据客户端配置选项
 
-| 选项 | 默认值 | 描述 |
-|------|--------|------|
-| `api_key` | `None` | API key；省略时从匹配的环境变量加载。 |
-| `api_secret` | `None` | API secret；省略时从匹配的环境变量加载。 |
-| `product_types` | `None` | 要启用的 `BybitProductType` 值序列；为 `None` 时加载所有产品。 |
-| `instrument_provider` | default | 金融工具加载配置。订阅前使用 `load_all=True` 或 `load_ids`。 |
-| `environment` | `None` | Bybit 环境枚举。使用 `BybitEnvironment.MAINNET`、`BybitEnvironment.DEMO` 或 `BybitEnvironment.TESTNET`。 |
-| `base_url_http` | `None` | REST 基础 URL 覆盖。 |
-| `proxy_url` | `None` | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `update_instruments_interval_mins` | `60` | 金融工具目录刷新间隔（分钟）。 |
-| `recv_window_ms` | `5,000` | 签名 REST 请求的接收窗口（毫秒）。 |
-| `bars_timestamp_on_close` | `True` | K 线时间戳取区间收盘时间（`True`）或开盘时间（`False`）。 |
-| `max_retries` | `None` | REST/WebSocket 恢复的最大重试次数。 |
-| `retry_delay_initial_ms` | `None` | 重试之间的初始延迟（毫秒）。 |
-| `retry_delay_max_ms` | `None` | 重试之间的最大延迟（毫秒）。 |
-| `transport_backend` | `Sockudo` | WebSocket 传输后端。 |
+| 选项                                 | 默认值       | 描述                                                                                             |
+| ---------------------------------- | --------- | ---------------------------------------------------------------------------------------------- |
+| `api_key`                          | `None`    | API key；省略时从匹配的环境变量加载。                                                                         |
+| `api_secret`                       | `None`    | API secret；省略时从匹配的环境变量加载。                                                                      |
+| `product_types`                    | `None`    | 要启用的 `BybitProductType` 值序列；为 `None` 时加载所有产品。                                                  |
+| `instrument_provider`              | default   | 金融工具加载配置。订阅前使用 `load_all=True` 或 `load_ids`。                                                   |
+| `environment`                      | `None`    | Bybit 环境枚举。使用 `BybitEnvironment.MAINNET`、`BybitEnvironment.DEMO` 或 `BybitEnvironment.TESTNET`。 |
+| `base_url_http`                    | `None`    | REST 基础 URL 覆盖。                                                                                |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                                                  |
+| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。                                                                                |
+| `recv_window_ms`                   | `5,000`   | 签名 REST 请求的接收窗口（毫秒）。                                                                           |
+| `bars_timestamp_on_close`          | `True`    | K 线时间戳取区间收盘时间（`True`）或开盘时间（`False`）。                                                           |
+| `max_retries`                      | `None`    | REST/WebSocket 恢复的最大重试次数。                                                                      |
+| `retry_delay_initial_ms`           | `None`    | 重试之间的初始延迟（毫秒）。                                                                                 |
+| `retry_delay_max_ms`               | `None`    | 重试之间的最大延迟（毫秒）。                                                                                 |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                                                                |
 
 ### 执行客户端配置选项
 
-| 选项 | 默认值 | 描述 |
-|------|--------|------|
-| `api_key` | `None` | API key；省略时从匹配的环境变量加载。 |
-| `api_secret` | `None` | API secret；省略时从匹配的环境变量加载。 |
-| `product_types` | `None` | 要启用的 `BybitProductType` 值序列（执行时现货不能与衍生品混合）。 |
-| `instrument_provider` | default | 金融工具加载配置。提交订单前使用 `load_all=True` 或 `load_ids`。 |
-| `environment` | `None` | Bybit 环境枚举。使用 `BybitEnvironment.MAINNET`、`BybitEnvironment.DEMO` 或 `BybitEnvironment.TESTNET`。 |
-| `base_url_http` | `None` | REST 基础 URL 覆盖。 |
-| `base_url_ws_private` | `None` | 私有 WebSocket 基础 URL 覆盖。 |
-| `base_url_ws_trade` | `None` | 交易 WebSocket 基础 URL 覆盖。 |
-| `proxy_url` | `None` | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `use_gtd` | `False` | 为 `True` 时将 GTD 订单重映射为 GTC（Bybit 不原生支持 GTD）。 |
-| `use_ws_execution_fast` | `False` | 订阅低延迟执行流。 |
-| `use_http_batch_api` | `False` | 使用 Bybit 的 HTTP 批量交易 API（已弃用）。 |
-| `use_spot_position_reports` | `False` | 为 `True` 时将现货钱包余额报告为持仓。 |
-| `auto_repay_spot_borrows` | `True` | 在买入订单完全成交后自动偿还现货保证金借款（仅现货）。 |
-| `repay_queue_interval_secs` | `1.0` | 处理现货借款还款队列之间的间隔（秒）。 |
-| `ignore_uncached_instrument_executions` | `False` | 忽略尚未缓存的金融工具的执行消息。 |
-| `max_retries` | `None` | 订单提交/取消/修改调用的最大重试次数。 |
-| `retry_delay_initial_ms` | `None` | 重试之间的初始延迟（毫秒）。 |
-| `retry_delay_max_ms` | `None` | 重试之间的最大延迟（毫秒）。 |
-| `recv_window_ms` | `5,000` | 签名 REST 请求的接收窗口（毫秒）。 |
-| `ws_trade_timeout_secs` | `5.0` | 等待交易 WebSocket 确认的超时时间（秒）。 |
-| `ws_auth_timeout_secs` | `5.0` | 等待认证 WebSocket 确认的超时时间（秒）。 |
-| `futures_leverages` | `None` | `BybitSymbol` 到杠杆设置的映射。 |
-| `position_mode` | `None` | `BybitSymbol` 到持仓模式的映射。参见[对冲模式](#hedge-mode-bothsides)。 |
-| `margin_mode` | `None` | 账户的保证金模式设置。 |
-| `transport_backend` | `Sockudo` | WebSocket 传输后端。 |
+| 选项                                      | 默认值       | 描述                                                                                             |
+| --------------------------------------- | --------- | ---------------------------------------------------------------------------------------------- |
+| `api_key`                               | `None`    | API key；省略时从匹配的环境变量加载。                                                                         |
+| `api_secret`                            | `None`    | API secret；省略时从匹配的环境变量加载。                                                                      |
+| `product_types`                         | `None`    | 要启用的 `BybitProductType` 值序列（执行时现货不能与衍生品混合）。                                                    |
+| `instrument_provider`                   | default   | 金融工具加载配置。提交订单前使用 `load_all=True` 或 `load_ids`。                                                 |
+| `environment`                           | `None`    | Bybit 环境枚举。使用 `BybitEnvironment.MAINNET`、`BybitEnvironment.DEMO` 或 `BybitEnvironment.TESTNET`。 |
+| `base_url_http`                         | `None`    | REST 基础 URL 覆盖。                                                                                |
+| `base_url_ws_private`                   | `None`    | 私有 WebSocket 基础 URL 覆盖。                                                                        |
+| `base_url_ws_trade`                     | `None`    | 交易 WebSocket 基础 URL 覆盖。                                                                        |
+| `proxy_url`                             | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                                                  |
+| `use_gtd`                               | `False`   | 为 `True` 时将 GTD 订单重映射为 GTC（Bybit 不原生支持 GTD）。                                                   |
+| `use_ws_execution_fast`                 | `False`   | 订阅低延迟执行流。                                                                                      |
+| `use_http_batch_api`                    | `False`   | 使用 Bybit 的 HTTP 批量交易 API（已弃用）。                                                                 |
+| `use_spot_position_reports`             | `False`   | 为 `True` 时将现货钱包余额报告为持仓。                                                                        |
+| `auto_repay_spot_borrows`               | `True`    | 在买入订单完全成交后自动偿还现货保证金借款（仅现货）。                                                                    |
+| `repay_queue_interval_secs`             | `1.0`     | 处理现货借款还款队列之间的间隔（秒）。                                                                            |
+| `ignore_uncached_instrument_executions` | `False`   | 忽略尚未缓存的金融工具的执行消息。                                                                              |
+| `max_retries`                           | `None`    | 订单提交/取消/修改调用的最大重试次数。                                                                           |
+| `retry_delay_initial_ms`                | `None`    | 重试之间的初始延迟（毫秒）。                                                                                 |
+| `retry_delay_max_ms`                    | `None`    | 重试之间的最大延迟（毫秒）。                                                                                 |
+| `recv_window_ms`                        | `5,000`   | 签名 REST 请求的接收窗口（毫秒）。                                                                           |
+| `ws_trade_timeout_secs`                 | `5.0`     | 等待交易 WebSocket 确认的超时时间（秒）。                                                                     |
+| `ws_auth_timeout_secs`                  | `5.0`     | 等待认证 WebSocket 确认的超时时间（秒）。                                                                     |
+| `futures_leverages`                     | `None`    | `BybitSymbol` 到杠杆设置的映射。                                                                        |
+| `position_mode`                         | `None`    | `BybitSymbol` 到持仓模式的映射。参见[对冲模式](#hedge-mode-bothsides)。                                        |
+| `margin_mode`                           | `None`    | 账户的保证金模式设置。                                                                                    |
+| `transport_backend`                     | `Sockudo` | WebSocket 传输后端。                                                                                |
 
 最常见的使用场景是配置一个实时 `TradingNode` 以包含 Bybit
 数据和执行客户端。为此，在你的客户端配置中添加 `BYBIT` 部分：

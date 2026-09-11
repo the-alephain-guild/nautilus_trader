@@ -36,13 +36,13 @@ flowchart LR
     EC <--> EE
 ```
 
-| 组件                  | 用途                                                        |
-|----------------------|------------------------------------------------------------|
-| `HttpClient`         | REST API 通信。                                             |
-| `WebSocketClient`    | 实时流式连接。                                               |
-| `InstrumentProvider` | 从交易场所加载并解析金融工具 (instrument) 定义。                 |
-| `DataClient`         | 处理市场数据的订阅和请求。                                     |
-| `ExecutionClient`    | 处理订单 (order) 的提交、修改和取消。                           |
+| 组件                   | 用途                              |
+| -------------------- | ------------------------------- |
+| `HttpClient`         | REST API 通信。                    |
+| `WebSocketClient`    | 实时流式连接。                         |
+| `InstrumentProvider` | 从交易场所加载并解析金融工具 (instrument) 定义。 |
+| `DataClient`         | 处理市场数据的订阅和请求。                   |
+| `ExecutionClient`    | 处理订单 (order) 的提交、修改和取消。         |
 
 ## 金融工具提供者 (Instrument providers)
 
@@ -159,8 +159,10 @@ def on_start(self) -> None:
     # 订阅实时 K 线
     self.subscribe_bars(BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL"))
 
+
 def on_trade_tick(self, tick: TradeTick) -> None:
     self.log.info(f"Trade: {tick}")
+
 
 def on_bar(self, bar: Bar) -> None:
     self.log.info(f"Bar: {bar}")

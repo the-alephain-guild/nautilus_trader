@@ -22,13 +22,13 @@ ts    | price | qty       ts:    [1000, 1001, 1002]
 
 回测时通常只需读取部分列（如 `price`），列式存储可跳过不需要的列，大幅减少 I/O。
 
-| | **CSV** | **Parquet** |
-|---|---|---|
-| 格式 | 文本，行式 | 二进制，列式 |
-| 体积 | 大 | 小（压缩比通常 5–10x） |
-| 读取速度 | 慢（全行扫描） | 快（按列、按时间范围裁剪） |
-| 内存占用 | 高（需全量加载） | 低（支持流式分批读取） |
-| 可读性 | 人类可读 | 需工具（如 `pyarrow`） |
+|      | **CSV**  | **Parquet**      |
+| ---- | -------- | ---------------- |
+| 格式   | 文本，行式    | 二进制，列式           |
+| 体积   | 大        | 小（压缩比通常 5–10x）   |
+| 读取速度 | 慢（全行扫描）  | 快（按列、按时间范围裁剪）    |
+| 内存占用 | 高（需全量加载） | 低（支持流式分批读取）      |
+| 可读性  | 人类可读     | 需工具（如 `pyarrow`） |
 
 `ParquetDataCatalog` 是 NautilusTrader 专用数据目录，以 Nautilus 定义的 schema 存储 Parquet 文件，支持按时间范围查询和流式读取。**Tick 级别历史数据动辄 GB~TB，这是高级 API 的标准选择。**
 :::
@@ -128,6 +128,7 @@ def data_generator():
     yield load_chunk_1()
     yield load_chunk_2()
     yield load_chunk_3()
+
 
 engine.add_data_iterator(
     data_name="my_data_stream",
@@ -387,14 +388,14 @@ flowchart LR
 
 `book_type` 决定撮合引擎使用哪些数据类型来更新订单簿状态和驱动执行。对给定 `book_type` 不适用的数据类型在订单簿和价格更新中会被忽略，但精度验证仍然适用，引擎时钟仍然推进。无论 `book_type` 如何，策略始终通过数据引擎接收所有已订阅的数据。
 
-| 数据类型           | L1_MBP        | L2_MBP        | L3_MBO        |
-| ------------------ | ------------- | ------------- | ------------- |
-| `QuoteTick`        | 更新订单簿    | *忽略*        | *忽略*        |
-| `TradeTick`        | 触发撮合      | 触发撮合      | 触发撮合      |
-| `Bar`              | 更新订单簿    | *忽略*        | *忽略*        |
-| `OrderBookDelta`   | *忽略*        | 更新订单簿    | 更新订单簿    |
-| `OrderBookDeltas`  | *忽略*        | 更新订单簿    | 更新订单簿    |
-| `OrderBookDepth10` | 更新订单簿    | 更新订单簿    | 更新订单簿    |
+| 数据类型               | L1_MBP | L2_MBP | L3_MBO |
+| ------------------ | ------ | ------ | ------ |
+| `QuoteTick`        | 更新订单簿  | *忽略*   | *忽略*   |
+| `TradeTick`        | 触发撮合   | 触发撮合   | 触发撮合   |
+| `Bar`              | 更新订单簿  | *忽略*   | *忽略*   |
+| `OrderBookDelta`   | *忽略*   | 更新订单簿  | 更新订单簿  |
+| `OrderBookDeltas`  | *忽略*   | 更新订单簿  | 更新订单簿  |
+| `OrderBookDepth10` | 更新订单簿  | 更新订单簿  | 更新订单簿  |
 
 :::note
 数据的粒度必须与指定的订单 `book_type` 匹配。Nautilus 无法从较低级别的数据（如报价、成交或 K线）生成更高粒度的数据（L2 或 L3）。
@@ -498,17 +499,17 @@ NautilusTrader 在回测期间将历史订单簿和成交数据视为**不可变
 
 拥有完整订单簿深度时，成交由实际的订单簿模拟确定：
 
-| 订单类型               | 成交价格                                            |
-| ---------------------- | --------------------------------------------------- |
-| `MARKET`               | 逐档穿过订单簿，在每个价格级别成交（taker）。        |
-| `MARKET_TO_LIMIT`      | 逐档穿过订单簿，在每个价格级别成交（taker）。        |
-| `LIMIT`                | 撮合时使用订单的限价（maker）。                      |
-| `STOP_MARKET`          | 触发时逐档穿过订单簿。                               |
-| `STOP_LIMIT`           | 触发并撮合时使用订单的限价。                         |
-| `MARKET_IF_TOUCHED`    | 触发时逐档穿过订单簿。                               |
-| `LIMIT_IF_TOUCHED`     | 触发时使用订单的限价。                               |
-| `TRAILING_STOP_MARKET` | 激活并触发时逐档穿过订单簿。                         |
-| `TRAILING_STOP_LIMIT`  | 激活、触发并撮合时使用订单的限价。                   |
+| 订单类型                   | 成交价格                      |
+| ---------------------- | ------------------------- |
+| `MARKET`               | 逐档穿过订单簿，在每个价格级别成交（taker）。 |
+| `MARKET_TO_LIMIT`      | 逐档穿过订单簿，在每个价格级别成交（taker）。 |
+| `LIMIT`                | 撮合时使用订单的限价（maker）。        |
+| `STOP_MARKET`          | 触发时逐档穿过订单簿。               |
+| `STOP_LIMIT`           | 触发并撮合时使用订单的限价。            |
+| `MARKET_IF_TOUCHED`    | 触发时逐档穿过订单簿。               |
+| `LIMIT_IF_TOUCHED`     | 触发时使用订单的限价。               |
+| `TRAILING_STOP_MARKET` | 激活并触发时逐档穿过订单簿。            |
+| `TRAILING_STOP_LIMIT`  | 激活、触发并撮合时使用订单的限价。         |
 
 使用 L2/L3 数据时，如果盘口最优档流动性不足，市价类订单可能跨多个价格级别部分成交。限价类订单在触发后作为等待订单 (resting order)，如果市场未达到限价则可能保持未成交。`MARKET_TO_LIMIT` 先以 taker 成交，然后将剩余数量以其首次成交价格作为限价单等待。
 
@@ -516,17 +517,17 @@ NautilusTrader 在回测期间将历史订单簿和成交数据视为**不可变
 
 仅有盘口最优档数据时，使用同样的订单簿模拟，但订单簿只有单档：
 
-| 订单类型               | 买入成交价格   | 卖出成交价格   |
-| ---------------------- | -------------- | -------------- |
-| `MARKET`               | 最优卖价       | 最优买价       |
-| `MARKET_TO_LIMIT`      | 最优卖价       | 最优买价       |
-| `LIMIT`                | 限价           | 限价           |
-| `STOP_MARKET`          | 最优卖价       | 最优买价       |
-| `STOP_LIMIT`           | 限价           | 限价           |
-| `MARKET_IF_TOUCHED`    | 最优卖价       | 最优买价       |
-| `LIMIT_IF_TOUCHED`     | 限价           | 限价           |
-| `TRAILING_STOP_MARKET` | 最优卖价       | 最优买价       |
-| `TRAILING_STOP_LIMIT`  | 限价           | 限价           |
+| 订单类型                   | 买入成交价格 | 卖出成交价格 |
+| ---------------------- | ------ | ------ |
+| `MARKET`               | 最优卖价   | 最优买价   |
+| `MARKET_TO_LIMIT`      | 最优卖价   | 最优买价   |
+| `LIMIT`                | 限价     | 限价     |
+| `STOP_MARKET`          | 最优卖价   | 最优买价   |
+| `STOP_LIMIT`           | 限价     | 限价     |
+| `MARKET_IF_TOUCHED`    | 最优卖价   | 最优买价   |
+| `LIMIT_IF_TOUCHED`     | 限价     | 限价     |
+| `TRAILING_STOP_MARKET` | 最优卖价   | 最优买价   |
+| `TRAILING_STOP_LIMIT`  | 限价     | 限价     |
 
 使用 L1 数据时，模拟订单簿只有单个价格级别。订单针对该级别的可用数量成交。如果订单在耗尽盘口最优档流动性后仍有剩余数量，市价单和可成交的限价类订单会滑动一个 Tick 来成交剩余部分。
 
@@ -723,10 +724,10 @@ venue_config = BacktestVenueConfig(
 
 使用 L1 数据（报价、成交、K线）时，订单簿每侧只有单个价格级别。当市场穿过一个被动 (MAKER) 限价单的价格时，引擎必须决定在耗尽显示流动性后如何处理订单的剩余数量。
 
-| `liquidity_consumption` | 市场穿过被动限价单时的行为                                          |
-| ----------------------- | ----------------------------------------------------------------- |
-| `False`（默认）         | 以限价成交整个订单。假设市场波动意味着曾存在足够的流动性。         |
-| `True`                  | 仅针对显示流动性成交。订单保持开放以待后续成交。                   |
+| `liquidity_consumption` | 市场穿过被动限价单时的行为                 |
+| ----------------------- | ----------------------------- |
+| `False`（默认）             | 以限价成交整个订单。假设市场波动意味着曾存在足够的流动性。 |
+| `True`                  | 仅针对显示流动性成交。订单保持开放以待后续成交。      |
 
 **示例场景**（`liquidity_consumption=True`）：
 
@@ -871,8 +872,8 @@ venue_config = BacktestVenueConfig(
     oms_type="NETTING",
     account_type="MARGIN",
     starting_balances=["100_000 USD"],
-    trade_execution=True,      # queue_position 的前提条件
-    queue_position=True,       # 启用队列位置追踪
+    trade_execution=True,  # queue_position 的前提条件
+    queue_position=True,  # 启用队列位置追踪
 )
 ```
 
@@ -1093,19 +1094,19 @@ config = BacktestEngineConfig(
 
 #### 可用成交模型
 
-| 模型                         | 描述                                               | 适用场景                              |
-| ---------------------------- | -------------------------------------------------- | ------------------------------------- |
-| `FillModel`                  | 带概率化成交/滑点参数的基础模型。                   | 简单队列位置和滑点模拟。              |
-| `BestPriceFillModel`         | 以最优价格成交，流动性无限。                         | 乐观地测试基本策略逻辑。              |
-| `OneTickSlippageFillModel`   | 对所有订单强制施加恰好 1 个 Tick 的滑点。            | 保守滑点测试。                        |
-| `TwoTierFillModel`           | 最优价格成交 10 张合约，其余差 1 个 Tick 成交。      | 基本市场深度模拟。                    |
-| `ThreeTierFillModel`         | 50/30/20 张合约分布在三个价格档位。                  | 更真实的深度模拟。                    |
-| `ProbabilisticFillModel`     | 50% 概率以最优价格成交，50% 概率差 1 个 Tick。       | 随机化执行质量。                      |
-| `SizeAwareFillModel`         | 根据订单大小（≤10 vs >10）采用不同执行方式。         | 与大小相关的市场冲击。                |
-| `LimitOrderPartialFillModel` | 每次触价最多成交 5 张合约。                          | 通过部分成交模拟队列位置。            |
-| `MarketHoursFillModel`       | 低流动性时段扩大价差。                               | 感知交易时段的执行模拟。              |
-| `VolumeSensitiveFillModel`   | 基于近期成交量决定流动性深度。                       | 成交量自适应深度。                    |
-| `CompetitionAwareFillModel`  | 仅可用可见流动性的一定比例。                         | 多参与者竞争场景。                    |
+| 模型                           | 描述                              | 适用场景          |
+| ---------------------------- | ------------------------------- | ------------- |
+| `FillModel`                  | 带概率化成交/滑点参数的基础模型。               | 简单队列位置和滑点模拟。  |
+| `BestPriceFillModel`         | 以最优价格成交，流动性无限。                  | 乐观地测试基本策略逻辑。  |
+| `OneTickSlippageFillModel`   | 对所有订单强制施加恰好 1 个 Tick 的滑点。       | 保守滑点测试。       |
+| `TwoTierFillModel`           | 最优价格成交 10 张合约，其余差 1 个 Tick 成交。  | 基本市场深度模拟。     |
+| `ThreeTierFillModel`         | 50/30/20 张合约分布在三个价格档位。          | 更真实的深度模拟。     |
+| `ProbabilisticFillModel`     | 50% 概率以最优价格成交，50% 概率差 1 个 Tick。 | 随机化执行质量。      |
+| `SizeAwareFillModel`         | 根据订单大小（≤10 vs >10）采用不同执行方式。     | 与大小相关的市场冲击。   |
+| `LimitOrderPartialFillModel` | 每次触价最多成交 5 张合约。                 | 通过部分成交模拟队列位置。 |
+| `MarketHoursFillModel`       | 低流动性时段扩大价差。                     | 感知交易时段的执行模拟。  |
+| `VolumeSensitiveFillModel`   | 基于近期成交量决定流动性深度。                 | 成交量自适应深度。     |
+| `CompetitionAwareFillModel`  | 仅可用可见流动性的一定比例。                  | 多参与者竞争场景。     |
 
 #### 配置成交模型
 
@@ -1124,9 +1125,9 @@ venue_config = BacktestVenueConfig(
         fill_model_path="nautilus_trader.backtest.models:FillModel",
         config_path="nautilus_trader.backtest.config:FillModelConfig",
         config={
-            "prob_fill_on_limit": 0.2,    # 限价单在价格匹配时成交的概率
-            "prob_slippage": 0.5,         # 1 个 Tick 滑点的概率（仅 L1 数据）
-            "random_seed": 42,            # 可选：设置以获得可复现的结果
+            "prob_fill_on_limit": 0.2,  # 限价单在价格匹配时成交的概率
+            "prob_slippage": 0.5,  # 1 个 Tick 滑点的概率（仅 L1 数据）
+            "random_seed": 42,  # 可选：设置以获得可复现的结果
         },
     ),
 )
@@ -1199,6 +1200,7 @@ from nautilus_trader.model.book import OrderBook, BookOrder
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.core.rust.model import BookType
 
+
 class MyCustomFillModel(FillModel):
     def get_orderbook_for_fill_simulation(
         self,
@@ -1222,22 +1224,22 @@ class MyCustomFillModel(FillModel):
 
 撮合引擎强制执行严格的精度不变量以确保整个成交管道中的数据完整性。所有价格和数量必须匹配金融工具配置的精度（`price_precision` 和 `size_precision`）。不匹配会立即抛出 `RuntimeError`，防止成交数量的静默损坏。
 
-| 数据/操作      | 字段                          | 要求精度                     | 验证位置                    |
-| -------------- | ----------------------------- | ---------------------------- | --------------------------- |
-| `QuoteTick`    | `bid_price`, `ask_price`      | `instrument.price_precision` | `process_quote_tick`        |
-| `QuoteTick`    | `bid_size`, `ask_size`        | `instrument.size_precision`  | `process_quote_tick`        |
-| `TradeTick`    | `price`                       | `instrument.price_precision` | `process_trade_tick`        |
-| `TradeTick`    | `size`                        | `instrument.size_precision`  | `process_trade_tick`        |
-| `Bar`          | `open`, `high`, `low`, `close`| `instrument.price_precision` | `process_bar`               |
-| `Bar`          | `volume`（基础单位）          | `instrument.size_precision`  | `process_bar`               |
-| `Order`        | `quantity`                    | `instrument.size_precision`  | `process_order`             |
-| `Order`        | `price`                       | `instrument.price_precision` | `process_order`             |
-| `Order`        | `trigger_price`               | `instrument.price_precision` | `process_order`             |
-| `Order`        | `activation_price`\*          | `instrument.price_precision` | `process_order`             |
-| 订单更新       | `quantity`                    | `instrument.size_precision`  | `update_order`              |
-| 订单更新       | `price`, `trigger_price`      | `instrument.price_precision` | `update_order`              |
-| 成交           | `fill_qty`                    | `instrument.size_precision`  | `apply_fills`, `fill_order` |
-| 成交           | `fill_px`                     | `instrument.price_precision` | `apply_fills`               |
+| 数据/操作       | 字段                             | 要求精度                         | 验证位置                        |
+| ----------- | ------------------------------ | ---------------------------- | --------------------------- |
+| `QuoteTick` | `bid_price`, `ask_price`       | `instrument.price_precision` | `process_quote_tick`        |
+| `QuoteTick` | `bid_size`, `ask_size`         | `instrument.size_precision`  | `process_quote_tick`        |
+| `TradeTick` | `price`                        | `instrument.price_precision` | `process_trade_tick`        |
+| `TradeTick` | `size`                         | `instrument.size_precision`  | `process_trade_tick`        |
+| `Bar`       | `open`, `high`, `low`, `close` | `instrument.price_precision` | `process_bar`               |
+| `Bar`       | `volume`（基础单位）                 | `instrument.size_precision`  | `process_bar`               |
+| `Order`     | `quantity`                     | `instrument.size_precision`  | `process_order`             |
+| `Order`     | `price`                        | `instrument.price_precision` | `process_order`             |
+| `Order`     | `trigger_price`                | `instrument.price_precision` | `process_order`             |
+| `Order`     | `activation_price`\*           | `instrument.price_precision` | `process_order`             |
+| 订单更新        | `quantity`                     | `instrument.size_precision`  | `update_order`              |
+| 订单更新        | `price`, `trigger_price`       | `instrument.price_precision` | `update_order`              |
+| 成交          | `fill_qty`                     | `instrument.size_precision`  | `apply_fills`, `fill_order` |
+| 成交          | `fill_px`                      | `instrument.price_precision` | `apply_fills`               |
 
 \*`activation_price` 在订单提交后不可变。
 
@@ -1344,7 +1346,7 @@ config = BacktestRunConfig(
 带参数的自定义模型：
 
 ```python
-margin_model=MarginModelConfig(
+margin_model = MarginModelConfig(
     model_type="my_package.my_module:CustomMarginModel",
     config={
         "risk_multiplier": 1.5,

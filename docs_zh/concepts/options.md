@@ -6,13 +6,13 @@ Nautilus 为传统市场和加密市场的期权交易提供一流支持。这�
 
 平台定义了若干期权工具类型：
 
-| 工具                 | 描述                                                                  |
-|----------------------|----------------------------------------------------------------------|
-| `OptionContract`     | 在某标的上交易、带行权价和到期日的交易所挂牌期权。                    |
-| `OptionSpread`       | 交易所定义的多腿期权策略，作为单一标的呈现。                          |
-| `CryptoOption`       | 以加密资产计价/结算的加密期权；反向 (inverse) 或 quanto 风格。        |
-| `CryptoOptionSpread` | 带反向、结算货币和分数化下单数量的加密期权价差。                      |
-| `BinaryOption`       | 结算为 0 或 1 的固定赔付期权。                                        |
+| 工具                   | 描述                                        |
+| -------------------- | ----------------------------------------- |
+| `OptionContract`     | 在某标的上交易、带行权价和到期日的交易所挂牌期权。                 |
+| `OptionSpread`       | 交易所定义的多腿期权策略，作为单一标的呈现。                    |
+| `CryptoOption`       | 以加密资产计价/结算的加密期权；反向 (inverse) 或 quanto 风格。 |
+| `CryptoOptionSpread` | 带反向、结算货币和分数化下单数量的加密期权价差。                  |
+| `BinaryOption`       | 结算为 0 或 1 的固定赔付期权。                        |
 
 与 Greeks 相关的元数据因工具类型而异：
 
@@ -101,12 +101,12 @@ def on_option_chain(self, chain) -> None:
 
 `StrikeRange` 控制链订阅中哪些行权价处于活跃状态：
 
-| 变体          | 描述                                                | 示例                                           |
-|---------------|-----------------------------------------------------|------------------------------------------------|
-| `Fixed`       | 订阅一组明确指定的行权价。                          | `nautilus_pyo3.StrikeRange.fixed([...])`       |
-| `AtmRelative` | 当前 ATM 行权价上下各 N 个行权价。                  | `nautilus_pyo3.StrikeRange.atm_relative(5, 5)` |
-| `AtmPercent`  | ATM 周围某个百分比区间内的所有行权价。             | `nautilus_pyo3.StrikeRange.atm_percent(0.10)`  |
-| `Delta`       | call 或 put delta 接近某目标值的行权价。            | `nautilus_pyo3.StrikeRange.delta(0.25, 0.05)`  |
+| 变体            | 描述                           | 示例                                             |
+| ------------- | ---------------------------- | ---------------------------------------------- |
+| `Fixed`       | 订阅一组明确指定的行权价。                | `nautilus_pyo3.StrikeRange.fixed([...])`       |
+| `AtmRelative` | 当前 ATM 行权价上下各 N 个行权价。        | `nautilus_pyo3.StrikeRange.atm_relative(5, 5)` |
+| `AtmPercent`  | ATM 周围某个百分比区间内的所有行权价。        | `nautilus_pyo3.StrikeRange.atm_percent(0.10)`  |
+| `Delta`       | call 或 put delta 接近某目标值的行权价。 | `nautilus_pyo3.StrikeRange.delta(0.25, 0.05)`  |
 
 对于基于 ATM 的变体，订阅会延迟到 ATM 价格确定之后才进行。
 ATM 由场所提供的 `OptionGreeks` 更新中嵌入的远期价格（`underlying_price`
@@ -334,22 +334,22 @@ flowchart TD
 
 `OptionGreeks` 携带场所为单个期权合约提供的敏感度和隐含波动率：
 
-| 字段               | 类型               | 描述                                               |
-|--------------------|--------------------|----------------------------------------------------|
-| `instrument_id`    | `InstrumentId`     | 这些 Greeks 所适用的期权合约。                     |
-| `convention`       | `GreeksConvention` | Greeks 的计价单位 (numeraire) 约定。               |
-| `delta`            | `float`            | 期权价格对单位标的的变化率。                       |
-| `gamma`            | `float`            | delta 对单位标的的变化率。                         |
-| `vega`             | `float`            | 对隐含波动率变化 1% 的敏感度。                     |
-| `theta`            | `float`            | 每日时间衰减（dV/dt / 365.25）。                   |
-| `rho`              | `float`            | 对利率变化的敏感度。                               |
-| `mark_iv`          | `float` 或 None    | 标记隐含波动率。                                   |
-| `bid_iv`           | `float` 或 None    | 买价隐含波动率。                                   |
-| `ask_iv`           | `float` 或 None    | 卖价隐含波动率。                                   |
-| `underlying_price` | `float` 或 None    | 计算时刻的标的价格。                               |
-| `open_interest`    | `float` 或 None    | 该合约的未平仓量。                                 |
-| `ts_event`         | `int`              | 事件的 UNIX 时间戳（纳秒）。                       |
-| `ts_init`          | `int`              | 初始化时的 UNIX 时间戳（纳秒）。                   |
+| 字段                 | 类型                 | 描述                           |
+| ------------------ | ------------------ | ---------------------------- |
+| `instrument_id`    | `InstrumentId`     | 这些 Greeks 所适用的期权合约。          |
+| `convention`       | `GreeksConvention` | Greeks 的计价单位 (numeraire) 约定。 |
+| `delta`            | `float`            | 期权价格对单位标的的变化率。               |
+| `gamma`            | `float`            | delta 对单位标的的变化率。             |
+| `vega`             | `float`            | 对隐含波动率变化 1% 的敏感度。            |
+| `theta`            | `float`            | 每日时间衰减（dV/dt / 365.25）。      |
+| `rho`              | `float`            | 对利率变化的敏感度。                   |
+| `mark_iv`          | `float` 或 None     | 标记隐含波动率。                     |
+| `bid_iv`           | `float` 或 None     | 买价隐含波动率。                     |
+| `ask_iv`           | `float` 或 None     | 卖价隐含波动率。                     |
+| `underlying_price` | `float` 或 None     | 计算时刻的标的价格。                   |
+| `open_interest`    | `float` 或 None     | 该合约的未平仓量。                    |
+| `ts_event`         | `int`              | 事件的 UNIX 时间戳（纳秒）。            |
+| `ts_init`          | `int`              | 初始化时的 UNIX 时间戳（纳秒）。          |
 
 ## OptionChainSlice 数据类型
 
@@ -357,12 +357,12 @@ flowchart TD
 
 属性：
 
-| 属性         | 类型                 | 描述                                |
-|--------------|----------------------|-------------------------------------|
-| `series_id`  | `OptionSeriesId`     | 期权系列标识符。                    |
-| `atm_strike` | `Price` 或 None      | 当前 ATM 行权价（若已确定）。       |
-| `ts_event`   | `int`                | UNIX 时间戳（纳秒）。               |
-| `ts_init`    | `int`                | UNIX 时间戳（纳秒）。               |
+| 属性           | 类型               | 描述                |
+| ------------ | ---------------- | ----------------- |
+| `series_id`  | `OptionSeriesId` | 期权系列标识符。          |
+| `atm_strike` | `Price` 或 None   | 当前 ATM 行权价（若已确定）。 |
+| `ts_event`   | `int`            | UNIX 时间戳（纳秒）。     |
+| `ts_init`    | `int`            | UNIX 时间戳（纳秒）。     |
 
 call 和 put 数据通过方法访问，而非作为直接属性。
 这些方法返回的每个 `OptionStrikeData` 都包含该行权价的一个 `quote`（`QuoteTick`）
@@ -381,11 +381,11 @@ call 和 put 数据通过方法访问，而非作为直接属性。
 
 以下适配器目前支持期权 Greeks 订阅：
 
-| 适配器  | 逐工具 Greeks | 期权链 |
-|---------|:-------------:|:------:|
-| Deribit | ✓             | ✓      |
-| Bybit   | ✓             | ✓      |
-| OKX     | ✓             | -      |
+| 适配器     | 逐工具 Greeks | 期权链   |
+| ------- | :--------: | :---: |
+| Deribit | ✓          | ✓     |
+| Bybit   | ✓          | ✓     |
+| OKX     | ✓          | -     |
 
 ## 另请参阅
 

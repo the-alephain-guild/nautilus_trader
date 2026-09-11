@@ -18,22 +18,22 @@ DeFi 领域模型位于 `nautilus_model::defi`。
 
 `Chain` 定义目标区块链及其默认服务端点。
 
-| 字段                        | 类型         | 描述                                                               |
-|-----------------------------|--------------|--------------------------------------------------------------------|
-| `name`                      | `Blockchain` | 链枚举值，例如 `Ethereum` 或 `Arbitrum`。                          |
-| `chain_id`                  | `u32`        | EVM 链 ID，例如 Ethereum 为 `1`。                                  |
-| `hypersync_url`             | `String`     | HyperSync 端点，默认为 `https://{chain_id}.hypersync.xyz`。        |
-| `rpc_url`                   | `Option`     | 存储在链模型上的可选直连 RPC 端点。                                |
-| `native_currency_decimals`  | `u8`         | 原生 Gas 代币的小数精度，通常为 `18`。                            |
+| 字段                         | 类型           | 描述                                                   |
+| -------------------------- | ------------ | ---------------------------------------------------- |
+| `name`                     | `Blockchain` | 链枚举值，例如 `Ethereum` 或 `Arbitrum`。                     |
+| `chain_id`                 | `u32`        | EVM 链 ID，例如 Ethereum 为 `1`。                          |
+| `hypersync_url`            | `String`     | HyperSync 端点，默认为 `https://{chain_id}.hypersync.xyz`。 |
+| `rpc_url`                  | `Option`     | 存储在链模型上的可选直连 RPC 端点。                                 |
+| `native_currency_decimals` | `u8`         | 原生 Gas 代币的小数精度，通常为 `18`。                             |
 
 链可以通过数字 ID 使用 `Chain::from_chain_id` 加载，或通过名称使用 `Chain::from_chain_name` 加载。
 
-| 链族                                            | 代码 | 名称         | 小数位 |
-|-------------------------------------------------|------|--------------|--------|
-| Ethereum 及 L2                                  | ETH  | Ethereum     | 18     |
-| Polygon                                         | POL  | Polygon      | 18     |
-| Avalanche                                       | AVAX | Avalanche    | 18     |
-| BSC                                             | BNB  | Binance Coin | 18     |
+| 链族            | 代码   | 名称           | 小数位 |
+| ------------- | ---- | ------------ | --- |
+| Ethereum 及 L2 | ETH  | Ethereum     | 18  |
+| Polygon       | POL  | Polygon      | 18  |
+| Avalanche     | AVAX | Avalanche    | 18  |
+| BSC           | BNB  | Binance Coin | 18  |
 
 ### DEX 与池
 
@@ -48,20 +48,20 @@ Uniswap V3 及兼容的集中流动性池还会使用：
 
 ## 配置
 
-| 选项                              | 默认值             | 描述                                                   |
-|-----------------------------------|--------------------|--------------------------------------------------------|
-| `chain`                           | 必填               | 目标 `Chain`，例如 Ethereum 或 Arbitrum。              |
-| `dex_ids`                         | `[]`               | 要注册并同步的 DEX 集成。                              |
-| `http_rpc_url`                    | 必填               | 用于合约读取和 Multicall 的 HTTP RPC 端点。           |
-| `wss_rpc_url`                     | `None`             | 可选的 WSS RPC 端点，用于 RPC 实时流。                |
-| `rpc_requests_per_second`         | `None`             | 可选的 RPC 请求限流。                                  |
-| `multicall_calls_per_rpc_request` | `200`              | 每个 RPC 请求中请求的最大 Multicall 目标数。          |
-| `use_hypersync_for_live_data`     | Rust 中为 `false`  | 设为 true 时，实时区块和事件流将使用 HyperSync。      |
-| `from_block`                      | `None`             | 可选的历史同步起始区块。                              |
-| `pool_filters`                    | `DexPoolFilters()` | 池范围的过滤规则。                                     |
-| `postgres_cache_database_config`  | `None`             | 可选的 Postgres 缓存配置。                            |
-| `proxy_url`                       | `None`             | 可选的 HTTP 和 WebSocket 代理 URL。                   |
-| `transport_backend`               | `Tungstenite`      | WebSocket 传输后端。                                   |
+| 选项                                | 默认值                | 描述                                 |
+| --------------------------------- | ------------------ | ---------------------------------- |
+| `chain`                           | 必填                 | 目标 `Chain`，例如 Ethereum 或 Arbitrum。 |
+| `dex_ids`                         | `[]`               | 要注册并同步的 DEX 集成。                    |
+| `http_rpc_url`                    | 必填                 | 用于合约读取和 Multicall 的 HTTP RPC 端点。   |
+| `wss_rpc_url`                     | `None`             | 可选的 WSS RPC 端点，用于 RPC 实时流。         |
+| `rpc_requests_per_second`         | `None`             | 可选的 RPC 请求限流。                      |
+| `multicall_calls_per_rpc_request` | `200`              | 每个 RPC 请求中请求的最大 Multicall 目标数。     |
+| `use_hypersync_for_live_data`     | Rust 中为 `false`    | 设为 true 时，实时区块和事件流将使用 HyperSync。   |
+| `from_block`                      | `None`             | 可选的历史同步起始区块。                       |
+| `pool_filters`                    | `DexPoolFilters()` | 池范围的过滤规则。                          |
+| `postgres_cache_database_config`  | `None`             | 可选的 Postgres 缓存配置。                 |
+| `proxy_url`                       | `None`             | 可选的 HTTP 和 WebSocket 代理 URL。       |
+| `transport_backend`               | `Tungstenite`      | WebSocket 传输后端。                    |
 
 :::note
 池快照请求目前需要 Postgres 缓存数据库。内存缓存可以保存代币和池，但最新的池分析器（pool profiler）引导会通过缓存数据库路径读取快照和事件状态。

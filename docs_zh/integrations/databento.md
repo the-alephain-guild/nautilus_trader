@@ -68,27 +68,27 @@ Databento 二进制编码（DBN）是一种针对标准化（Normalization）市
 
 以下 Databento schema 受 NautilusTrader 支持：
 
-| Databento schema                                                              | Nautilus 数据类型                  | 描述                            |
-|:------------------------------------------------------------------------------|:----------------------------------|:--------------------------------|
-| [MBO](https://databento.com/docs/schemas-and-data-formats/mbo)                | `OrderBookDelta`                  | 按订单聚合（L3）。              |
-| [MBP_1](https://databento.com/docs/schemas-and-data-formats/mbp-1)            | `(QuoteTick, TradeTick \| None)`  | 按价格聚合（L1）。              |
-| [MBP_10](https://databento.com/docs/schemas-and-data-formats/mbp-10)          | `OrderBookDepth10`                | 市场深度（L2）。                |
-| [BBO_1S](https://databento.com/docs/schemas-and-data-formats/bbo-1s)          | `QuoteTick`                       | 1 秒最优买卖价。                |
-| [BBO_1M](https://databento.com/docs/schemas-and-data-formats/bbo-1m)          | `QuoteTick`                       | 1 分钟最优买卖价。              |
-| [CMBP_1](https://databento.com/docs/schemas-and-data-formats/cmbp-1)          | `(QuoteTick, TradeTick \| None)`  | 跨交易场所整合的 MBP。          |
-| [CBBO_1S](https://databento.com/docs/schemas-and-data-formats/cbbo-1s)        | `QuoteTick`                       | 整合的 1 秒 BBO。               |
-| [CBBO_1M](https://databento.com/docs/schemas-and-data-formats/cbbo-1m)        | `QuoteTick`                       | 整合的 1 分钟 BBO。             |
-| [TCBBO](https://databento.com/docs/schemas-and-data-formats/tcbbo)            | `(QuoteTick, TradeTick)`          | 交易采样的整合 BBO。            |
-| [TBBO](https://databento.com/docs/schemas-and-data-formats/tbbo)              | `(QuoteTick, TradeTick)`          | 交易采样的最优买卖价。          |
-| [TRADES](https://databento.com/docs/schemas-and-data-formats/trades)          | `TradeTick`                       | 成交 tick。                     |
-| [OHLCV_1S](https://databento.com/docs/schemas-and-data-formats/ohlcv-1s)      | `Bar`                             | 1 秒 K 线。                     |
-| [OHLCV_1M](https://databento.com/docs/schemas-and-data-formats/ohlcv-1m)      | `Bar`                             | 1 分钟 K 线。                   |
-| [OHLCV_1H](https://databento.com/docs/schemas-and-data-formats/ohlcv-1h)      | `Bar`                             | 1 小时 K 线。                   |
-| [OHLCV_1D](https://databento.com/docs/schemas-and-data-formats/ohlcv-1d)      | `Bar`                             | 日 K 线。                       |
-| [DEFINITION](https://databento.com/docs/schemas-and-data-formats/definition)  | `Instrument`（多种类型）           | 金融工具定义。                   |
-| [IMBALANCE](https://databento.com/docs/schemas-and-data-formats/imbalance)    | `DatabentoImbalance`              | 拍卖不平衡数据。                |
-| [STATISTICS](https://databento.com/docs/schemas-and-data-formats/statistics)  | `DatabentoStatistics`             | 市场统计数据。                   |
-| [STATUS](https://databento.com/docs/schemas-and-data-formats/status)          | `InstrumentStatus`                | 市场状态更新。                   |
+| Databento schema                                                             | Nautilus 数据类型                    | 描述            |
+| :--------------------------------------------------------------------------- | :------------------------------- | :------------ |
+| [MBO](https://databento.com/docs/schemas-and-data-formats/mbo)               | `OrderBookDelta`                 | 按订单聚合（L3）。    |
+| [MBP_1](https://databento.com/docs/schemas-and-data-formats/mbp-1)           | `(QuoteTick, TradeTick \| None)` | 按价格聚合（L1）。    |
+| [MBP_10](https://databento.com/docs/schemas-and-data-formats/mbp-10)         | `OrderBookDepth10`               | 市场深度（L2）。     |
+| [BBO_1S](https://databento.com/docs/schemas-and-data-formats/bbo-1s)         | `QuoteTick`                      | 1 秒最优买卖价。     |
+| [BBO_1M](https://databento.com/docs/schemas-and-data-formats/bbo-1m)         | `QuoteTick`                      | 1 分钟最优买卖价。    |
+| [CMBP_1](https://databento.com/docs/schemas-and-data-formats/cmbp-1)         | `(QuoteTick, TradeTick \| None)` | 跨交易场所整合的 MBP。 |
+| [CBBO_1S](https://databento.com/docs/schemas-and-data-formats/cbbo-1s)       | `QuoteTick`                      | 整合的 1 秒 BBO。  |
+| [CBBO_1M](https://databento.com/docs/schemas-and-data-formats/cbbo-1m)       | `QuoteTick`                      | 整合的 1 分钟 BBO。 |
+| [TCBBO](https://databento.com/docs/schemas-and-data-formats/tcbbo)           | `(QuoteTick, TradeTick)`         | 交易采样的整合 BBO。  |
+| [TBBO](https://databento.com/docs/schemas-and-data-formats/tbbo)             | `(QuoteTick, TradeTick)`         | 交易采样的最优买卖价。   |
+| [TRADES](https://databento.com/docs/schemas-and-data-formats/trades)         | `TradeTick`                      | 成交 tick。      |
+| [OHLCV_1S](https://databento.com/docs/schemas-and-data-formats/ohlcv-1s)     | `Bar`                            | 1 秒 K 线。      |
+| [OHLCV_1M](https://databento.com/docs/schemas-and-data-formats/ohlcv-1m)     | `Bar`                            | 1 分钟 K 线。     |
+| [OHLCV_1H](https://databento.com/docs/schemas-and-data-formats/ohlcv-1h)     | `Bar`                            | 1 小时 K 线。     |
+| [OHLCV_1D](https://databento.com/docs/schemas-and-data-formats/ohlcv-1d)     | `Bar`                            | 日 K 线。        |
+| [DEFINITION](https://databento.com/docs/schemas-and-data-formats/definition) | `Instrument`（多种类型）               | 金融工具定义。       |
+| [IMBALANCE](https://databento.com/docs/schemas-and-data-formats/imbalance)   | `DatabentoImbalance`             | 拍卖不平衡数据。      |
+| [STATISTICS](https://databento.com/docs/schemas-and-data-formats/statistics) | `DatabentoStatistics`            | 市场统计数据。       |
+| [STATUS](https://databento.com/docs/schemas-and-data-formats/status)         | `InstrumentStatus`               | 市场状态更新。       |
 
 :::note
 Databento 还提供参考类 schema 的文档，包括公司行为、调整因子和证券主数据。
@@ -140,13 +140,13 @@ CGIF.TITANIUM (110)、IEX Options (108) 和 MEMX MX2 (109)。如果你需要 Nau
 
 Nautilus 订阅方法按如下方式映射到 Databento schema：
 
-| Nautilus 订阅方法                  | 默认 Schema  | 可用的 Databento Schema                                                       | Nautilus 数据类型  |
-|:----------------------------------|:-------------|:-----------------------------------------------------------------------------|:-------------------|
-| `subscribe_quote_ticks()`         | `mbp-1`      | `mbp-1`、`bbo-1s`、`bbo-1m`、`cmbp-1`、`cbbo-1s`、`cbbo-1m`、`tbbo`、`tcbbo` | `QuoteTick`        |
-| `subscribe_trade_ticks()`         | `trades`     | `trades`、`tbbo`、`tcbbo`、`mbp-1`、`cmbp-1`                                  | `TradeTick`        |
-| `subscribe_order_book_depth()`    | `mbp-10`     | `mbp-10`                                                                     | `OrderBookDepth10` |
-| `subscribe_order_book_deltas()`   | `mbo`        | `mbo`                                                                        | `OrderBookDeltas`  |
-| `subscribe_bars()`                | 视情况而定    | `ohlcv-1s`、`ohlcv-1m`、`ohlcv-1h`、`ohlcv-1d`                               | `Bar`              |
+| Nautilus 订阅方法                   | 默认 Schema | 可用的 Databento Schema                                                  | Nautilus 数据类型      |
+| :------------------------------ | :-------- | :-------------------------------------------------------------------- | :----------------- |
+| `subscribe_quote_ticks()`       | `mbp-1`   | `mbp-1`、`bbo-1s`、`bbo-1m`、`cmbp-1`、`cbbo-1s`、`cbbo-1m`、`tbbo`、`tcbbo` | `QuoteTick`        |
+| `subscribe_trade_ticks()`       | `trades`  | `trades`、`tbbo`、`tcbbo`、`mbp-1`、`cmbp-1`                              | `TradeTick`        |
+| `subscribe_order_book_depth()`  | `mbp-10`  | `mbp-10`                                                              | `OrderBookDepth10` |
+| `subscribe_order_book_deltas()` | `mbo`     | `mbo`                                                                 | `OrderBookDeltas`  |
+| `subscribe_bars()`              | 视情况而定     | `ohlcv-1s`、`ohlcv-1m`、`ohlcv-1h`、`ohlcv-1d`                           | `Bar`              |
 
 :::note
 以下示例假设你处于 `Strategy` 或 `Actor` 上下文中，其中 `self` 拥有订阅方法。
@@ -223,7 +223,7 @@ self.subscribe_trade_ticks(
 # 订阅前 10 个层级的市场深度
 self.subscribe_order_book_depth(
     instrument_id=instrument_id,
-    depth=10  # 自动选择 MBP-10 schema
+    depth=10,  # 自动选择 MBP-10 schema
 )
 
 # depth 参数对于 Databento 必须为 10
@@ -236,7 +236,7 @@ self.subscribe_order_book_depth(
 # 订阅完整的订单簿更新（按订单聚合）
 self.subscribe_order_book_deltas(
     instrument_id=instrument_id,
-    book_type=BookType.L3_MBO  # 使用 MBO schema
+    book_type=BookType.L3_MBO,  # 使用 MBO schema
 )
 
 # 在节点启动时进行 MBO 订阅，以便 Databento 能够从会话开始回放
@@ -246,24 +246,16 @@ self.subscribe_order_book_deltas(
 
 ```python
 # 订阅 1 分钟 K 线（自动使用 ohlcv-1m schema）
-self.subscribe_bars(
-    bar_type=BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL")
-)
+self.subscribe_bars(bar_type=BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL"))
 
 # 订阅 1 秒 K 线（自动使用 ohlcv-1s schema）
-self.subscribe_bars(
-    bar_type=BarType.from_str(f"{instrument_id}-1-SECOND-LAST-EXTERNAL")
-)
+self.subscribe_bars(bar_type=BarType.from_str(f"{instrument_id}-1-SECOND-LAST-EXTERNAL"))
 
 # 订阅 1 小时 K 线（自动使用 ohlcv-1h schema）
-self.subscribe_bars(
-    bar_type=BarType.from_str(f"{instrument_id}-1-HOUR-LAST-EXTERNAL")
-)
+self.subscribe_bars(bar_type=BarType.from_str(f"{instrument_id}-1-HOUR-LAST-EXTERNAL"))
 
 # 订阅日 K 线（自动使用 ohlcv-1d schema）
-self.subscribe_bars(
-    bar_type=BarType.from_str(f"{instrument_id}-1-DAY-LAST-EXTERNAL")
-)
+self.subscribe_bars(bar_type=BarType.from_str(f"{instrument_id}-1-DAY-LAST-EXTERNAL"))
 
 # 使用适配器的收盘（end-of-day）覆盖项订阅日 K 线
 self.subscribe_bars(
@@ -296,6 +288,7 @@ self.subscribe_data(
 
 # 订阅金融工具状态更新
 from nautilus_trader.model.data import InstrumentStatus
+
 self.subscribe_data(
     data_type=DataType(InstrumentStatus, metadata={"instrument_id": instrument_id}),
     client_id=DATABENTO_CLIENT_ID,
@@ -367,17 +360,17 @@ Nautilus 数据至少需要两个时间戳（由 `Data` 契约要求）：
 
 Databento 对所有金融工具类别使用单一 schema。解码器会将每一类映射到相应的 Nautilus `Instrument` 类型。
 
-| Databento 金融工具类别    | 代码  | Nautilus 金融工具类型         |
-|--------------------------|-------|------------------------------|
-| Stock                    | `K`   | `Equity`                     |
-| Future                   | `F`   | `FuturesContract`            |
-| Call                     | `C`   | `OptionContract`             |
-| Put                      | `P`   | `OptionContract`             |
-| Future spread            | `S`   | `FuturesSpread`              |
-| Option spread            | `T`   | `OptionSpread`               |
-| Mixed spread             | `M`   | `OptionSpread`               |
-| FX spot                  | `X`   | `CurrencyPair`               |
-| Bond                     | `B`   | 尚未支持                      |
+| Databento 金融工具类别 | 代码  | Nautilus 金融工具类型   |
+| ---------------- | --- | ----------------- |
+| Stock            | `K` | `Equity`          |
+| Future           | `F` | `FuturesContract` |
+| Call             | `C` | `OptionContract`  |
+| Put              | `P` | `OptionContract`  |
+| Future spread    | `S` | `FuturesSpread`   |
+| Option spread    | `T` | `OptionSpread`    |
+| Mixed spread     | `M` | `OptionSpread`    |
+| FX spot          | `X` | `CurrencyPair`    |
+| Bond             | `B` | 尚未支持              |
 
 ### 价格精度
 
@@ -810,19 +803,19 @@ node.build()
 
 ### 配置参数
 
-| 选项                      | 默认值   | 描述                                                                                                                |
-|---------------------------|---------|----------------------------------------------------------------------------------------------------------------------|
-| `api_key`                 | `None`  | Databento API 密钥。为 `None` 时回退到 `DATABENTO_API_KEY` 环境变量。                                                |
-| `http_gateway`            | `None`  | 历史 HTTP 网关覆盖，用于测试自定义端点。                                                                              |
-| `live_gateway`            | `None`  | 原始 TCP 实时网关覆盖，通常仅用于测试。                                                                              |
-| `use_exchange_as_venue`   | `True`  | 使用交易所 MIC 作为 Nautilus 交易场所（例如 `XCME`）。为 `False` 时保留默认的 GLBX 映射。                            |
-| `timeout_initial_load`    | `15.0`  | 在继续之前，等待每个数据集的金融工具定义加载完成的秒数。                                                            |
-| `mbo_subscriptions_delay` | `3.0`   | 启用 MBO/L3 流之前缓冲的秒数，以便初始快照按顺序回放。                                                              |
-| `bars_timestamp_on_close` | `True`  | 在收盘时为 K 线打时间戳（`ts_event`/`ts_init`）。为 `False` 时在开盘时打时间戳。                                    |
-| `reconnect_timeout_mins`  | `10`    | 放弃前尝试重连的分钟数。为 `None` 时无限重试。参见[连接稳定性](#连接稳定性)。                                       |
-| `venue_dataset_map`       | `None`  | Nautilus 交易场所到 Databento 数据集代码的可选映射。                                                                |
-| `parent_symbols`          | `None`  | 可选的 `{dataset: {parent symbols}}`，用于预加载定义树（例如 `{"GLBX.MDP3": {"ES.FUT", "ES.OPT"}}`）。             |
-| `instrument_ids`          | `None`  | 启动时预加载定义的 Nautilus `InstrumentId` 值。                                                                     |
+| 选项                        | 默认值    | 描述                                                                                    |
+| ------------------------- | ------ | ------------------------------------------------------------------------------------- |
+| `api_key`                 | `None` | Databento API 密钥。为 `None` 时回退到 `DATABENTO_API_KEY` 环境变量。                              |
+| `http_gateway`            | `None` | 历史 HTTP 网关覆盖，用于测试自定义端点。                                                               |
+| `live_gateway`            | `None` | 原始 TCP 实时网关覆盖，通常仅用于测试。                                                                |
+| `use_exchange_as_venue`   | `True` | 使用交易所 MIC 作为 Nautilus 交易场所（例如 `XCME`）。为 `False` 时保留默认的 GLBX 映射。                       |
+| `timeout_initial_load`    | `15.0` | 在继续之前，等待每个数据集的金融工具定义加载完成的秒数。                                                          |
+| `mbo_subscriptions_delay` | `3.0`  | 启用 MBO/L3 流之前缓冲的秒数，以便初始快照按顺序回放。                                                       |
+| `bars_timestamp_on_close` | `True` | 在收盘时为 K 线打时间戳（`ts_event`/`ts_init`）。为 `False` 时在开盘时打时间戳。                              |
+| `reconnect_timeout_mins`  | `10`   | 放弃前尝试重连的分钟数。为 `None` 时无限重试。参见[连接稳定性](#连接稳定性)。                                         |
+| `venue_dataset_map`       | `None` | Nautilus 交易场所到 Databento 数据集代码的可选映射。                                                  |
+| `parent_symbols`          | `None` | 可选的 `{dataset: {parent symbols}}`，用于预加载定义树（例如 `{"GLBX.MDP3": {"ES.FUT", "ES.OPT"}}`）。 |
+| `instrument_ids`          | `None` | 启动时预加载定义的 Nautilus `InstrumentId` 值。                                                  |
 
 :::tip
 建议使用环境变量来管理凭证。
@@ -879,11 +872,11 @@ node.build()
 
 Databento 每周日重启其实时网关（所有客户端将断开连接）：
 
-| 数据集              | 维护时间（UTC）    |
-|--------------------|-------------------|
-| CME Globex         | 09:30             |
-| 所有 ICE 交易场所   | 09:45             |
-| 所有其他数据集      | 10:30             |
+| 数据集         | 维护时间（UTC） |
+| ----------- | --------- |
+| CME Globex  | 09:30     |
+| 所有 ICE 交易场所 | 09:45     |
+| 所有其他数据集     | 10:30     |
 
 默认的 10 分钟超时可处理典型的重启。对于无人值守系统，
 使用 `reconnect_timeout_mins=None` 或更长的值。详情参见

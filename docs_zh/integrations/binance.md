@@ -34,12 +34,12 @@ Binance 适配器包含多个组件，可组合使用或单独使用：
 
 ### 产品支持
 
-| 产品类型                                | 支持 | 备注                              |
-|-----------------------------------------|------|-----------------------------------|
-| 现货市场（含 Binance US）               | ✓    |                                   |
-| 保证金账户（全仓和逐仓）                | -    | *尚未实现。* 计划在 v2 版本支持。 |
-| USDT 保证金期货（永续和交割）           | ✓    |                                   |
-| 币本位期货                              | ✓    |                                   |
+| 产品类型               | 支持  | 备注                   |
+| ------------------ | --- | -------------------- |
+| 现货市场（含 Binance US） | ✓   |                      |
+| 保证金账户（全仓和逐仓）       | -   | *尚未实现。* 计划在 v2 版本支持。 |
+| USDT 保证金期货（永续和交割）  | ✓   |                      |
+| 币本位期货              | ✓   |                      |
 
 :::note
 保证金账户功能（借入、归还、逐仓保证金管理）尚未实现。
@@ -69,13 +69,13 @@ Python 适配器不会添加保证金支持。完整的保证金交易支持计�
 
 与 USDT-M 期货逻辑相同，但保证金和盈亏以 **BTC / ETH 等加密货币**计价结算。常见于矿工或长期持币者，无需将资产换成 USDT 即可对冲风险。
 
-| 维度 | 保证金账户 | USDT-M 期货 | 币本位期货 |
-|------|-----------|------------|-----------|
-| 产品性质 | 现货 + 借贷 | 衍生品合约 | 衍生品合约 |
-| 是否持有真实资产 | 是 | 否 | 否 |
-| 保证金 / 结算货币 | 借入的代币 | USDT | BTC / ETH 等 |
-| 持仓成本 | 借款利息（按小时） | 资金费率 | 资金费率 |
-| NautilusTrader 支持 | ❌ 未实现 | ✅ | ✅ |
+| 维度                | 保证金账户     | USDT-M 期货 | 币本位期货       |
+| ----------------- | --------- | --------- | ----------- |
+| 产品性质              | 现货 + 借贷   | 衍生品合约     | 衍生品合约       |
+| 是否持有真实资产          | 是         | 否         | 否           |
+| 保证金 / 结算货币        | 借入的代币     | USDT      | BTC / ETH 等 |
+| 持仓成本              | 借款利息（按小时） | 资金费率      | 资金费率        |
+| NautilusTrader 支持 | ❌ 未实现     | ✅         | ✅           |
 :::
 
 ## 数据类型
@@ -101,57 +101,57 @@ Nautilus 为所有永续合约代码添加 `-PERP` 后缀。例如，Binance Fut
 
 ### 订单类型
 
-| 订单类型               | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                       |
-|------------------------|------|--------|-----------|------------|----------------------------|
-| `MARKET`               | ✓    | -      | ✓         | ✓          | 报价数量支持：仅限现货。   |
-| `LIMIT`                | ✓    | -      | ✓         | ✓          |                            |
-| `STOP_MARKET`          | -    | -      | ✓         | ✓          | 仅限期货。                 |
-| `STOP_LIMIT`           | ✓    | -      | ✓         | ✓          |                            |
-| `MARKET_IF_TOUCHED`    | -    | -      | ✓         | ✓          | 仅限期货。                 |
-| `LIMIT_IF_TOUCHED`     | ✓    | -      | ✓         | ✓          |                            |
-| `TRAILING_STOP_MARKET` | -    | -      | ✓         | ✓          | 仅限期货。                 |
+| 订单类型                   | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注           |
+| ---------------------- | --- | --- | ------- | ----- | ------------ |
+| `MARKET`               | ✓   | -   | ✓       | ✓     | 报价数量支持：仅限现货。 |
+| `LIMIT`                | ✓   | -   | ✓       | ✓     |              |
+| `STOP_MARKET`          | -   | -   | ✓       | ✓     | 仅限期货。        |
+| `STOP_LIMIT`           | ✓   | -   | ✓       | ✓     |              |
+| `MARKET_IF_TOUCHED`    | -   | -   | ✓       | ✓     | 仅限期货。        |
+| `LIMIT_IF_TOUCHED`     | ✓   | -   | ✓       | ✓     |              |
+| `TRAILING_STOP_MARKET` | -   | -   | ✓       | ✓     | 仅限期货。        |
 
 ### 执行指令
 
-| 指令          | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                 |
-|---------------|------|--------|-----------|------------|--------------------------------------|
-| `post_only`   | ✓    | -      | ✓         | ✓          | 请参阅下方限制条件。                 |
-| `reduce_only` | -    | -      | ✓         | ✓          | 仅限期货；对冲模式下禁用。           |
+| 指令            | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注            |
+| ------------- | --- | --- | ------- | ----- | ------------- |
+| `post_only`   | ✓   | -   | ✓       | ✓     | 请参阅下方限制条件。    |
+| `reduce_only` | -   | -   | ✓       | ✓     | 仅限期货；对冲模式下禁用。 |
 
 #### Post-only 限制
 
 仅*限价*订单类型支持 `post_only`。
 
-| 订单类型     | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                                |
-|--------------|------|--------|-----------|------------|-----------------------------------------------------|
-| `LIMIT`      | ✓    | -      | ✓         | ✓          | 现货使用 `LIMIT_MAKER`，期货使用 `GTX` TIF。        |
-| `STOP_LIMIT` | -    | -      | ✓         | ✓          | 仅限期货。                                          |
+| 订单类型         | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                                 |
+| ------------ | --- | --- | ------- | ----- | ---------------------------------- |
+| `LIMIT`      | ✓   | -   | ✓       | ✓     | 现货使用 `LIMIT_MAKER`，期货使用 `GTX` TIF。 |
+| `STOP_LIMIT` | -   | -   | ✓       | ✓     | 仅限期货。                              |
 
 ### 有效期
 
-| 有效期 | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                       |
-|--------|------|--------|-----------|------------|--------------------------------------------|
-| `GTC`  | ✓    | -      | ✓         | ✓          | 撤销前有效（Good Till Canceled）。         |
-| `GTD`  | ✓*   | -      | ✓         | ✓          | *现货会转换为 GTC 并发出警告。            |
-| `FOK`  | ✓    | -      | ✓         | ✓          | 全部成交或取消（Fill or Kill）。          |
-| `IOC`  | ✓    | -      | ✓         | ✓          | 立即成交或取消（Immediate or Cancel）。   |
+| 有效期   | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                            |
+| ----- | --- | --- | ------- | ----- | ----------------------------- |
+| `GTC` | ✓   | -   | ✓       | ✓     | 撤销前有效（Good Till Canceled）。    |
+| `GTD` | ✓*  | -   | ✓       | ✓     | *现货会转换为 GTC 并发出警告。            |
+| `FOK` | ✓   | -   | ✓       | ✓     | 全部成交或取消（Fill or Kill）。        |
+| `IOC` | ✓   | -   | ✓       | ✓     | 立即成交或取消（Immediate or Cancel）。 |
 
 ### 高级订单功能
 
-| 功能       | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                       |
-|------------|------|--------|-----------|------------|--------------------------------------------|
-| 订单修改   | ✓    | -      | ✓         | ✓          | 仅支持 `LIMIT` 订单的价格和数量修改。      |
-| OCO 订单   | ✓    | -      | -         | -          | 现货 OCO 通过 `orderList/oco` 提交。       |
-| Bracket 订单 | -  | -      | -         | -          | *计划中*。当前在提交时被拒绝。            |
-| 冰山订单   | ✓    | -      | ✓         | ✓          | 将大额订单拆分为可见部分。                |
+| 功能         | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                            |
+| ---------- | --- | --- | ------- | ----- | ----------------------------- |
+| 订单修改       | ✓   | -   | ✓       | ✓     | 仅支持 `LIMIT` 订单的价格和数量修改。       |
+| OCO 订单     | ✓   | -   | -       | -     | 现货 OCO 通过 `orderList/oco` 提交。 |
+| Bracket 订单 | -   | -   | -       | -     | *计划中*。当前在提交时被拒绝。              |
+| 冰山订单       | ✓   | -   | ✓       | ✓     | 将大额订单拆分为可见部分。                 |
 
 ### 批量操作
 
-| 操作     | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                       |
-|----------|------|--------|-----------|------------|--------------------------------------------|
-| 批量提交 | ✓    | -      | ✓         | ✓          | 订单逐个提交（无批量 API 调用）。          |
-| 批量修改 | -    | -      | -         | -          | 尚未实现。                                 |
-| 批量取消 | -*   | -      | ✓         | ✓          | *现货回退为逐个取消。                      |
+| 操作   | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                  |
+| ---- | --- | --- | ------- | ----- | ------------------- |
+| 批量提交 | ✓   | -   | ✓       | ✓     | 订单逐个提交（无批量 API 调用）。 |
+| 批量修改 | -   | -   | -       | -     | 尚未实现。               |
+| 批量取消 | -*  | -   | ✓       | ✓     | *现货回退为逐个取消。         |
 
 #### 取消全部订单的行为
 
@@ -163,27 +163,27 @@ Nautilus 为所有永续合约代码添加 `-PERP` 后缀。例如，Binance Fut
 
 **使用的端点**：
 
-| 账户类型     | 常规订单                        | algo 订单（批量）                | algo 订单（逐个）           |
-|--------------|---------------------------------|----------------------------------|-----------------------------|
+| 账户类型    | 常规订单                            | algo 订单（批量）                      | algo 订单（逐个）                 |
+| ------- | ------------------------------- | -------------------------------- | --------------------------- |
 | 现货/保证金  | `DELETE /api/v3/openOrders`     | N/A                              | N/A                         |
-| USDT 期货    | `DELETE /fapi/v1/allOpenOrders` | `DELETE /fapi/v1/algoOpenOrders` | `DELETE /fapi/v1/algoOrder` |
+| USDT 期货 | `DELETE /fapi/v1/allOpenOrders` | `DELETE /fapi/v1/algoOpenOrders` | `DELETE /fapi/v1/algoOrder` |
 | 币本位期货   | `DELETE /dapi/v1/allOpenOrders` | `DELETE /dapi/v1/algoOpenOrders` | `DELETE /dapi/v1/algoOrder` |
 
 ### 持仓管理
 
-| 功能         | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                  |
-|--------------|------|--------|-----------|------------|---------------------------------------|
-| 查询持仓     | -    | -      | ✓         | ✓          | 实时持仓更新。                        |
-| 持仓模式     | -    | -      | ✓         | ✓          | 单向 vs 对冲模式（持仓 ID）。         |
-| 杠杆控制     | -    | -      | ✓         | ✓          | 按交易对动态调整杠杆。                |
-| 保证金模式   | -    | -      | ✓         | ✓          | 按交易对设置全仓 vs 逐仓保证金。      |
+| 功能    | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                 |
+| ----- | --- | --- | ------- | ----- | ------------------ |
+| 查询持仓  | -   | -   | ✓       | ✓     | 实时持仓更新。            |
+| 持仓模式  | -   | -   | ✓       | ✓     | 单向 vs 对冲模式（持仓 ID）。 |
+| 杠杆控制  | -   | -   | ✓       | ✓     | 按交易对动态调整杠杆。        |
+| 保证金模式 | -   | -   | ✓       | ✓     | 按交易对设置全仓 vs 逐仓保证金。 |
 
 ### 风险事件
 
-| 功能       | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                  |
-|------------|------|--------|-----------|------------|---------------------------------------|
-| 强平处理   | -    | -      | ✓         | ✓          | 交易所强制平仓。                      |
-| ADL 处理   | -    | -      | ✓         | ✓          | 自动减仓（Auto-Deleveraging）事件。   |
+| 功能     | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                         |
+| ------ | --- | --- | ------- | ----- | -------------------------- |
+| 强平处理   | -   | -   | ✓       | ✓     | 交易所强制平仓。                   |
+| ADL 处理 | -   | -   | ✓       | ✓     | 自动减仓（Auto-Deleveraging）事件。 |
 
 Binance Futures 可能在响应风险事件时触发交易所生成的订单：
 
@@ -220,30 +220,30 @@ Binance Futures 可能在响应风险事件时触发交易所生成的订单：
 
 ### 订单查询
 
-| 功能         | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                  |
-|--------------|------|--------|-----------|------------|---------------------------------------|
-| 查询未完成订单 | ✓  | ✓      | ✓         | ✓          | 列出所有活跃订单。                    |
-| 查询订单历史 | ✓    | ✓      | ✓         | ✓          | 历史订单数据。                        |
-| 订单状态更新 | ✓    | ✓      | ✓         | ✓          | 实时订单状态变更。                    |
-| 成交历史     | ✓    | ✓      | ✓         | ✓          | 执行和成交报告。                      |
+| 功能      | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注        |
+| ------- | --- | --- | ------- | ----- | --------- |
+| 查询未完成订单 | ✓   | ✓   | ✓       | ✓     | 列出所有活跃订单。 |
+| 查询订单历史  | ✓   | ✓   | ✓       | ✓     | 历史订单数据。   |
+| 订单状态更新  | ✓   | ✓   | ✓       | ✓     | 实时订单状态变更。 |
+| 成交历史    | ✓   | ✓   | ✓       | ✓     | 执行和成交报告。  |
 
 ### 关联订单（Contingent orders）
 
-| 功能         | 现货 | 保证金 | USDT 期货 | 币本位期货 | 备注                                       |
-|--------------|------|--------|-----------|------------|--------------------------------------------|
-| 订单列表     | ✓    | -      | ✓         | ✓          | 现货 OCO 列表；期货为独立批次。           |
-| OCO 订单     | ✓    | -      | -         | -          | 仅限现货，通过 `orderList/oco`。          |
-| Bracket 订单 | -    | -      | -         | -          | *计划中*。当前在提交时被拒绝。            |
-| 条件订单     | ✓    | ✓      | ✓         | ✓          | 停损（stop）和触价（market-if-touched）订单。 |
+| 功能         | 现货  | 保证金 | USDT 期货 | 币本位期货 | 备注                                |
+| ---------- | --- | --- | ------- | ----- | --------------------------------- |
+| 订单列表       | ✓   | -   | ✓       | ✓     | 现货 OCO 列表；期货为独立批次。                |
+| OCO 订单     | ✓   | -   | -       | -     | 仅限现货，通过 `orderList/oco`。          |
+| Bracket 订单 | -   | -   | -       | -     | *计划中*。当前在提交时被拒绝。                  |
+| 条件订单       | ✓   | ✓   | ✓       | ✓     | 停损（stop）和触价（market-if-touched）订单。 |
 
 ### 订单参数
 
 在调用 `Strategy.submit_order`（Python）时提供 `params` 字典，或在 `SubmitOrder` 命令上设置 `Params`（Rust），即可自定义单个订单。Binance 执行客户端识别以下参数：
 
-| 参数             | 类型   | 账户类型          | 描述 |
-|------------------|--------|-------------------|------|
-| `price_match`    | `str`  | USDT/COIN 期货    | 设置 Binance 的 `priceMatch` 模式之一（参见下方价格匹配部分），将价格选择委托给交易所。不能与 `post_only` 或冰山（`display_qty`）指令组合使用。 |
-| `close_position` | `bool` | USDT/COIN 期货    | 触发时平掉整个持仓（参见下方平仓部分）。仅对 `StopMarket` 和 `MarketIfTouched` 订单有效。不能与 `reduce_only` 组合使用。 |
+| 参数               | 类型     | 账户类型         | 描述                                                                                               |
+| ---------------- | ------ | ------------ | ------------------------------------------------------------------------------------------------ |
+| `price_match`    | `str`  | USDT/COIN 期货 | 设置 Binance 的 `priceMatch` 模式之一（参见下方价格匹配部分），将价格选择委托给交易所。不能与 `post_only` 或冰山（`display_qty`）指令组合使用。 |
+| `close_position` | `bool` | USDT/COIN 期货 | 触发时平掉整个持仓（参见下方平仓部分）。仅对 `StopMarket` 和 `MarketIfTouched` 订单有效。不能与 `reduce_only` 组合使用。             |
 
 ### 价格匹配
 
@@ -253,16 +253,16 @@ Binance Futures 通过 `priceMatch` 参数支持 BBO（最优买卖报价）价�
 
 #### 有效的价格匹配值
 
-| 值            | 行为                                                           |
-|---------------|----------------------------------------------------------------|
-| `OPPONENT`    | 加入订单簿对手方的最优价格。                                  |
-| `OPPONENT_5`  | 加入对手方价格，但允许最多 5 个 tick 的偏移。                |
-| `OPPONENT_10` | 加入对手方价格，但允许最多 10 个 tick 的偏移。               |
-| `OPPONENT_20` | 加入对手方价格，但允许最多 20 个 tick 的偏移。               |
-| `QUEUE`       | 加入同方向的最优价格（保持 maker）。                          |
-| `QUEUE_5`     | 加入同方向队列，但偏移最多 5 个 tick。                       |
-| `QUEUE_10`    | 加入同方向队列，但偏移最多 10 个 tick。                      |
-| `QUEUE_20`    | 加入同方向队列，但偏移最多 20 个 tick。                      |
+| 值             | 行为                           |
+| ------------- | ---------------------------- |
+| `OPPONENT`    | 加入订单簿对手方的最优价格。               |
+| `OPPONENT_5`  | 加入对手方价格，但允许最多 5 个 tick 的偏移。  |
+| `OPPONENT_10` | 加入对手方价格，但允许最多 10 个 tick 的偏移。 |
+| `OPPONENT_20` | 加入对手方价格，但允许最多 20 个 tick 的偏移。 |
+| `QUEUE`       | 加入同方向的最优价格（保持 maker）。        |
+| `QUEUE_5`     | 加入同方向队列，但偏移最多 5 个 tick。      |
+| `QUEUE_10`    | 加入同方向队列，但偏移最多 10 个 tick。     |
+| `QUEUE_20`    | 加入同方向队列，但偏移最多 20 个 tick。     |
 
 :::info
 更多详情请参阅[官方文档](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api)。
@@ -445,7 +445,9 @@ from nautilus_trader.model import ClientId
 
 # 在你的 `on_start` 方法中
 self.subscribe_data(
-    data_type=DataType(BinanceFuturesMarkPriceUpdate, metadata={"instrument_id": self.instrument.id}),
+    data_type=DataType(
+        BinanceFuturesMarkPriceUpdate, metadata={"instrument_id": self.instrument.id}
+    ),
     client_id=ClientId("BINANCE"),
 )
 ```
@@ -519,42 +521,42 @@ Python 适配器通过 `BinanceFuturesMarkPriceUpdate` 自定义数据订阅暴�
 
 #### 现货
 
-| Binance 状态       | MarketStatusAction         |
-|--------------------|----------------------------|
-| Trading            | Trading                    |
-| EndOfDay           | Close                      |
-| Halt               | Halt                       |
-| Break              | Pause                      |
-| NonRepresentable   | NotAvailableForTrading     |
+| Binance 状态       | MarketStatusAction     |
+| ---------------- | ---------------------- |
+| Trading          | Trading                |
+| EndOfDay         | Close                  |
+| Halt             | Halt                   |
+| Break            | Pause                  |
+| NonRepresentable | NotAvailableForTrading |
 
 #### 期货（USD-M）
 
-| Binance 状态       | MarketStatusAction         |
-|--------------------|----------------------------|
-| Trading            | Trading                    |
-| PendingTrading     | PreOpen                    |
-| PreTrading         | PreOpen                    |
-| PostTrading        | PostClose                  |
-| EndOfDay           | Close                      |
-| Halt               | Halt                       |
-| AuctionMatch       | Cross                      |
-| Break              | Pause                      |
+| Binance 状态     | MarketStatusAction |
+| -------------- | ------------------ |
+| Trading        | Trading            |
+| PendingTrading | PreOpen            |
+| PreTrading     | PreOpen            |
+| PostTrading    | PostClose          |
+| EndOfDay       | Close              |
+| Halt           | Halt               |
+| AuctionMatch   | Cross              |
+| Break          | Pause              |
 
 #### 期货（COIN-M）
 
-| Binance 状态       | MarketStatusAction         |
-|--------------------|----------------------------|
-| Trading            | Trading                    |
-| PendingTrading     | PreOpen                    |
-| PreDelivering      | PreClose                   |
-| Delivering         | Close                      |
-| Delivered          | Close                      |
-| PreSettle          | PreClose                   |
-| Settling           | Close                      |
-| Close              | Close                      |
-| PreDelisting       | PreClose                   |
-| Delisting          | Suspend                    |
-| Down               | NotAvailableForTrading     |
+| Binance 状态     | MarketStatusAction     |
+| -------------- | ---------------------- |
+| Trading        | Trading                |
+| PendingTrading | PreOpen                |
+| PreDelivering  | PreClose               |
+| Delivering     | Close                  |
+| Delivered      | Close                  |
+| PreSettle      | PreClose               |
+| Settling       | Close                  |
+| Close          | Close                  |
+| PreDelisting   | PreClose               |
+| Delisting      | Suspend                |
+| Down           | NotAvailableForTrading |
 
 :::note
 只有在连接时处于可交易状态的金融工具才会被跟踪。在连接时处于非交易状态的交易代码（例如连接时处于停牌状态）不会出现在金融工具缓存中，因此不会监控它们的状态转换。
@@ -568,34 +570,34 @@ Binance 使用基于时间间隔的速率限制系统，按固定时间窗口（
 
 以下是所有端点共享的主要限制：
 
-| 账户类型     | 权重限制 | 时间间隔 |
-|--------------|----------|----------|
-| 现货/保证金  | 6,000    | 1 分钟   |
-| 期货         | 2,400    | 1 分钟   |
+| 账户类型   | 权重限制  | 时间间隔 |
+| ------ | ----- | ---- |
+| 现货/保证金 | 6,000 | 1 分钟 |
+| 期货     | 2,400 | 1 分钟 |
 
 ### 端点权重成本
 
 某些端点每次请求的权重成本更高：
 
-| 端点                      | 权重   | 备注                                   |
-|---------------------------|--------|----------------------------------------|
-| `/api/v3/order`           | 1      | 现货下单。                             |
-| `/api/v3/allOrders`       | 20     | 现货历史订单（开销大）。               |
-| `/api/v3/klines`          | 2+     | 随 `limit` 参数缩放。                  |
-| `/fapi/v1/order`          | 1      | 期货下单。                             |
-| `/fapi/v1/allOrders`      | 20     | 期货历史订单（开销大）。               |
-| `/fapi/v1/commissionRate` | 20     | 期货手续费率查询。                     |
-| `/fapi/v1/klines`         | 5+     | 随 `limit` 参数缩放。                  |
+| 端点                        | 权重  | 备注              |
+| ------------------------- | --- | --------------- |
+| `/api/v3/order`           | 1   | 现货下单。           |
+| `/api/v3/allOrders`       | 20  | 现货历史订单（开销大）。    |
+| `/api/v3/klines`          | 2+  | 随 `limit` 参数缩放。 |
+| `/fapi/v1/order`          | 1   | 期货下单。           |
+| `/fapi/v1/allOrders`      | 20  | 期货历史订单（开销大）。    |
+| `/fapi/v1/commissionRate` | 20  | 期货手续费率查询。       |
+| `/fapi/v1/klines`         | 5+  | 随 `limit` 参数缩放。 |
 
 ### WebSocket API 限制
 
 WebSocket API（用于用户数据流）与 REST API 共享相同的权重配额：
 
-| 限制类型         | 值     | 备注                                  |
-|------------------|--------|---------------------------------------|
-| 请求权重         | 共享   | 计入 REST API 权重配额。              |
-| 握手             | 5      | 每次连接尝试的权重成本。              |
-| Ping/pong 帧     | 5/秒   | 最大 ping/pong 速率。                 |
+| 限制类型        | 值   | 备注                |
+| ----------- | --- | ----------------- |
+| 请求权重        | 共享  | 计入 REST API 权重配额。 |
+| 握手          | 5   | 每次连接尝试的权重成本。      |
+| Ping/pong 帧 | 5/秒 | 最大 ping/pong 速率。  |
 
 ### 适配器行为
 
@@ -623,54 +625,54 @@ WebSocket API（用于用户数据流）与 REST API 共享相同的权重配额
 
 ### 数据客户端配置选项
 
-| 选项                               | 默认值    | 描述 |
-|------------------------------------|-----------|-------------|
-| `venue`                            | `BINANCE` | 注册客户端时使用的交易场所标识符。 |
-| `api_key`                          | `None`    | Binance API 密钥（API key）；省略时从环境变量加载。 |
-| `api_secret`                       | `None`    | Binance API secret；省略时从环境变量加载。 |
-| `key_type`                         | `HMAC`    | **已弃用**：密钥类型现在会从 API secret 格式中自动检测。仅在需要强制 `RSA` 时使用。 |
-| `account_type`                     | `SPOT`    | 数据端点的账户类型（现货、保证金、USDT 期货、币本位期货）。 |
-| `base_url_http`                    | `None`    | HTTP REST 基础 URL 覆盖。 |
-| `base_url_ws`                      | `None`    | WebSocket 基础 URL 覆盖。 |
-| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `us`                               | `False`   | 为 `True` 时将请求路由到 Binance US 端点。 |
-| `environment`                      | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。 |
-| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。 |
-| `use_agg_trade_ticks`              | `False`   | 为 `True` 时订阅聚合交易 tick 而非原始交易。期货 WebSocket 订阅始终使用 `@aggTrade`，无论此标志如何。 |
+| 选项                                 | 默认值       | 描述                                                                          |
+| ---------------------------------- | --------- | --------------------------------------------------------------------------- |
+| `venue`                            | `BINANCE` | 注册客户端时使用的交易场所标识符。                                                           |
+| `api_key`                          | `None`    | Binance API 密钥（API key）；省略时从环境变量加载。                                         |
+| `api_secret`                       | `None`    | Binance API secret；省略时从环境变量加载。                                              |
+| `key_type`                         | `HMAC`    | **已弃用**：密钥类型现在会从 API secret 格式中自动检测。仅在需要强制 `RSA` 时使用。                       |
+| `account_type`                     | `SPOT`    | 数据端点的账户类型（现货、保证金、USDT 期货、币本位期货）。                                            |
+| `base_url_http`                    | `None`    | HTTP REST 基础 URL 覆盖。                                                        |
+| `base_url_ws`                      | `None`    | WebSocket 基础 URL 覆盖。                                                        |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                               |
+| `us`                               | `False`   | 为 `True` 时将请求路由到 Binance US 端点。                                             |
+| `environment`                      | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。                  |
+| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。                                                             |
+| `use_agg_trade_ticks`              | `False`   | 为 `True` 时订阅聚合交易 tick 而非原始交易。期货 WebSocket 订阅始终使用 `@aggTrade`，无论此标志如何。       |
 | `spot_market_data_mode`            | `Sbe`     | *仅限 Rust。* 现货市场数据传输方式（`Sbe` 或 `Json`）。参见[现货市场数据模式](#spot-market-data-mode)。 |
-| `instrument_status_poll_secs`      | `3600`    | *仅限 Rust。* 轮询 exchange info 以检测金融工具状态变更的间隔（秒）。设为 `0` 可禁用。 |
-| `transport_backend`                | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。 |
+| `instrument_status_poll_secs`      | `3600`    | *仅限 Rust。* 轮询 exchange info 以检测金融工具状态变更的间隔（秒）。设为 `0` 可禁用。                   |
+| `transport_backend`                | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。                                                  |
 
 ### 执行客户端配置选项
 
-| 选项                                    | 默认值    | 描述 |
-|-----------------------------------------|-----------|-------------|
-| `venue`                                 | `BINANCE` | 注册客户端时使用的交易场所标识符。 |
-| `api_key`                               | `None`    | Binance API 密钥；省略时从环境变量加载。 |
-| `api_secret`                            | `None`    | Binance API secret；省略时从环境变量加载。 |
+| 选项                                      | 默认值       | 描述                                                                       |
+| --------------------------------------- | --------- | ------------------------------------------------------------------------ |
+| `venue`                                 | `BINANCE` | 注册客户端时使用的交易场所标识符。                                                        |
+| `api_key`                               | `None`    | Binance API 密钥；省略时从环境变量加载。                                               |
+| `api_secret`                            | `None`    | Binance API secret；省略时从环境变量加载。                                           |
 | `key_type`                              | `HMAC`    | **已弃用**：密钥类型现在会从 API secret 格式中自动检测。仅在需要强制 `RSA` 时使用（仅限数据客户端，执行不支持 RSA）。 |
-| `account_type`                          | `SPOT`    | 下单的账户类型（现货、保证金、USDT 期货、币本位期货）。 |
-| `base_url_http`                         | `None`    | HTTP REST 基础 URL 覆盖。 |
-| `base_url_ws`                           | `None`    | WebSocket API 基础 URL 覆盖。 |
-| `base_url_ws_stream`                    | `None`    | WebSocket 流 URL 覆盖（期货用户数据事件交付）。 |
-| `proxy_url`                             | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `us`                                    | `False`   | 为 `True` 时将请求路由到 Binance US 端点。 |
-| `environment`                           | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。 |
-| `use_gtd`                               | `True`    | 为 `False` 时将 GTD 订单重映射为 GTC 以进行本地到期管理。 |
-| `use_reduce_only`                       | `True`    | 为 `True` 时将 `reduce_only` 指令传递给 Binance。 |
-| `use_position_ids`                      | `True`    | 启用 Binance 对冲持仓 ID；设为 `False` 使用虚拟对冲。 |
-| `use_trade_lite`                        | `False`   | 使用包含衍生费用的 TRADE_LITE 执行事件。 |
-| `treat_expired_as_canceled`             | `False`   | 为 `True` 时将 `EXPIRED` 执行类型视为 `CANCELED`。 |
-| `recv_window_ms`                        | `5,000`   | 签名 REST 请求的接收窗口（毫秒）。 |
-| `max_retries`                           | `None`    | 订单提交/取消/修改调用的最大重试次数。 |
-| `retry_delay_initial_ms`                | `None`    | 重试尝试之间的初始延迟（毫秒）。 |
-| `retry_delay_max_ms`                    | `None`    | 重试尝试之间的最大延迟（毫秒）。 |
-| `futures_leverages`                     | `None`    | 期货账户的 `BinanceSymbol` 到初始杠杆的映射。 |
-| `futures_margin_types`                  | `None`    | `BinanceSymbol` 到期货保证金类型（逐仓/全仓）的映射。 |
-| `use_ws_trading`                        | `True`    | 对订单操作使用 WebSocket 交易 API（现货和 USD-M 期货）。为 `False` 时使用 HTTP。 |
-| `default_taker_fee`                     | `0.0004`  | 用于交易所生成成交（强平、ADL、结算）手续费估算的默认 taker 费率。 |
-| `log_rejected_due_post_only_as_warning` | `True`    | 为 `True` 时将 post-only 拒绝记录为警告；否则记录为错误。 |
-| `transport_backend`                     | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。 |
+| `account_type`                          | `SPOT`    | 下单的账户类型（现货、保证金、USDT 期货、币本位期货）。                                           |
+| `base_url_http`                         | `None`    | HTTP REST 基础 URL 覆盖。                                                     |
+| `base_url_ws`                           | `None`    | WebSocket API 基础 URL 覆盖。                                                 |
+| `base_url_ws_stream`                    | `None`    | WebSocket 流 URL 覆盖（期货用户数据事件交付）。                                          |
+| `proxy_url`                             | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                            |
+| `us`                                    | `False`   | 为 `True` 时将请求路由到 Binance US 端点。                                          |
+| `environment`                           | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。               |
+| `use_gtd`                               | `True`    | 为 `False` 时将 GTD 订单重映射为 GTC 以进行本地到期管理。                                   |
+| `use_reduce_only`                       | `True`    | 为 `True` 时将 `reduce_only` 指令传递给 Binance。                                 |
+| `use_position_ids`                      | `True`    | 启用 Binance 对冲持仓 ID；设为 `False` 使用虚拟对冲。                                    |
+| `use_trade_lite`                        | `False`   | 使用包含衍生费用的 TRADE_LITE 执行事件。                                               |
+| `treat_expired_as_canceled`             | `False`   | 为 `True` 时将 `EXPIRED` 执行类型视为 `CANCELED`。                                 |
+| `recv_window_ms`                        | `5,000`   | 签名 REST 请求的接收窗口（毫秒）。                                                     |
+| `max_retries`                           | `None`    | 订单提交/取消/修改调用的最大重试次数。                                                     |
+| `retry_delay_initial_ms`                | `None`    | 重试尝试之间的初始延迟（毫秒）。                                                         |
+| `retry_delay_max_ms`                    | `None`    | 重试尝试之间的最大延迟（毫秒）。                                                         |
+| `futures_leverages`                     | `None`    | 期货账户的 `BinanceSymbol` 到初始杠杆的映射。                                          |
+| `futures_margin_types`                  | `None`    | `BinanceSymbol` 到期货保证金类型（逐仓/全仓）的映射。                                      |
+| `use_ws_trading`                        | `True`    | 对订单操作使用 WebSocket 交易 API（现货和 USD-M 期货）。为 `False` 时使用 HTTP。               |
+| `default_taker_fee`                     | `0.0004`  | 用于交易所生成成交（强平、ADL、结算）手续费估算的默认 taker 费率。                                   |
+| `log_rejected_due_post_only_as_warning` | `True`    | 为 `True` 时将 post-only 拒绝记录为警告；否则记录为错误。                                   |
+| `transport_backend`                     | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。                                               |
 
 最常见的用例是配置一个带有 Binance 数据和执行客户端的实盘 `TradingNode`。在你的客户端配置中添加 `BINANCE` 部分：
 
@@ -726,10 +728,10 @@ node.build()
 
 `spot_market_data_mode`（Rust 的 `BinanceDataClientConfig`）用于选择现货数据传输方式。它仅影响现货；期货不受影响。
 
-| 模式   | 凭证               | 报价         |
-|--------|--------------------|--------------|
-| `Sbe`  | Ed25519（必需）    | `bestBidAsk` |
-| `Json` | 无（公开）         | `bookTicker` |
+| 模式     | 凭证          | 报价           |
+| ------ | ----------- | ------------ |
+| `Sbe`  | Ed25519（必需） | `bestBidAsk` |
+| `Json` | 无（公开）       | `bookTicker` |
 
 `Sbe`（默认）使用 Binance 的 Simple Binary Encoding 流，并需要 Ed25519 密钥（参见[密钥类型](#key-types)）；如果没有这些密钥，客户端将拒绝连接。`Json` 使用公开流，无需凭证。完整的现货 `BookDeltas` 订阅在 `Sbe` 模式下使用 25ms 的 SBE 增量深度流，或在 `Json` 模式下使用 100ms 的公开 JSON 增量深度流，并配合 REST 快照同步。显式深度订阅使用部分订单簿快照（参见[订单簿](#order-books)）。
 
@@ -743,11 +745,11 @@ Binance 支持三种 API 密钥类型：**Ed25519**、**HMAC-SHA256** 和 **RSA*
 
 **强烈推荐使用 Ed25519。** Binance 推荐 Ed25519，因为它具有更优的性能和安全性。NautilusTrader 的未来版本将仅支持 Ed25519。
 
-| 密钥类型 | 数据客户端 | 执行客户端 | 状态 |
-|----------|------------|------------|--------|
-| Ed25519  | ✓          | ✓          | **推荐** |
-| HMAC     | ✓          | ✓          | 已弃用，将在未来版本中移除。 |
-| RSA      | ✓          | -          | 已弃用，执行不支持。 |
+| 密钥类型    | 数据客户端 | 执行客户端 | 状态             |
+| ------- | ----- | ----- | -------------- |
+| Ed25519 | ✓     | ✓     | **推荐**         |
+| HMAC    | ✓     | ✓     | 已弃用，将在未来版本中移除。 |
+| RSA     | ✓     | -     | 已弃用，执行不支持。     |
 
 :::tip
 现在就切换到 Ed25519 密钥。生成一个 Ed25519 密钥对并在 Binance 注册。参见下方的[生成 Ed25519 密钥](#generating-ed25519-keys)。
@@ -833,11 +835,11 @@ export BINANCE_API_SECRET="$(cat binance_ed25519_private.pem)"
 
 Binance 提供三种交易环境，每种都有独立的 API 凭证和端点。`environment` 配置选项用于选择使用哪一种。
 
-| 环境        | 配置                    | 描述                                                                  |
-|-------------|-------------------------|-----------------------------------------------------------------------|
-| **Live**    | `environment="LIVE"`    | 使用真实资金的生产环境交易（默认）。                                  |
-| **Demo**    | `environment="DEMO"`    | 使用模拟的现货和期货资金进行模拟交易。                                |
-| **Testnet** | `environment="TESTNET"` | 旧版的现货和期货测试网络。                                            |
+| 环境          | 配置                      | 描述                  |
+| ----------- | ----------------------- | ------------------- |
+| **Live**    | `environment="LIVE"`    | 使用真实资金的生产环境交易（默认）。  |
+| **Demo**    | `environment="DEMO"`    | 使用模拟的现货和期货资金进行模拟交易。 |
+| **Testnet** | `environment="TESTNET"` | 旧版的现货和期货测试网络。       |
 
 #### Live（生产环境）
 
@@ -852,10 +854,10 @@ config = BinanceExecClientConfig(
 )
 ```
 
-| 变量                 | 描述               |
-|----------------------|--------------------|
-| `BINANCE_API_KEY`    | 实盘 API 密钥。    |
-| `BINANCE_API_SECRET` | 实盘 API secret。  |
+| 变量                   | 描述             |
+| -------------------- | -------------- |
+| `BINANCE_API_KEY`    | 实盘 API 密钥。     |
+| `BINANCE_API_SECRET` | 实盘 API secret。 |
 
 #### Demo 交易
 
@@ -867,14 +869,14 @@ config = BinanceExecClientConfig(
 2. 前往 **API Management** 并创建一个 demo API 密钥。
 3. Demo 密钥可用于现货和期货的 demo 端点。
 
-| 端点           | URL                           |
-|----------------|-------------------------------|
-| 现货 HTTP      | `demo-api.binance.com`        |
-| 现货 WS        | `demo-stream.binance.com`     |
-| USD-M HTTP     | `demo-fapi.binance.com`       |
-| USD-M WS       | `demo-fstream.binance.com`    |
-| COIN-M HTTP    | `demo-dapi.binance.com`       |
-| COIN-M WS      | `demo-dstream.binance.com`    |
+| 端点          | URL                        |
+| ----------- | -------------------------- |
+| 现货 HTTP     | `demo-api.binance.com`     |
+| 现货 WS       | `demo-stream.binance.com`  |
+| USD-M HTTP  | `demo-fapi.binance.com`    |
+| USD-M WS    | `demo-fstream.binance.com` |
+| COIN-M HTTP | `demo-dapi.binance.com`    |
+| COIN-M WS   | `demo-dstream.binance.com` |
 
 ```python
 config = BinanceExecClientConfig(
@@ -885,10 +887,10 @@ config = BinanceExecClientConfig(
 )
 ```
 
-| 变量                      | 描述             |
-|---------------------------|------------------|
-| `BINANCE_DEMO_API_KEY`    | Demo API 密钥。  |
-| `BINANCE_DEMO_API_SECRET` | Demo API secret。|
+| 变量                        | 描述               |
+| ------------------------- | ---------------- |
+| `BINANCE_DEMO_API_KEY`    | Demo API 密钥。     |
+| `BINANCE_DEMO_API_SECRET` | Demo API secret。 |
 
 #### Testnet
 
@@ -911,12 +913,12 @@ config = BinanceExecClientConfig(
 )
 ```
 
-| 变量                                 | 描述                                               |
-|--------------------------------------|----------------------------------------------------|
-| `BINANCE_TESTNET_API_KEY`            | 现货测试网 API 密钥。                              |
-| `BINANCE_TESTNET_API_SECRET`         | 现货测试网 API secret。                            |
-| `BINANCE_FUTURES_TESTNET_API_KEY`    | 期货测试网 API 密钥。                              |
-| `BINANCE_FUTURES_TESTNET_API_SECRET` | 期货测试网 API secret。                            |
+| 变量                                   | 描述                |
+| ------------------------------------ | ----------------- |
+| `BINANCE_TESTNET_API_KEY`            | 现货测试网 API 密钥。     |
+| `BINANCE_TESTNET_API_SECRET`         | 现货测试网 API secret。 |
+| `BINANCE_FUTURES_TESTNET_API_KEY`    | 期货测试网 API 密钥。     |
+| `BINANCE_FUTURES_TESTNET_API_SECRET` | 期货测试网 API secret。 |
 
 :::note
 测试网凭证与你的实盘账户完全分离。市场数据和流动性与生产环境不同。
@@ -939,7 +941,7 @@ Binance 提供聚合交易数据端点作为交易的替代数据源。与默认
 ```python
 from nautilus_trader.adapters.binance import BinanceInstrumentProviderConfig
 
-instrument_provider=BinanceInstrumentProviderConfig(
+instrument_provider = BinanceInstrumentProviderConfig(
     load_all=True,
     query_commission_rates=True,  # 按交易对查询精确费率
 )
@@ -962,7 +964,7 @@ instrument_provider=BinanceInstrumentProviderConfig(
 ```python
 from nautilus_trader.config import InstrumentProviderConfig
 
-instrument_provider=InstrumentProviderConfig(
+instrument_provider = InstrumentProviderConfig(
     load_all=True,
     log_warnings=False,
 )
@@ -1000,7 +1002,7 @@ Binance Futures 对冲模式允许在同一金融工具上同时持有多头和�
                 base_url_ws=None,  # 使用自定义端点覆盖
                 use_reduce_only=False,  # 对冲模式必须禁用
             ),
-        }
+        },
     )
     ```
 
@@ -1008,7 +1010,8 @@ Binance Futures 对冲模式允许在同一金融工具上同时持有多头和�
 
     ```python
     class EMACrossHedgeMode(Strategy):
-        ...,  # 省略
+        (...,)  # 省略
+
         def buy(self) -> None:
             order: MarketOrder = self.order_factory.market(
                 instrument_id=self.instrument_id,

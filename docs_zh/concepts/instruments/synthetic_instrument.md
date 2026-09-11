@@ -6,16 +6,16 @@
 
 ## 字段 (Fields)
 
-| 字段              | Rust 类型           | Python 类型          | 必填/默认值      | 说明                                       |
-|-------------------|---------------------|----------------------|------------------|--------------------------------------------|
-| `symbol`          | `Symbol`            | `Symbol`             | 必填             | 与场所 `SYNTH` 搭配使用的合成符号。        |
-| `id`              | `InstrumentId`      | `InstrumentId`       | 派生             | 由 `symbol.SYNTH` 构成的工具 ID。          |
-| `price_precision` | `u8`                | `int`                | 必填             | 合成价格允许的小数位数。                   |
-| `price_increment` | `Price`             | `Price`              | 派生             | 由精度推导出的最小价格步长。               |
-| `components`      | `Vec<InstrumentId>` | `list[InstrumentId]` | 必填             | 公式所使用的成分工具。                     |
-| `formula`         | `String`            | `str`                | 必填             | 基于成分 ID 的数值表达式。                 |
-| `ts_event`        | `UnixNanos`         | `int`                | 必填             | 事件时间戳（纳秒）。                       |
-| `ts_init`         | `UnixNanos`         | `int`                | 必填             | 初始化时间戳（纳秒）。                     |
+| 字段                | Rust 类型             | Python 类型            | 必填/默认值 | 说明                         |
+| ----------------- | ------------------- | -------------------- | ------ | -------------------------- |
+| `symbol`          | `Symbol`            | `Symbol`             | 必填     | 与场所 `SYNTH` 搭配使用的合成符号。     |
+| `id`              | `InstrumentId`      | `InstrumentId`       | 派生     | 由 `symbol.SYNTH` 构成的工具 ID。 |
+| `price_precision` | `u8`                | `int`                | 必填     | 合成价格允许的小数位数。               |
+| `price_increment` | `Price`             | `Price`              | 派生     | 由精度推导出的最小价格步长。             |
+| `components`      | `Vec<InstrumentId>` | `list[InstrumentId]` | 必填     | 公式所使用的成分工具。                |
+| `formula`         | `String`            | `str`                | 必填     | 基于成分 ID 的数值表达式。            |
+| `ts_event`        | `UnixNanos`         | `int`                | 必填     | 事件时间戳（纳秒）。                 |
+| `ts_init`         | `UnixNanos`         | `int`                | 必填     | 初始化时间戳（纳秒）。                |
 
 *注意：Python 由 `symbol` 和 `SYNTH` 场所构造工具 ID。Rust 将同一个值存储为 `id`。*
 

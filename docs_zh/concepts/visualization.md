@@ -100,17 +100,17 @@ create_tearsheet(
 
 报告页可以包含以下内置图表的任意组合：
 
-| 图表名称            | 类型          | 描述                                                      |
-|--------------------|--------------|----------------------------------------------------------|
-| `run_info`         | 表格          | 运行元数据和账户余额。                                      |
-| `stats_table`      | 表格          | 绩效统计数据（盈亏、收益率、通用指标）。                       |
-| `equity`           | 折线图        | 随时间变化的累计收益率，可选基准对比。                         |
-| `drawdown`         | 面积图        | 从权益曲线 (equity curve) 峰值的回撤 (drawdown) 百分比。     |
-| `monthly_returns`  | 热力图        | 按年份组织的月度组合收益率百分比。                            |
-| `distribution`     | 直方图        | 单次收益值的分布情况。                                       |
-| `rolling_sharpe`   | 折线图        | 60 天滚动夏普比率。                                         |
-| `yearly_returns`   | 柱状图        | 年度收益率百分比。                                           |
-| `bars_with_fills`  | K线图         | 价格 K线 (bar)（OHLC）叠加订单 (order) 成交标记。           |
+| 图表名称              | 类型  | 描述                                         |
+| ----------------- | --- | ------------------------------------------ |
+| `run_info`        | 表格  | 运行元数据和账户余额。                                |
+| `stats_table`     | 表格  | 绩效统计数据（盈亏、收益率、通用指标）。                       |
+| `equity`          | 折线图 | 随时间变化的累计收益率，可选基准对比。                        |
+| `drawdown`        | 面积图 | 从权益曲线 (equity curve) 峰值的回撤 (drawdown) 百分比。 |
+| `monthly_returns` | 热力图 | 按年份组织的月度组合收益率百分比。                          |
+| `distribution`    | 直方图 | 单次收益值的分布情况。                                |
+| `rolling_sharpe`  | 折线图 | 60 天滚动夏普比率。                                |
+| `yearly_returns`  | 柱状图 | 年度收益率百分比。                                  |
+| `bars_with_fills` | K线图 | 价格 K线 (bar)（OHLC）叠加订单 (order) 成交标记。        |
 
 所有图表都注册在图表注册表中，并通过 `TearsheetConfig.charts` 里的图表对象进行配置（每个图表对象映射到一个内置图表名称）。
 
@@ -161,12 +161,12 @@ create_tearsheet(
 
 主题控制图表的视觉样式，包括颜色、字体和背景。NautilusTrader 提供四个内置主题：
 
-| 主题名称          | 描述                                    | 使用场景                   |
-|-----------------|----------------------------------------|---------------------------|
-| `plotly_white`  | 简洁的浅色主题，深灰色标题。                | 默认，专业报告。            |
-| `plotly_dark`   | 深色背景，标准 Plotly 配色。               | 低光环境。                  |
-| `nautilus`      | NautilusTrader 品牌配色的浅色主题。        | 官方浅色模式。              |
-| `nautilus_dark` | 青色/蓝绿色特征配色的深色主题。             | 官方深色模式。              |
+| 主题名称            | 描述                        | 使用场景     |
+| --------------- | ------------------------- | -------- |
+| `plotly_white`  | 简洁的浅色主题，深灰色标题。            | 默认，专业报告。 |
+| `plotly_dark`   | 深色背景，标准 Plotly 配色。        | 低光环境。    |
+| `nautilus`      | NautilusTrader 品牌配色的浅色主题。 | 官方浅色模式。  |
+| `nautilus_dark` | 青色/蓝绿色特征配色的深色主题。          | 官方深色模式。  |
 
 ### 选择主题
 
@@ -188,18 +188,18 @@ register_theme(
     name="corporate",
     template="plotly_white",  # 基础 Plotly 模板
     colors={
-        "primary": "#003366",      # 海军蓝
-        "positive": "#2e8b57",     # 海绿色
-        "negative": "#c41e3a",     # 红衣主教红
-        "neutral": "#808080",      # 灰色
-        "background": "#ffffff",   # 白色
-        "grid": "#e5e5e5",         # 浅灰色
+        "primary": "#003366",  # 海军蓝
+        "positive": "#2e8b57",  # 海绿色
+        "negative": "#c41e3a",  # 红衣主教红
+        "neutral": "#808080",  # 灰色
+        "background": "#ffffff",  # 白色
+        "grid": "#e5e5e5",  # 浅灰色
         # 可选的表格颜色（省略时将提供默认值）
         "table_section": "#e5e5e5",
         "table_row_odd": "#f8f8f8",
         "table_row_even": "#ffffff",
         "table_text": "#000000",
-    }
+    },
 )
 
 # 使用自定义主题
@@ -242,16 +242,16 @@ config = TearsheetConfig(
 
 ### 配置参数
 
-| 参数                 | 类型                           | 默认值                             | 描述                                           |
-|---------------------|-------------------------------|-----------------------------------|-----------------------------------------------|
-| `charts`            | `list[TearsheetChart]`        | 所有内置图表                        | 要包含的图表对象列表（按顺序）。                   |
-| `theme`             | `str`                         | `"plotly_white"`                  | 样式主题名称。                                   |
-| `layout`            | `GridLayout`                  | `None`（自动计算）                  | 自定义子图网格布局。                              |
-| `title`             | `str`                         | 自动生成（含策略/时间）               | 报告页标题。                                     |
-| `include_benchmark` | `bool`                        | `True`                            | 提供基准时是否显示。                              |
-| `benchmark_name`    | `str`                         | `"Benchmark"`                     | 基准的显示名称。                                  |
-| `height`            | `int`                         | `1500`                            | 总高度（像素）。                                  |
-| `show_logo`         | `bool`                        | `True`                            | 显示 NautilusTrader 标志（预留供将来使用）。        |
+| 参数                  | 类型                     | 默认值              | 描述                             |
+| ------------------- | ---------------------- | ---------------- | ------------------------------ |
+| `charts`            | `list[TearsheetChart]` | 所有内置图表           | 要包含的图表对象列表（按顺序）。               |
+| `theme`             | `str`                  | `"plotly_white"` | 样式主题名称。                        |
+| `layout`            | `GridLayout`           | `None`（自动计算）     | 自定义子图网格布局。                     |
+| `title`             | `str`                  | 自动生成（含策略/时间）     | 报告页标题。                         |
+| `include_benchmark` | `bool`                 | `True`           | 提供基准时是否显示。                     |
+| `benchmark_name`    | `str`                  | `"Benchmark"`    | 基准的显示名称。                       |
+| `height`            | `int`                  | `1500`           | 总高度（像素）。                       |
+| `show_logo`         | `bool`                 | `True`           | 显示 NautilusTrader 标志（预留供将来使用）。 |
 
 当 `layout` 为 `None` 时，网格维度和行高根据图表数量自动计算。对于 8 个图表（默认值），使用 4x2 网格，行高为 `[0.50, 0.22, 0.16, 0.12]`，为顶行表格提供更多空间。
 
@@ -265,6 +265,7 @@ config = TearsheetConfig(
 from nautilus_trader.analysis.tearsheet import register_chart
 import plotly.graph_objects as go
 
+
 def my_custom_chart(returns, output_path=None, title="Custom Chart", theme="plotly_white"):
     """
     创建自定义可视化。
@@ -277,13 +278,15 @@ def my_custom_chart(returns, output_path=None, title="Custom Chart", theme="plot
 
     # 创建可视化
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=returns.index,
-        y=returns.cumsum(),
-        mode="lines",
-        name="Custom Metric",
-        line={"color": theme_config["colors"]["primary"]},
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=returns.index,
+            y=returns.cumsum(),
+            mode="lines",
+            name="Custom Metric",
+            line={"color": theme_config["colors"]["primary"]},
+        )
+    )
 
     fig.update_layout(
         title=title,
@@ -296,6 +299,7 @@ def my_custom_chart(returns, output_path=None, title="Custom Chart", theme="plot
         fig.write_html(output_path)
 
     return fig
+
 
 # 注册图表以供独立使用（通过 `get_chart()` / `list_charts()`）
 register_chart("my_custom", my_custom_chart)
@@ -315,6 +319,7 @@ from nautilus_trader.analysis import TearsheetCustomChart
 from nautilus_trader.analysis import TearsheetEquityChart
 from nautilus_trader.analysis import TearsheetStatsTableChart
 from nautilus_trader.analysis.tearsheet import _register_tearsheet_chart
+
 
 def _render_my_metric(fig, row, col, returns, theme_config, **kwargs):
     """
@@ -351,6 +356,7 @@ def _render_my_metric(fig, row, col, returns, theme_config, **kwargs):
 
     fig.update_xaxes(title_text="Date", row=row, col=col)
     fig.update_yaxes(title_text="Volatility (%)", row=row, col=col)
+
 
 # 注册以在报告页中使用
 _register_tearsheet_chart(
@@ -429,12 +435,14 @@ create_tearsheet_from_stats(
 ```python
 from nautilus_trader.analysis.statistic import PortfolioStatistic
 
+
 class MyCustomStatistic(PortfolioStatistic):
     """用于专业策略分析的自定义指标。"""
 
     def calculate_from_returns(self, returns):
         # 你的计算逻辑
         return custom_metric_value
+
 
 # 注册到分析器
 analyzer.register_statistic(MyCustomStatistic())

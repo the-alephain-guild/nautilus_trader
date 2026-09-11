@@ -129,32 +129,32 @@ Betfair 作为博彩交易所运营，与传统金融交易所相比具有独特
 
 ### 订单类型
 
-| 订单类型               | 支持 | 说明                              |
-|------------------------|------|-----------------------------------|
-| `MARKET`               | ✓*   | Python 将常规市价订单映射为激进的 `LIMIT`；Rust 仅支持 BSP 的 `AT_THE_CLOSE`。 |
-| `LIMIT`                | ✓    | 以特定赔率下单。                  |
-| `STOP_MARKET`          | -    | *不支持*。                        |
-| `STOP_LIMIT`           | -    | *不支持*。                        |
-| `MARKET_IF_TOUCHED`    | -    | *不支持*。                        |
-| `LIMIT_IF_TOUCHED`     | -    | *不支持*。                        |
-| `TRAILING_STOP_MARKET` | -    | *不支持*。                        |
+| 订单类型                   | 支持  | 说明                                                          |
+| ---------------------- | --- | ----------------------------------------------------------- |
+| `MARKET`               | ✓*  | Python 将常规市价订单映射为激进的 `LIMIT`；Rust 仅支持 BSP 的 `AT_THE_CLOSE`。 |
+| `LIMIT`                | ✓   | 以特定赔率下单。                                                    |
+| `STOP_MARKET`          | -   | *不支持*。                                                      |
+| `STOP_LIMIT`           | -   | *不支持*。                                                      |
+| `MARKET_IF_TOUCHED`    | -   | *不支持*。                                                      |
+| `LIMIT_IF_TOUCHED`     | -   | *不支持*。                                                      |
+| `TRAILING_STOP_MARKET` | -   | *不支持*。                                                      |
 
 ### 执行指令
 
-| 指令          | 支持 | 说明                              |
-|---------------|------|-----------------------------------|
-| `post_only`   | -    | 不适用于博彩交易所。              |
-| `reduce_only` | -    | 不适用于博彩交易所。              |
+| 指令            | 支持  | 说明         |
+| ------------- | --- | ---------- |
+| `post_only`   | -   | 不适用于博彩交易所。 |
+| `reduce_only` | -   | 不适用于博彩交易所。 |
 
 ### 有效时间选项
 
-| 有效时间      | 支持 | 说明                                      |
-|---------------|------|-------------------------------------------|
-| `GTC`         | ✓    | 映射为 Betfair 的 `PERSIST` 持久化模式。  |
-| `GTD`         | -    | *不支持*。                                |
-| `DAY`         | ✓    | 映射为 Betfair 的 `LAPSE` 持久化模式。    |
-| `FOK`         | ✓    | 映射为 Betfair 的 `FILL_OR_KILL`。        |
-| `IOC`         | ✓    | 映射为允许部分成交的 `FILL_OR_KILL`。     |
+| 有效时间  | 支持  | 说明                             |
+| ----- | --- | ------------------------------ |
+| `GTC` | ✓   | 映射为 Betfair 的 `PERSIST` 持久化模式。 |
+| `GTD` | -   | *不支持*。                         |
+| `DAY` | ✓   | 映射为 Betfair 的 `LAPSE` 持久化模式。   |
+| `FOK` | ✓   | 映射为 Betfair 的 `FILL_OR_KILL`。  |
+| `IOC` | ✓   | 映射为允许部分成交的 `FILL_OR_KILL`。     |
 
 :::note
 Betfair 使用持久化模型而非传统的有效时间机制。适配器将 `FOK` 映射为
@@ -167,63 +167,63 @@ Betfair 的 `LIMIT_ON_CLOSE` 指令。
 
 ### 高级订单功能
 
-| 功能             | 支持 | 说明                                    |
-|------------------|------|-----------------------------------------|
-| 订单修改         | ✓    | 仅限于不改变风险敞口的字段。            |
-| 括号/OCO 订单    | -    | *不支持*。                              |
-| 冰山订单         | -    | *不支持*。                              |
+| 功能        | 支持  | 说明             |
+| --------- | --- | -------------- |
+| 订单修改      | ✓   | 仅限于不改变风险敞口的字段。 |
+| 括号/OCO 订单 | -   | *不支持*。         |
+| 冰山订单      | -   | *不支持*。         |
 
 ### 批量操作
 
-| 操作             | 支持 | 说明                 |
-|------------------|------|----------------------|
-| 批量提交         | ✓    | Python 和 Rust 均支持 `SubmitOrderList`。 |
-| 批量修改         | -    | *不支持*。           |
-| 批量撤销         | ✓    | Python 和 Rust 均支持批量撤单请求。 |
+| 操作   | 支持  | 说明                                   |
+| ---- | --- | ------------------------------------ |
+| 批量提交 | ✓   | Python 和 Rust 均支持 `SubmitOrderList`。 |
+| 批量修改 | -   | *不支持*。                               |
+| 批量撤销 | ✓   | Python 和 Rust 均支持批量撤单请求。             |
 
 ### 持仓管理
 
-| 功能              | 支持 | 说明                                  |
-|-------------------|------|---------------------------------------|
-| 查询持仓          | -    | 博彩交易所模型不同。                  |
-| 持仓模式          | -    | 不适用于博彩交易所。                  |
-| 杠杆控制          | -    | 博彩交易所无杠杆。                    |
-| 保证金模式        | -    | 博彩交易所无保证金。                  |
+| 功能    | 支持  | 说明         |
+| ----- | --- | ---------- |
+| 查询持仓  | -   | 博彩交易所模型不同。 |
+| 持仓模式  | -   | 不适用于博彩交易所。 |
+| 杠杆控制  | -   | 博彩交易所无杠杆。  |
+| 保证金模式 | -   | 博彩交易所无保证金。 |
 
 ### 订单查询
 
-| 功能               | 支持 | 说明                                  |
-|--------------------|------|---------------------------------------|
-| 查询活跃订单       | ✓    | 列出所有活跃投注。                    |
-| 查询订单历史       | ✓    | 历史投注数据。                        |
-| 订单状态更新       | ✓    | 实时投注状态变更。                    |
-| 交易历史           | ✓    | 投注撮合和结算报告。                  |
+| 功能     | 支持  | 说明         |
+| ------ | --- | ---------- |
+| 查询活跃订单 | ✓   | 列出所有活跃投注。  |
+| 查询订单历史 | ✓   | 历史投注数据。    |
+| 订单状态更新 | ✓   | 实时投注状态变更。  |
+| 交易历史   | ✓   | 投注撮合和结算报告。 |
 
 ### 条件订单
 
-| 功能              | 支持 | 说明                                  |
-|-------------------|------|---------------------------------------|
-| 订单列表          | -    | *不支持*。                            |
-| OCO 订单          | -    | *不支持*。                            |
-| 括号订单          | -    | *不支持*。                            |
-| 条件订单          | -    | 仅支持基本投注条件。                  |
+| 功能     | 支持  | 说明         |
+| ------ | --- | ---------- |
+| 订单列表   | -   | *不支持*。     |
+| OCO 订单 | -   | *不支持*。     |
+| 括号订单   | -   | *不支持*。     |
+| 条件订单   | -   | 仅支持基本投注条件。 |
 
 ## Tick 方案与定价
 
 Betfair 使用分层 tick 方案，不同价格区间的增量各不相同：
 
-| 价格区间        | Tick 大小 |
-|-----------------|-----------|
-| 1.01 - 2.00     | 0.01      |
-| 2.00 - 3.00     | 0.02      |
-| 3.00 - 4.00     | 0.05      |
-| 4.00 - 6.00     | 0.10      |
-| 6.00 - 10.00    | 0.20      |
-| 10.00 - 20.00   | 0.50      |
-| 20.00 - 30.00   | 1.00      |
-| 30.00 - 50.00   | 2.00      |
-| 50.00 - 100.00  | 5.00      |
-| 100.00 - 1000.00 | 10.00    |
+| 价格区间             | Tick 大小 |
+| ---------------- | ------- |
+| 1.01 - 2.00      | 0.01    |
+| 2.00 - 3.00      | 0.02    |
+| 3.00 - 4.00      | 0.05    |
+| 4.00 - 6.00      | 0.10    |
+| 6.00 - 10.00     | 0.20    |
+| 10.00 - 20.00    | 0.50    |
+| 20.00 - 30.00    | 1.00    |
+| 30.00 - 50.00    | 2.00    |
+| 50.00 - 100.00   | 5.00    |
+| 100.00 - 1000.00 | 10.00   |
 
 最低价格为 1.01，最高价格为 1000.00。
 
@@ -276,11 +276,11 @@ Python 还会在 `check_cache_against_order_image` 中进行全量镜像对账�
 
 当 `ignore_external_orders=True` 时，Python 适配器会跳过缓存中未找到的订单和成交：
 
-| 场景                           | 描述                                                |
-|--------------------------------|-----------------------------------------------------|
-| 流更新中的未知订单             | 不存在场所订单 ID 到客户端订单 ID 的映射。          |
-| 全量镜像中的未知订单           | 镜像同步期间在缓存中未找到该订单。                  |
-| 全量镜像中的未知成交           | 同步期间该成交与任何已知订单都不匹配。              |
+| 场景         | 描述                        |
+| ---------- | ------------------------- |
+| 流更新中的未知订单  | 不存在场所订单 ID 到客户端订单 ID 的映射。 |
+| 全量镜像中的未知订单 | 镜像同步期间在缓存中未找到该订单。         |
+| 全量镜像中的未知成交 | 同步期间该成交与任何已知订单都不匹配。       |
 
 :::info
 对于共享同一 Betfair 账户的多节点设置，请同时设置 `stream_market_ids_filter`（仅限您自己的市场）
@@ -305,21 +305,21 @@ Python 还会在 `check_cache_against_order_image` 中进行全量镜像对账�
 
 适配器使用相互独立的速率限制桶，使账户状态轮询和对账不会对下单造成节流：
 
-| 桶      | 默认值 | 端点                                                 | 可配置                           |
-|---------|--------|------------------------------------------------------|----------------------------------|
-| General | 5/s    | 账户状态、对账、保活。                               |                                  |
-| Orders  | 20/s   | `placeOrders`、`replaceOrders`、`cancelOrders`。     | `order_request_rate_per_second`。 |
+| 桶       | 默认值  | 端点                                            | 可配置                              |
+| ------- | ---- | --------------------------------------------- | -------------------------------- |
+| General | 5/s  | 账户状态、对账、保活。                                   |                                  |
+| Orders  | 20/s | `placeOrders`、`replaceOrders`、`cancelOrders`。 | `order_request_rate_per_second`。 |
 
 订单状态和成交报告查询在遇到 `TOO_MANY_REQUESTS` 错误时，会在延迟 1 秒后重试一次；
 订单操作则会带着错误消息直接拒绝。
 
 Betfair 实际的 API 限制更为细致：
 
-| 类别                     | 限制                 | 说明                                                 |
-|--------------------------|----------------------|------------------------------------------------------|
-| 订单操作                 | 1,000 笔事务/s       | `placeOrders`、`cancelOrders`、`replaceOrders` 跨所有指令的总和。 |
-| 订单投影查询             | 3 个并发             | `listMarketBook`（带 `OrderProjection`）、`listCurrentOrders`、`listMarketProfitAndLoss`。 |
-| 最佳实践                 | 5 请求/s             | 推荐每个市场上 `listMarketBook` 的请求频率。         |
+| 类别     | 限制          | 说明                                                                                   |
+| ------ | ----------- | ------------------------------------------------------------------------------------ |
+| 订单操作   | 1,000 笔事务/s | `placeOrders`、`cancelOrders`、`replaceOrders` 跨所有指令的总和。                               |
+| 订单投影查询 | 3 个并发       | `listMarketBook`（带 `OrderProjection`）、`listCurrentOrders`、`listMarketProfitAndLoss`。 |
+| 最佳实践   | 5 请求/s      | 推荐每个市场上 `listMarketBook` 的请求频率。                                                      |
 
 :::info
 有关速率限制的详情，请参阅 [Why am I receiving the TOO_MANY_REQUESTS error?](https://support.developer.betfair.com/hc/en-us/articles/360000406111)
@@ -336,54 +336,54 @@ Betfair 适配器提供若干通过市场流传递的自定义数据类型。
 
 某个投注选项的实时 ticker 数据。
 
-| 字段                  | 类型    | 描述                            |
-|-----------------------|---------|---------------------------------|
-| `instrument_id`       | str     | Nautilus 金融工具标识符。        |
-| `last_traded_price`   | float   | 最近撮合价格（赔率）。           |
-| `traded_volume`       | float   | 累计撮合成交量。                 |
-| `starting_price_near` | float   | 近端 BSP 指标。                  |
-| `starting_price_far`  | float   | 远端 BSP 指标。                  |
+| 字段                    | 类型    | 描述                |
+| --------------------- | ----- | ----------------- |
+| `instrument_id`       | str   | Nautilus 金融工具标识符。 |
+| `last_traded_price`   | float | 最近撮合价格（赔率）。       |
+| `traded_volume`       | float | 累计撮合成交量。          |
+| `starting_price_near` | float | 近端 BSP 指标。        |
+| `starting_price_far`  | float | 远端 BSP 指标。        |
 
 ### BetfairStartingPrice
 
 市场收盘后实现的 Betfair 起始价格（Betfair Starting Price, BSP）。
 
-| 字段            | 类型  | 描述                            |
-|-----------------|-------|---------------------------------|
-| `instrument_id` | str   | Nautilus 金融工具标识符。        |
-| `bsp`           | float | 最终起始价格（赔率）。           |
+| 字段              | 类型    | 描述                |
+| --------------- | ----- | ----------------- |
+| `instrument_id` | str   | Nautilus 金融工具标识符。 |
+| `bsp`           | float | 最终起始价格（赔率）。       |
 
 ### BetfairRaceRunnerData
 
 单匹赛马的实时 GPS 跟踪数据（Total Performance Data）。
 适用于受支持的英国和爱尔兰赛事。
 
-| 字段               | 类型  | 描述                                    |
-|--------------------|-------|-----------------------------------------|
-| `race_id`          | str   | Betfair 赛事标识符。                    |
-| `market_id`        | str   | Betfair 市场标识符。                    |
-| `selection_id`     | int   | Betfair 选项（参赛者）标识符。          |
-| `latitude`         | float | GPS 纬度。                              |
-| `longitude`        | float | GPS 经度。                              |
-| `speed`            | float | 当前速度，单位 m/s（基于多普勒推算）。  |
-| `progress`         | float | 距终点线的距离，单位米。                |
-| `stride_frequency` | float | 步频，单位 Hz。                         |
+| 字段                 | 类型    | 描述                    |
+| ------------------ | ----- | --------------------- |
+| `race_id`          | str   | Betfair 赛事标识符。        |
+| `market_id`        | str   | Betfair 市场标识符。        |
+| `selection_id`     | int   | Betfair 选项（参赛者）标识符。   |
+| `latitude`         | float | GPS 纬度。               |
+| `longitude`        | float | GPS 经度。               |
+| `speed`            | float | 当前速度，单位 m/s（基于多普勒推算）。 |
+| `progress`         | float | 距终点线的距离，单位米。          |
+| `stride_frequency` | float | 步频，单位 Hz。             |
 
 ### BetfairRaceProgress
 
 带分段计时和排位的赛事汇总数据。
 
-| 字段             | 类型       | 描述                                          |
-|------------------|------------|-----------------------------------------------|
-| `race_id`        | str        | Betfair 赛事标识符。                          |
-| `market_id`      | str        | Betfair 市场标识符。                          |
-| `gate_name`      | str        | 计时门（例如 "1f"、"2f"、"Finish"）。         |
-| `sectional_time` | float      | 本段用时，单位秒。                            |
-| `running_time`   | float      | 自赛事开始以来的总用时，单位秒。              |
-| `speed`          | float      | 领头马速度，单位 m/s。                        |
-| `progress`       | float      | 领头马距终点的距离，单位米。                  |
-| `order`          | list[int]  | 当前赛事位次顺序下的选项 ID 列表。            |
-| `jumps`          | list[dict] | National Hunt 赛事的跳栏障碍数据。            |
+| 字段               | 类型         | 描述                          |
+| ---------------- | ---------- | --------------------------- |
+| `race_id`        | str        | Betfair 赛事标识符。              |
+| `market_id`      | str        | Betfair 市场标识符。              |
+| `gate_name`      | str        | 计时门（例如 "1f"、"2f"、"Finish"）。 |
+| `sectional_time` | float      | 本段用时，单位秒。                   |
+| `running_time`   | float      | 自赛事开始以来的总用时，单位秒。            |
+| `speed`          | float      | 领头马速度，单位 m/s。               |
+| `progress`       | float      | 领头马距终点的距离，单位米。              |
+| `order`          | list[int]  | 当前赛事位次顺序下的选项 ID 列表。         |
+| `jumps`          | list[dict] | National Hunt 赛事的跳栏障碍数据。    |
 
 ### 订阅自定义数据
 
@@ -396,6 +396,7 @@ from nautilus_trader.adapters.betfair.data_types import BetfairRaceRunnerData
 from nautilus_trader.adapters.betfair.data_types import BetfairRaceProgress
 from nautilus_trader.adapters.betfair.data_types import BetfairTicker
 from nautilus_trader.model.data import DataType
+
 
 class MyStrategy(Strategy):
     def on_start(self):
@@ -458,20 +459,20 @@ for data in parse_betfair_rcm_file("path/to/rcm_data.json"):
 
 ### 数据客户端配置选项
 
-| 选项                      | 默认值    | 描述 |
-|---------------------------|-----------|------|
-| `account_currency`        | 必填      | 用于数据和价格源的 Betfair 账户货币。 |
-| `username`                | `None`    | Betfair 账户用户名；省略时从环境变量获取。 |
-| `password`                | `None`    | Betfair 账户密码；省略时从环境变量获取。 |
-| `app_key`                 | `None`    | 用于 API 认证的 Betfair 应用密钥。 |
-| `certs_dir`               | `None`    | 包含 Betfair SSL 证书的登录目录。 |
-| `instrument_config`       | `None`    | 可选的 `BetfairInstrumentProviderConfig`，用于限定可用市场范围。 |
-| `subscription_delay_secs` | `3`       | 发送初始市场订阅请求前的延迟（秒）。 |
-| `keep_alive_secs`         | `36,000`  | Betfair 会话的保活间隔（秒）。 |
-| `subscribe_race_data`     | `False`   | 设为 `True` 时，订阅用于实时 GPS 跟踪数据的赛事变更消息（Race Change Messages, RCM）。 |
-| `stream_conflate_ms`      | `None`    | 显式流合并间隔（毫秒）（`0` 表示禁用合并）。 |
-| `stream_heartbeat_ms`     | `5,000`   | 流心跳间隔（毫秒）（500-5000）。`None` 表示省略。 |
-| `proxy_url`               | `None`    | 可选的 HTTP 请求代理 URL。 |
+| 选项                        | 默认值      | 描述                                                             |
+| ------------------------- | -------- | -------------------------------------------------------------- |
+| `account_currency`        | 必填       | 用于数据和价格源的 Betfair 账户货币。                                        |
+| `username`                | `None`   | Betfair 账户用户名；省略时从环境变量获取。                                      |
+| `password`                | `None`   | Betfair 账户密码；省略时从环境变量获取。                                       |
+| `app_key`                 | `None`   | 用于 API 认证的 Betfair 应用密钥。                                       |
+| `certs_dir`               | `None`   | 包含 Betfair SSL 证书的登录目录。                                        |
+| `instrument_config`       | `None`   | 可选的 `BetfairInstrumentProviderConfig`，用于限定可用市场范围。              |
+| `subscription_delay_secs` | `3`      | 发送初始市场订阅请求前的延迟（秒）。                                             |
+| `keep_alive_secs`         | `36,000` | Betfair 会话的保活间隔（秒）。                                            |
+| `subscribe_race_data`     | `False`  | 设为 `True` 时，订阅用于实时 GPS 跟踪数据的赛事变更消息（Race Change Messages, RCM）。 |
+| `stream_conflate_ms`      | `None`   | 显式流合并间隔（毫秒）（`0` 表示禁用合并）。                                       |
+| `stream_heartbeat_ms`     | `5,000`  | 流心跳间隔（毫秒）（500-5000）。`None` 表示省略。                               |
+| `proxy_url`               | `None`   | 可选的 HTTP 请求代理 URL。                                             |
 
 :::warning
 当 `stream_conflate_ms` 为 `None` 时，Betfair 会应用其默认的合并行为（通常处于启用状态）。
@@ -490,24 +491,24 @@ for data in parse_betfair_rcm_file("path/to/rcm_data.json"):
 
 ### 执行客户端配置选项
 
-| 选项                         | 默认值   | 描述 |
-|------------------------------|----------|------|
-| `account_currency`           | 必填     | 用于下单和余额查询的 Betfair 账户货币。 |
-| `username`                   | `None`   | Betfair 账户用户名；省略时从环境变量获取。 |
-| `password`                   | `None`   | Betfair 账户密码；省略时从环境变量获取。 |
-| `app_key`                    | `None`   | 用于 API 认证的 Betfair 应用密钥。 |
-| `certs_dir`                  | `None`   | 包含 Betfair SSL 证书的登录目录。 |
-| `instrument_config`          | `None`   | 可选的 `BetfairInstrumentProviderConfig`，用于限定对账范围。 |
-| `calculate_account_state`    | `True`   | 设为 `True` 时，根据事件在本地计算账户状态。 |
-| `request_account_state_secs` | `300`    | 向 Betfair 轮询账户状态的间隔（秒）（`0` 表示禁用）。 |
-| `reconcile_market_ids_only`  | `False`  | 设为 `True` 时，对账仅覆盖 `instrument_config.market_ids`（若未设置则无效）。 |
-| `reconcile_market_ids`       | `None`   | 仅 Rust。当 `reconcile_market_ids_only=True` 时用于对账的显式市场 ID。 |
-| `stream_market_ids_filter`   | `None`   | 要从流中处理的市场 ID 列表；其余会被静默跳过。 |
-| `ignore_external_orders`     | `False`  | 设为 `True` 时，忽略本地缓存中不存在的流订单。 |
-| `use_market_version`         | `False`  | 设为 `True` 时，将最新的市场版本附加到订单请求上以进行价格保护。 |
-| `order_request_rate_per_second` | `20`  | 订单端点的速率限制（请求/秒），独立于通用 API 端点。 |
-| `stream_heartbeat_ms`        | `5,000`  | 订单流心跳间隔（毫秒）（500-5000）。`None` 表示省略。 |
-| `proxy_url`                  | `None`   | 可选的 HTTP 请求代理 URL。 |
+| 选项                              | 默认值     | 描述                                                         |
+| ------------------------------- | ------- | ---------------------------------------------------------- |
+| `account_currency`              | 必填      | 用于下单和余额查询的 Betfair 账户货币。                                   |
+| `username`                      | `None`  | Betfair 账户用户名；省略时从环境变量获取。                                  |
+| `password`                      | `None`  | Betfair 账户密码；省略时从环境变量获取。                                   |
+| `app_key`                       | `None`  | 用于 API 认证的 Betfair 应用密钥。                                   |
+| `certs_dir`                     | `None`  | 包含 Betfair SSL 证书的登录目录。                                    |
+| `instrument_config`             | `None`  | 可选的 `BetfairInstrumentProviderConfig`，用于限定对账范围。            |
+| `calculate_account_state`       | `True`  | 设为 `True` 时，根据事件在本地计算账户状态。                                 |
+| `request_account_state_secs`    | `300`   | 向 Betfair 轮询账户状态的间隔（秒）（`0` 表示禁用）。                          |
+| `reconcile_market_ids_only`     | `False` | 设为 `True` 时，对账仅覆盖 `instrument_config.market_ids`（若未设置则无效）。 |
+| `reconcile_market_ids`          | `None`  | 仅 Rust。当 `reconcile_market_ids_only=True` 时用于对账的显式市场 ID。   |
+| `stream_market_ids_filter`      | `None`  | 要从流中处理的市场 ID 列表；其余会被静默跳过。                                  |
+| `ignore_external_orders`        | `False` | 设为 `True` 时，忽略本地缓存中不存在的流订单。                                |
+| `use_market_version`            | `False` | 设为 `True` 时，将最新的市场版本附加到订单请求上以进行价格保护。                       |
+| `order_request_rate_per_second` | `20`    | 订单端点的速率限制（请求/秒），独立于通用 API 端点。                              |
+| `stream_heartbeat_ms`           | `5,000` | 订单流心跳间隔（毫秒）（500-5000）。`None` 表示省略。                         |
+| `proxy_url`                     | `None`  | 可选的 HTTP 请求代理 URL。                                         |
 
 :::warning
 如果您设置了 `stream_market_ids_filter`，请确保它包含您交易的所有市场。

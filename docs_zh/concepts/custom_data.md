@@ -23,10 +23,10 @@ Nautilus Trader 支持使用 Python 和 Rust 编写的自定义数据，并让�
 
 支持两种编写模式：
 
-| 模式              | 示例                                            | 注册路径                                       | 编码/解码路径              | 封装后端           |
-|-------------------|----------------------------------------------------|---------------------------------------------------------|---------------------------------|---------------------------|
-| 纯 Python       | `@customdataclass_pyo3` 类                      | `register_custom_data_class(...)`                       | Python 回调 + Arrow C FFI   | `PythonCustomDataWrapper` |
-| 同二进制 Rust  | `#[custom_data]` 或 `#[custom_data(pyo3)]` 类型    | `ensure_custom_data_registered::<T>()` 加原生提取器 | 原生 Rust                 | 原生 Rust 载荷       |
+| 模式        | 示例                                           | 注册路径                                          | 编码/解码路径                 | 封装后端                      |
+| --------- | -------------------------------------------- | --------------------------------------------- | ----------------------- | ------------------------- |
+| 纯 Python  | `@customdataclass_pyo3` 类                    | `register_custom_data_class(...)`             | Python 回调 + Arrow C FFI | `PythonCustomDataWrapper` |
+| 同二进制 Rust | `#[custom_data]` 或 `#[custom_data(pyo3)]` 类型 | `ensure_custom_data_registered::<T>()` 加原生提取器 | 原生 Rust                 | 原生 Rust 载荷                |
 
 两种模式都汇聚到同一个外层 PyO3 `CustomData` 封装，以及同一套 `DataType` 身份模型。
 

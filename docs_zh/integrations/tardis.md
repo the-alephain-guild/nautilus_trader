@@ -42,17 +42,17 @@ NautilusTrader 在此适配器中不支持交易所原生的 Tardis 市场数据
 以下 Tardis Machine 标准化格式受 NautilusTrader 支持。字段结构请参阅官方
 [Tardis 数据类型参考](https://docs.tardis.dev/tardis-machine/data-types)。
 
-| Tardis 格式         | Nautilus 数据类型                                                |
-|:--------------------|:------------------------------------------------------------------|
-| `book_change`       | `OrderBookDelta`                                                  |
-| `book_snapshot_*`   | `OrderBookDepth10` 或 `OrderBookDeltas`                           |
-| `quote`             | `QuoteTick`                                                       |
-| `quote_10s`         | `QuoteTick`                                                       |
-| `trade`             | `Trade`                                                           |
-| `trade_bar_*`       | `Bar`                                                             |
+| Tardis 格式           | Nautilus 数据类型                                                  |
+| :------------------ | :------------------------------------------------------------- |
+| `book_change`       | `OrderBookDelta`                                               |
+| `book_snapshot_*`   | `OrderBookDepth10` 或 `OrderBookDeltas`                         |
+| `quote`             | `QuoteTick`                                                    |
+| `quote_10s`         | `QuoteTick`                                                    |
+| `trade`             | `Trade`                                                        |
+| `trade_bar_*`       | `Bar`                                                          |
 | `instrument`        | `CurrencyPair`、`CryptoFuture`、`CryptoPerpetual`、`CryptoOption` |
-| `derivative_ticker` | `FundingRateUpdate`                                               |
-| `option_summary`    | `OptionGreeks`；可选地从 BBO 字段生成 `QuoteTick`                 |
+| `derivative_ticker` | `FundingRateUpdate`                                            |
+| `option_summary`    | `OptionGreeks`；可选地从 BBO 字段生成 `QuoteTick`                       |
 | `disconnect`        | *不适用*                                                          |
 
 **说明：**
@@ -73,13 +73,13 @@ NautilusTrader 在此适配器中不支持交易所原生的 Tardis 市场数据
 适配器将 Tardis 交易 K 线间隔和后缀转换为 Nautilus `BarType`。
 包括以下内容：
 
-| Tardis 后缀   | 含义            | Nautilus K 线聚合方式    |
-|:--------------|:----------------|:-------------------------|
-| `ms`          | 毫秒            | `MILLISECOND`            |
-| `s`           | 秒              | `SECOND`                 |
-| `m`           | 分钟            | `MINUTE`                 |
-| `ticks`       | tick 数量       | `TICK`                   |
-| `vol`         | 成交量大小      | `VOLUME`                 |
+| Tardis 后缀 | 含义      | Nautilus K 线聚合方式 |
+| :-------- | :------ | :--------------- |
+| `ms`      | 毫秒      | `MILLISECOND`    |
+| `s`       | 秒       | `SECOND`         |
+| `m`       | 分钟      | `MINUTE`         |
+| `ticks`   | tick 数量 | `TICK`           |
+| `vol`     | 成交量大小   | `VOLUME`         |
 
 ## 符号体系和标准化
 
@@ -111,47 +111,47 @@ Tardis 集成通过一致地标准化符号，确保与 NautilusTrader 的加密
 Tardis 上的一些交易所被划分为多个交易场所（Venue）。
 下表列出了 Nautilus 交易场所与相应 Tardis 交易所之间的映射：
 
-| Nautilus 交易场所       | Tardis 交易所                                         |
-|:------------------------|:------------------------------------------------------|
-| `ASCENDEX`              | `ascendex`                                            |
-| `BINANCE`               | `binance`、`binance-dex`、`binance-futures`、`binance-options` |
-| `BINANCE_DELIVERY`      | `binance-delivery`（*币本位合约*）                    |
-| `BINANCE_US`            | `binance-us`                                          |
-| `BITFINEX`              | `bitfinex`、`bitfinex-derivatives`                    |
-| `BITFLYER`              | `bitflyer`                                            |
-| `BITGET`                | `bitget`、`bitget-futures`                            |
-| `BITMEX`                | `bitmex`                                              |
-| `BITNOMIAL`             | `bitnomial`                                           |
-| `BITSTAMP`              | `bitstamp`                                            |
-| `BLOCKCHAIN_COM`        | `blockchain-com`                                      |
-| `BYBIT`                 | `bybit`、`bybit-options`、`bybit-spot`                |
-| `COINBASE`              | `coinbase`                                            |
-| `COINBASE_INTX`         | `coinbase-international`                              |
-| `COINFLEX`              | `coinflex`（*用于历史研究*）                          |
-| `CRYPTO_COM`            | `crypto-com`                                          |
-| `CRYPTOFACILITIES`      | `cryptofacilities`                                    |
-| `DELTA`                 | `delta`                                               |
-| `DERIBIT`               | `deribit`                                             |
-| `DYDX`                  | `dydx`                                                |
-| `DYDX_V4`               | `dydx-v4`                                             |
-| `FTX`                   | `ftx`、`ftx-us`（*历史研究*）                         |
-| `GATE_IO`               | `gate-io`、`gate-io-futures`                          |
-| `GEMINI`                | `gemini`                                              |
-| `HITBTC`                | `hitbtc`                                              |
-| `HUOBI`                 | `huobi`、`huobi-dm`、`huobi-dm-linear-swap`、`huobi-dm-options` |
-| `HUOBI_DELIVERY`        | `huobi-dm-swap`                                       |
-| `HYPERLIQUID`           | `hyperliquid`                                         |
-| `KRAKEN`                | `kraken`                                              |
-| `KUCOIN`                | `kucoin`、`kucoin-futures`                            |
-| `MANGO`                 | `mango`                                               |
-| `OKCOIN`                | `okcoin`                                              |
-| `OKEX`                  | `okex`、`okex-futures`、`okex-options`、`okex-spreads`、`okex-swap` |
-| `PHEMEX`                | `phemex`                                              |
-| `POLONIEX`              | `poloniex`                                            |
-| `SERUM`                 | `serum`（*历史研究*）                                 |
-| `STAR_ATLAS`            | `star-atlas`                                          |
-| `UPBIT`                 | `upbit`                                               |
-| `WOO_X`                 | `woo-x`                                               |
+| Nautilus 交易场所      | Tardis 交易所                                                      |
+| :----------------- | :-------------------------------------------------------------- |
+| `ASCENDEX`         | `ascendex`                                                      |
+| `BINANCE`          | `binance`、`binance-dex`、`binance-futures`、`binance-options`     |
+| `BINANCE_DELIVERY` | `binance-delivery`（*币本位合约*）                                     |
+| `BINANCE_US`       | `binance-us`                                                    |
+| `BITFINEX`         | `bitfinex`、`bitfinex-derivatives`                               |
+| `BITFLYER`         | `bitflyer`                                                      |
+| `BITGET`           | `bitget`、`bitget-futures`                                       |
+| `BITMEX`           | `bitmex`                                                        |
+| `BITNOMIAL`        | `bitnomial`                                                     |
+| `BITSTAMP`         | `bitstamp`                                                      |
+| `BLOCKCHAIN_COM`   | `blockchain-com`                                                |
+| `BYBIT`            | `bybit`、`bybit-options`、`bybit-spot`                            |
+| `COINBASE`         | `coinbase`                                                      |
+| `COINBASE_INTX`    | `coinbase-international`                                        |
+| `COINFLEX`         | `coinflex`（*用于历史研究*）                                            |
+| `CRYPTO_COM`       | `crypto-com`                                                    |
+| `CRYPTOFACILITIES` | `cryptofacilities`                                              |
+| `DELTA`            | `delta`                                                         |
+| `DERIBIT`          | `deribit`                                                       |
+| `DYDX`             | `dydx`                                                          |
+| `DYDX_V4`          | `dydx-v4`                                                       |
+| `FTX`              | `ftx`、`ftx-us`（*历史研究*）                                          |
+| `GATE_IO`          | `gate-io`、`gate-io-futures`                                     |
+| `GEMINI`           | `gemini`                                                        |
+| `HITBTC`           | `hitbtc`                                                        |
+| `HUOBI`            | `huobi`、`huobi-dm`、`huobi-dm-linear-swap`、`huobi-dm-options`    |
+| `HUOBI_DELIVERY`   | `huobi-dm-swap`                                                 |
+| `HYPERLIQUID`      | `hyperliquid`                                                   |
+| `KRAKEN`           | `kraken`                                                        |
+| `KUCOIN`           | `kucoin`、`kucoin-futures`                                       |
+| `MANGO`            | `mango`                                                         |
+| `OKCOIN`           | `okcoin`                                                        |
+| `OKEX`             | `okex`、`okex-futures`、`okex-options`、`okex-spreads`、`okex-swap` |
+| `PHEMEX`           | `phemex`                                                        |
+| `POLONIEX`         | `poloniex`                                                      |
+| `SERUM`            | `serum`（*历史研究*）                                                 |
+| `STAR_ATLAS`       | `star-atlas`                                                    |
+| `UPBIT`            | `upbit`                                                         |
+| `WOO_X`            | `woo-x`                                                         |
 
 Tardis 还暴露了一些遗留的 Binance 交易所，例如 `binance-european-options` 和
 `binance-jersey`。
@@ -263,10 +263,10 @@ docker run -p 8000:8000 -p 8001:8001 -e "TM_API_KEY=YOUR_API_KEY" -d tardisdev/t
 
 `book_snapshot_output` 配置选项控制 Tardis `book_snapshot_*` 消息的转换和存储方式。
 
-| 值        | Nautilus 类型      | 输出目录             | 描述                                  |
-|:----------|:-------------------|:---------------------|:--------------------------------------|
-| `deltas`  | `OrderBookDeltas`  | `order_book_deltas/` | 价格层级更新。                        |
-| `depth10` | `OrderBookDepth10` | `order_book_depths/` | 包含最多 10 个价格层级的快照。        |
+| 值         | Nautilus 类型        | 输出目录                 | 描述                |
+| :-------- | :----------------- | :------------------- | :---------------- |
+| `deltas`  | `OrderBookDeltas`  | `order_book_deltas/` | 价格层级更新。           |
+| `depth10` | `OrderBookDepth10` | `order_book_depths/` | 包含最多 10 个价格层级的快照。 |
 
 **何时使用每种格式：**
 

@@ -24,33 +24,33 @@ Nautilus 提供三种实现。理解每一种各自所处的阶段，有助于
 
 ### 能力矩阵 (Capability matrix)
 
-| 组件                  | v1 legacy (Cython) | v2 Rust        | v2 PyO3 (Python on Rust) |
-|-----------------------|--------------------|----------------|--------------------------|
-| Strategy              | ✓                  | ✓              | ✓                        |
-| Actor                 | ✓                  | ✓              | ✓                        |
-| DataEngine            | ✓                  | ✓              | ✓                        |
-| ExecutionEngine       | ✓                  | ✓              | ✓                        |
-| RiskEngine            | ✓                  | ✓              | ✓                        |
-| BacktestEngine        | ✓                  | ✓              | ✓                        |
-| BacktestNode          | ✓                  | ✓              | ✓                        |
-| LiveNode              | ✓                  | ✓              | ✓                        |
-| OrderEmulator         | ✓                  | ✓              | ✓                        |
-| Matching engine       | ✓                  | ✓              | ✓                        |
-| Portfolio             | ✓                  | ✓              | ✓                        |
-| Accounts              | ✓                  | ✓              | ✓                        |
-| Cache                 | ✓                  | ✓              | ✓                        |
-| MessageBus            | ✓                  | ✓              | ✓                        |
-| Data catalog          | ✓                  | ✓              | ✓                        |
-| Indicators            | ✓                  | ✓              | ✓                        |
-| Exec algorithms       | TWAP               | TWAP           | TWAP                     |
-| Controller            | ✓                  | -              | -                        |
-| Tearsheets            | ✓                  | -              | -                        |
-| Config serialization  | ✓                  | -              | -                        |
+| 组件                   | v1 legacy (Cython) | v2 Rust | v2 PyO3 (Python on Rust) |
+| -------------------- | ------------------ | ------- | ------------------------ |
+| Strategy             | ✓                  | ✓       | ✓                        |
+| Actor                | ✓                  | ✓       | ✓                        |
+| DataEngine           | ✓                  | ✓       | ✓                        |
+| ExecutionEngine      | ✓                  | ✓       | ✓                        |
+| RiskEngine           | ✓                  | ✓       | ✓                        |
+| BacktestEngine       | ✓                  | ✓       | ✓                        |
+| BacktestNode         | ✓                  | ✓       | ✓                        |
+| LiveNode             | ✓                  | ✓       | ✓                        |
+| OrderEmulator        | ✓                  | ✓       | ✓                        |
+| Matching engine      | ✓                  | ✓       | ✓                        |
+| Portfolio            | ✓                  | ✓       | ✓                        |
+| Accounts             | ✓                  | ✓       | ✓                        |
+| Cache                | ✓                  | ✓       | ✓                        |
+| MessageBus           | ✓                  | ✓       | ✓                        |
+| Data catalog         | ✓                  | ✓       | ✓                        |
+| Indicators           | ✓                  | ✓       | ✓                        |
+| Exec algorithms      | TWAP               | TWAP    | TWAP                     |
+| Controller           | ✓                  | -       | -                        |
+| Tearsheets           | ✓                  | -       | -                        |
+| Config serialization | ✓                  | -       | -                        |
 
 ### 适配器 (Adapters)
 
-| 适配器              | v1 legacy (Cython) | v2 Rust | v2 PyO3 |
-|---------------------|--------------------|---------|---------|
+| 适配器                 | v1 legacy (Cython) | v2 Rust | v2 PyO3 |
+| ------------------- | ------------------ | ------- | ------- |
 | Architect AX        | ✓                  | ✓       | ✓       |
 | Betfair             | ✓                  | ✓       | ✓       |
 | Binance             | ✓                  | ✓       | ✓       |
@@ -120,13 +120,13 @@ nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.gi
 
 ### 特性标志 (Feature flags)
 
-| 标志             | Crate               | 效果                                                          |
-|------------------|---------------------|---------------------------------------------------------------|
-| `high-precision` | `nautilus-model`    | 16 位定点精度（默认为 9 位）。加密货币场景必需。              |
-| `stubs`          | `nautilus-model`    | 测试用 instrument stub（`audusd_sim` 等）。                   |
-| `examples`       | `nautilus-trading`  | 示例策略（`EmaCross`、`GridMarketMaker`）。                   |
-| `streaming`      | `nautilus-backtest` | 通过 `BacktestNode` 实现基于 catalog 的数据流式传输。        |
-| `defi`           | `nautilus-model`    | DeFi 数据类型。隐含启用 `high-precision`。                    |
+| 标志               | Crate               | 效果                                      |
+| ---------------- | ------------------- | --------------------------------------- |
+| `high-precision` | `nautilus-model`    | 16 位定点精度（默认为 9 位）。加密货币场景必需。             |
+| `stubs`          | `nautilus-model`    | 测试用 instrument stub（`audusd_sim` 等）。    |
+| `examples`       | `nautilus-trading`  | 示例策略（`EmaCross`、`GridMarketMaker`）。     |
+| `streaming`      | `nautilus-backtest` | 通过 `BacktestNode` 实现基于 catalog 的数据流式传输。 |
+| `defi`           | `nautilus-model`    | DeFi 数据类型。隐含启用 `high-precision`。        |
 
 :::tip
 标准的 9 位精度可以满足大多数传统金融工具的需要。
@@ -148,25 +148,25 @@ actor 接收市场数据、自定义数据/信号以及系统事件，但不负�
 数据或事件。所有处理器都有默认的空操作实现，因此你只需
 重写自己需要的部分。
 
-| 处理器                 | 接收内容                  |
-|------------------------|---------------------------|
-| `on_start`             | actor 已启动。            |
-| `on_stop`              | actor 已停止。            |
-| `on_quote`             | `QuoteTick`               |
-| `on_trade`             | `TradeTick`               |
-| `on_bar`               | `Bar`                     |
-| `on_book_deltas`       | `OrderBookDeltas`         |
-| `on_book`              | `OrderBook`（按间隔）     |
-| `on_instrument`        | `InstrumentAny`           |
-| `on_mark_price`        | `MarkPriceUpdate`         |
-| `on_index_price`       | `IndexPriceUpdate`        |
-| `on_funding_rate`      | `FundingRateUpdate`       |
-| `on_option_greeks`     | `OptionGreeks`            |
-| `on_option_chain`      | `OptionChainSlice`        |
-| `on_instrument_status` | `InstrumentStatus`        |
-| `on_order_filled`      | `OrderFilled`             |
-| `on_order_canceled`    | `OrderCanceled`           |
-| `on_time_event`        | `TimeEvent`               |
+| 处理器                    | 接收内容                |
+| ---------------------- | ------------------- |
+| `on_start`             | actor 已启动。          |
+| `on_stop`              | actor 已停止。          |
+| `on_quote`             | `QuoteTick`         |
+| `on_trade`             | `TradeTick`         |
+| `on_bar`               | `Bar`               |
+| `on_book_deltas`       | `OrderBookDeltas`   |
+| `on_book`              | `OrderBook`（按间隔）    |
+| `on_instrument`        | `InstrumentAny`     |
+| `on_mark_price`        | `MarkPriceUpdate`   |
+| `on_index_price`       | `IndexPriceUpdate`  |
+| `on_funding_rate`      | `FundingRateUpdate` |
+| `on_option_greeks`     | `OptionGreeks`      |
+| `on_option_chain`      | `OptionChainSlice`  |
+| `on_instrument_status` | `InstrumentStatus`  |
+| `on_order_filled`      | `OrderFilled`       |
+| `on_order_canceled`    | `OrderCanceled`     |
+| `on_time_event`        | `TimeEvent`         |
 
 如需逐步操作的讲解，请参阅
 [编写一个 Actor (Rust)](../how_to/write_rust_actor.md) how-to 指南。
@@ -184,16 +184,16 @@ actor 接收市场数据、自定义数据/信号以及系统事件，但不负�
 
 `Strategy` trait 通过 `StrategyCore` 提供以下订单方法：
 
-| 方法                  | 动作                                      |
-|-----------------------|-------------------------------------------|
+| 方法                    | 动作                           |
+| --------------------- | ---------------------------- |
 | `submit_order`        | 向交易场所提交一笔新订单。                |
-| `submit_order_list`   | 提交一组关联订单（contingent orders）。   |
+| `submit_order_list`   | 提交一组关联订单（contingent orders）。 |
 | `modify_order`        | 修改价格、数量或触发价格。                |
-| `cancel_order`        | 取消某一笔指定订单。                      |
-| `cancel_orders`       | 取消经过筛选的一组订单。                  |
-| `cancel_all_orders`   | 取消某个 instrument 的所有订单。          |
-| `close_position`      | 以市价单平掉一个持仓。                    |
-| `close_all_positions` | 平掉所有未平仓持仓。                      |
+| `cancel_order`        | 取消某一笔指定订单。                   |
+| `cancel_orders`       | 取消经过筛选的一组订单。                 |
+| `cancel_all_orders`   | 取消某个 instrument 的所有订单。       |
+| `close_position`      | 以市价单平掉一个持仓。                  |
+| `close_all_positions` | 平掉所有未平仓持仓。                   |
 
 `OrderFactory`（通过 `self.core.order_factory()` 访问）负责构建订单
 对象：`market`、`limit`、`stop_market`、`stop_limit`、
@@ -249,20 +249,20 @@ node.add_native_strategy("GridMarketMaker", config)
 内置策略配置：
 
 | 配置                           | 策略                     |
-|--------------------------------|--------------------------|
-| `CompositeMarketMakerConfig`   | `CompositeMarketMaker`   |
-| `DeltaNeutralVolConfig`        | `DeltaNeutralVol`        |
-| `EmaCrossConfig`               | `EmaCross`               |
-| `ExecTesterConfig`             | `ExecTester`             |
-| `GridMarketMakerConfig`        | `GridMarketMaker`        |
-| `HurstVpinDirectionalConfig`   | `HurstVpinDirectional`   |
+| ---------------------------- | ---------------------- |
+| `CompositeMarketMakerConfig` | `CompositeMarketMaker` |
+| `DeltaNeutralVolConfig`      | `DeltaNeutralVol`      |
+| `EmaCrossConfig`             | `EmaCross`             |
+| `ExecTesterConfig`           | `ExecTester`           |
+| `GridMarketMakerConfig`      | `GridMarketMaker`      |
+| `HurstVpinDirectionalConfig` | `HurstVpinDirectional` |
 
 内置 actor 配置（通过 `add_native_actor`）：
 
-| 配置                       | Actor                 |
-|----------------------------|-----------------------|
-| `BookImbalanceActorConfig` | `BookImbalanceActor`  |
-| `DataTesterConfig`         | `DataTester`          |
+| 配置                         | Actor                |
+| -------------------------- | -------------------- |
+| `BookImbalanceActorConfig` | `BookImbalanceActor` |
+| `DataTesterConfig`         | `DataTester`         |
 
 从源码编译的用户可以将自己的原生组件添加到这条
 路径中。添加一个 `#[pyclass]` 配置、一个 `register_*` 函数，以及在
@@ -314,23 +314,23 @@ cargo run -p nautilus-backtest --features examples,streaming --example node-ema-
 模式用于配置数据客户端和执行客户端，随后 `run()` 启动异步
 事件循环。每个适配器都提供自己的工厂类型和配置类型。
 
-| 适配器         | 示例                                                     |
-|----------------|----------------------------------------------------------|
-| Architect AX   | `crates/adapters/architect_ax/examples/`                 |
-| Betfair        | `crates/adapters/betfair/examples/`                      |
-| Binance        | `crates/adapters/binance/examples/`                      |
-| BitMEX         | `crates/adapters/bitmex/examples/`                       |
-| Blockchain     | `crates/adapters/blockchain/examples/`                   |
-| Bybit          | `crates/adapters/bybit/examples/`                        |
-| Databento      | `crates/adapters/databento/examples/`                    |
-| Deribit        | `crates/adapters/deribit/examples/`                      |
-| dYdX           | `crates/adapters/dydx/examples/`                         |
-| Hyperliquid    | `crates/adapters/hyperliquid/examples/`                  |
-| Kraken         | `crates/adapters/kraken/examples/`                       |
-| OKX            | `crates/adapters/okx/examples/`                          |
-| Polymarket     | `crates/adapters/polymarket/examples/`                   |
-| Sandbox        | `crates/adapters/sandbox/examples/`                      |
-| Tardis         | `crates/adapters/tardis/examples/`                       |
+| 适配器          | 示例                                       |
+| ------------ | ---------------------------------------- |
+| Architect AX | `crates/adapters/architect_ax/examples/` |
+| Betfair      | `crates/adapters/betfair/examples/`      |
+| Binance      | `crates/adapters/binance/examples/`      |
+| BitMEX       | `crates/adapters/bitmex/examples/`       |
+| Blockchain   | `crates/adapters/blockchain/examples/`   |
+| Bybit        | `crates/adapters/bybit/examples/`        |
+| Databento    | `crates/adapters/databento/examples/`    |
+| Deribit      | `crates/adapters/deribit/examples/`      |
+| dYdX         | `crates/adapters/dydx/examples/`         |
+| Hyperliquid  | `crates/adapters/hyperliquid/examples/`  |
+| Kraken       | `crates/adapters/kraken/examples/`       |
+| OKX          | `crates/adapters/okx/examples/`          |
+| Polymarket   | `crates/adapters/polymarket/examples/`   |
+| Sandbox      | `crates/adapters/sandbox/examples/`      |
+| Tardis       | `crates/adapters/tardis/examples/`       |
 
 大多数适配器都包含 `node_data_tester.rs` 和 `node_exec_tester.rs`
 示例。它们针对实盘交易场所测试数据请求、流式传输以及订单执行。

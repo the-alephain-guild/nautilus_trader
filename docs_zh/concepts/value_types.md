@@ -6,11 +6,11 @@ NautilusTrader 提供了用于表示核心交易概念的专用值类型：
 
 ## 概览
 
-| 类型       | 用途                                   | 有符号 | 货币 |
-|------------|----------------------------------------|--------|------|
-| `Quantity` | 交易数量、订单金额、持仓规模。           | 否     | -    |
-| `Price`    | 市场价格、报价、价格水平。               | 是     | -    |
-| `Money`    | 货币金额、盈亏、账户余额。               | 是     | 是   |
+| 类型         | 用途              | 有符号 | 货币  |
+| ---------- | --------------- | --- | --- |
+| `Quantity` | 交易数量、订单金额、持仓规模。 | 否   | -   |
+| `Price`    | 市场价格、报价、价格水平。   | 是   | -   |
+| `Money`    | 货币金额、盈亏、账户余额。   | 是   | 是   |
 
 ## 不可变性
 
@@ -26,8 +26,8 @@ qty2 = Quantity(50, precision=0)
 # 这将创建一个新的 Quantity；qty1 和 qty2 保持不变
 result = qty1 + qty2
 
-print(qty1)    # 100
-print(qty2)    # 50
+print(qty1)  # 100
+print(qty2)  # 50
 print(result)  # 150
 ```
 
@@ -48,8 +48,8 @@ print(result)  # 150
 对相同值类型进行加法和减法运算时，返回该类型本身，从而保留
 其领域含义（价格加价格仍然是价格）：
 
-| 运算                  | 结果       |
-|-----------------------|------------|
+| 运算                    | 结果         |
+| --------------------- | ---------- |
 | `Quantity + Quantity` | `Quantity` |
 | `Quantity - Quantity` | `Quantity` |
 | `Price + Price`       | `Price`    |
@@ -64,17 +64,17 @@ price1 = Price(100.50, precision=2)
 price2 = Price(0.25, precision=2)
 
 result = price1 + price2  # 返回 Price(100.75, precision=2)
-print(type(result))       # <class 'Price'>
+print(type(result))  # <class 'Price'>
 ```
 
 两个相同类型的值之间的乘法、除法、整除和取模运算返回 `Decimal`：
 
-| 运算                  | 结果      |
-|-----------------------|-----------|
-| `Price * Price`       | `Decimal` |
-| `Price / Price`       | `Decimal` |
-| `Price // Price`      | `Decimal` |
-| `Price % Price`       | `Decimal` |
+| 运算               | 结果        |
+| ---------------- | --------- |
+| `Price * Price`  | `Decimal` |
+| `Price / Price`  | `Decimal` |
+| `Price // Price` | `Decimal` |
+| `Price % Price`  | `Decimal` |
 
 同样的规则也适用于 `Quantity` 和 `Money`。
 
@@ -88,13 +88,13 @@ print(type(result))       # <class 'Price'>
 当结果对该类型有效时，一元运算符会保留其值类型：
 
 | 运算         | `Price`   | `Quantity` | `Money`   |
-|--------------|-----------|------------|-----------|
-| `-x` (neg)   | `Price`   | `Decimal`  | `Money`   |
-| `+x` (pos)   | `Price`   | `Quantity` | `Money`   |
-| `abs(x)`     | `Price`   | `Quantity` | `Money`   |
-| `int(x)`     | `int`     | `int`      | `int`     |
-| `float(x)`   | `float`   | `float`    | `float`   |
-| `round(x)`   | `Decimal` | `Decimal`  | `Decimal` |
+| ---------- | --------- | ---------- | --------- |
+| `-x` (neg) | `Price`   | `Decimal`  | `Money`   |
+| `+x` (pos) | `Price`   | `Quantity` | `Money`   |
+| `abs(x)`   | `Price`   | `Quantity` | `Money`   |
+| `int(x)`   | `int`     | `int`      | `int`     |
+| `float(x)` | `float`   | `float`    | `float`   |
+| `round(x)` | `Decimal` | `Decimal`  | `Decimal` |
 
 `Quantity.__neg__` 返回 `Decimal` 而非 `Quantity`，因为 `Quantity` 是
 无符号的，无法表示负值。
@@ -104,16 +104,16 @@ from nautilus_trader.model.objects import Price, Quantity, Money
 from nautilus_trader.model.currencies import USD
 
 price = Price(100.50, precision=2)
-print(-price)            # -100.50
-print(type(-price))      # <class 'Price'>
+print(-price)  # -100.50
+print(type(-price))  # <class 'Price'>
 
 money = Money(-50.00, USD)
-print(abs(money))        # 50.00 USD
+print(abs(money))  # 50.00 USD
 print(type(abs(money)))  # <class 'Money'>
 
 qty = Quantity(10, precision=0)
-print(+qty)              # 10
-print(type(+qty))        # <class 'Quantity'>
+print(+qty)  # 10
+print(type(+qty))  # <class 'Quantity'>
 ```
 
 ### 混合类型运算
@@ -126,14 +126,14 @@ print(type(+qty))        # <class 'Quantity'>
 这一规则适用于全部六种二元运算符（`+`、`-`、`*`、`/`、`//`、`%`），
 且在两个方向上均成立（`值 op 标量` 和 `标量 op 值`）：
 
-| 左操作数    | 右操作数      | 结果类型    |
-|-------------|---------------|-------------|
-| 值类型      | `int`         | `Decimal`   |
-| 值类型      | `float`       | `float`     |
-| 值类型      | `Decimal`     | `Decimal`   |
-| `int`       | 值类型        | `Decimal`   |
-| `float`     | 值类型        | `float`     |
-| `Decimal`   | 值类型        | `Decimal`   |
+| 左操作数      | 右操作数      | 结果类型      |
+| --------- | --------- | --------- |
+| 值类型       | `int`     | `Decimal` |
+| 值类型       | `float`   | `float`   |
+| 值类型       | `Decimal` | `Decimal` |
+| `int`     | 值类型       | `Decimal` |
+| `float`   | 值类型       | `float`   |
+| `Decimal` | 值类型       | `Decimal` |
 
 ```python
 from decimal import Decimal
@@ -169,12 +169,12 @@ print(type(result3))  # <class 'decimal.Decimal'>
 ```python
 from nautilus_trader.model.objects import Price
 
-p1 = Price(1.23, precision=2)   # 显示为 "1.23"
+p1 = Price(1.23, precision=2)  # 显示为 "1.23"
 p2 = Price(1.230, precision=3)  # 显示为 "1.230"
 
 p1 == p2  # True：底层值相同
-str(p1)   # "1.23"
-str(p2)   # "1.230"
+str(p1)  # "1.23"
+str(p2)  # "1.230"
 ```
 
 **精度控制的是显示，而非身份。** 两个小数值相同但
@@ -203,11 +203,11 @@ str(p2)   # "1.230"
 ```python
 from nautilus_trader.model.objects import Price
 
-price1 = Price(100.5, precision=1)    # 1 位小数
-price2 = Price(0.125, precision=3)    # 3 位小数
+price1 = Price(100.5, precision=1)  # 1 位小数
+price2 = Price(0.125, precision=3)  # 3 位小数
 
 result = price1 + price2
-print(result)            # 100.625
+print(result)  # 100.625
 print(result.precision)  # 3（1 和 3 中的最大值）
 ```
 

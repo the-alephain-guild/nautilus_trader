@@ -10,10 +10,12 @@ argument-hint: "[--base <commit>] [--full]"
 最后停在 commit 前等人工 review。
 
 **参数**：
+
 - `--base <commit>`：覆盖 diff 基准（默认读 `docs_zh/.sync-state` 的 `upstream_commit`）。
 - `--full`：忽略增量，全量对照 `structure-check` 的缺译清单重译（仅在 `.sync-state` 丢失或大重构后用）。
 
 **关键事实**（执行前须知）：
+
 - 本仓库是 `nautechsystems/nautilus_trader` 的 fork；`docs_zh/` 是下游附加层，upstream 无此目录。
 - `.claude/` 被 fork `.gitignore` 忽略——提交本命令或其它 `.claude/` 文件须用 `git add -f`。
 - `scripts/sync_docs_zh.py` 零第三方依赖（标准库）。校验脚本本身改动用 ruff（`miniforge ruff` 或项目 `make ruff`）。
@@ -46,6 +48,7 @@ argument-hint: "[--base <commit>] [--full]"
 对 `pending` 清单派**并行子代理**翻译（推荐用 Workflow 编排，每文件一个子代理）。每个子代理遵循下方**翻译规范**。
 
 翻译完成后：
+
 1. 跑 `python3 scripts/sync_docs_zh.py verify <本批文件...>`（或 `--all`）。
 2. **对 verify 失败/截断的文件自愈重做**，最多 3 轮：
    - 被部分写入破坏的文件（行数远低于英文、围栏不配对）：先 `git restore <file>` 回干净基线（若该文件是 update 模式且 git 有旧版），再重译。
@@ -67,6 +70,7 @@ argument-hint: "[--base <commit>] [--full]"
 ## 阶段 4.5：人工注释保护核查（重构时）
 
 发生结构重构（split/rename）时，旧扁平文件含的维护者人工注释可能漏迁。核查法：
+
 1. 从旧文件提取**带中文标题的 admonition**（`:::xxx 中文标题` 是人工注释的标志，纯英文/无标题的多是英文原文翻译）。
 2. 用精确短语 `grep` 新结构，确认每条是否已迁入。
 3. 未迁入的：判断对应英文章节在新结构哪个文件，补迁过去；若注释与上游最新事实矛盾，列给用户决断（按最新英文为准）。
@@ -85,11 +89,11 @@ argument-hint: "[--base <commit>] [--full]"
 
 ## 失败处理速查（本命令固化的实战教训）
 
-| 症状 | 处理 |
-|------|------|
-| HTTPS fetch 反复 `early EOF` | upstream 改 SSH（阶段 1） |
-| 子代理批量翻译中途 403 / 登录过期 | 用户 `/login` 后，对 verify 未通过的文件重跑（阶段 4 自愈） |
-| 大文件被写到一半截断（围栏不配对） | `git restore` 回旧版再重译（阶段 4） |
-| 译文混入日韩文 | verify 拦截，重译该文件 |
-| 结构重构（改名/拆分/删除） | detect 标 anomalies，停下人工确认 → `.sync-overrides`（阶段 3） |
-| 旧文件人工注释漏迁 | 阶段 4.5 核查法 |
+| 症状                         | 处理                                                  |
+| -------------------------- | --------------------------------------------------- |
+| HTTPS fetch 反复 `early EOF` | upstream 改 SSH（阶段 1）                                |
+| 子代理批量翻译中途 403 / 登录过期       | 用户 `/login` 后，对 verify 未通过的文件重跑（阶段 4 自愈）            |
+| 大文件被写到一半截断（围栏不配对）          | `git restore` 回旧版再重译（阶段 4）                          |
+| 译文混入日韩文                    | verify 拦截，重译该文件                                     |
+| 结构重构（改名/拆分/删除）             | detect 标 anomalies，停下人工确认 → `.sync-overrides`（阶段 3） |
+| 旧文件人工注释漏迁                  | 阶段 4.5 核查法                                          |

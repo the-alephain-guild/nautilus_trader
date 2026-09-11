@@ -48,15 +48,15 @@ BitMEX 为用户提供了全面的文档：
 
 ## 产品支持
 
-| 产品类型            | 数据馈送 | 交易 | 备注                                                |
-|---------------------|----------|------|-----------------------------------------------------|
-| 现货                | ✓        | ✓    | 交易对有限，与衍生品共享统一钱包。                  |
-| 永续合约            | ✓        | ✓    | 提供反向和线性合约。                                |
-| 股票永续合约        | -        | -    | *尚未支持*。目前仅在测试网（Testnet）上可用。       |
-| 期货                | ✓        | ✓    | 传统固定到期合约。                                  |
-| Quanto 期货         | ✓        | ✓    | 以与标的资产不同的货币结算。                        |
-| 预测市场            | ✓        | ✓    | 基于事件的合约，0-100 定价，USDT 结算。             |
-| 期权                | -        | -    | *BitMEX 未提供*。                                   |
+| 产品类型      | 数据馈送 | 交易  | 备注                          |
+| --------- | ---- | --- | --------------------------- |
+| 现货        | ✓    | ✓   | 交易对有限，与衍生品共享统一钱包。           |
+| 永续合约      | ✓    | ✓   | 提供反向和线性合约。                  |
+| 股票永续合约    | -    | -   | *尚未支持*。目前仅在测试网（Testnet）上可用。 |
+| 期货        | ✓    | ✓   | 传统固定到期合约。                   |
+| Quanto 期货 | ✓    | ✓   | 以与标的资产不同的货币结算。              |
+| 预测市场      | ✓    | ✓   | 基于事件的合约，0-100 定价，USDT 结算。   |
+| 期权        | -    | -   | *BitMEX 未提供*。               |
 
 :::note
 BitMEX 已停止其期权（Options）产品，以专注于核心衍生品和现货业务。
@@ -81,16 +81,16 @@ BitMEX 已停止其期权（Options）产品，以专注于核心衍生品和现
 BitMEX 使用遵循 ISO 10962 标准的 CFI（金融工具分类，Classification of Financial Instruments）代码。
 适配器可识别以下金融工具类型代码：
 
-| 代码     | 类型               | 状态       | 描述                                            |
-|----------|--------------------|------------|-------------------------------------------------|
-| `FFWCSX` | 永续合约           | 已支持     | 基于加密货币的永续合约（如 XBTUSD）。           |
-| `FFWCSF` | 永续外汇           | 已支持     | 基于外汇的永续合约。                            |
-| `FFCCSX` | 期货               | 已支持     | 固定到期的日历期货。                            |
-| `FFICSX` | 预测市场           | 已支持     | 基于事件的预测合约。                            |
-| `IFXXXP` | 现货               | 已支持     | 现货交易对。                                    |
-| `FFSCSX` | 股票永续合约       | 不支持     | 基于股票/权益的永续合约。仅限测试网。           |
-| `SRMCSX` | 互换利率           | 不支持     | 基于收益率的互换产品（历史产品）。              |
-| `MR****` | 指数               | 参考       | BitMEX 指数（不可交易，用于价格参考）。         |
+| 代码       | 类型     | 状态  | 描述                      |
+| -------- | ------ | --- | ----------------------- |
+| `FFWCSX` | 永续合约   | 已支持 | 基于加密货币的永续合约（如 XBTUSD）。  |
+| `FFWCSF` | 永续外汇   | 已支持 | 基于外汇的永续合约。              |
+| `FFCCSX` | 期货     | 已支持 | 固定到期的日历期货。              |
+| `FFICSX` | 预测市场   | 已支持 | 基于事件的预测合约。              |
+| `IFXXXP` | 现货     | 已支持 | 现货交易对。                  |
+| `FFSCSX` | 股票永续合约 | 不支持 | 基于股票/权益的永续合约。仅限测试网。     |
+| `SRMCSX` | 互换利率   | 不支持 | 基于收益率的互换产品（历史产品）。       |
+| `MR****` | 指数     | 参考  | BitMEX 指数（不可交易，用于价格参考）。 |
 
 详情请参阅 [BitMEX Typ Values](https://support.bitmex.com/hc/en-gb/articles/6299296145565-What-are-the-Typ-Values-for-Instrument-endpoint)。
 
@@ -152,7 +152,9 @@ linear_perp_id = InstrumentId.from_str("ETHUSDT.BITMEX")  # 以太坊永续合�
 futures_id = InstrumentId.from_str("XBTM24.BITMEX")  # 比特币期货，2024年6月到期
 
 # 预测市场合约
-prediction_id = InstrumentId.from_str("P_XBTETFV23.BITMEX")  # 比特币 ETF SEC 审批预测，2023年10月到期
+prediction_id = InstrumentId.from_str(
+    "P_XBTETFV23.BITMEX"
+)  # 比特币 ETF SEC 审批预测，2023年10月到期
 ```
 
 :::note
@@ -182,22 +184,22 @@ BitMEX 集成支持以下订单类型和执行功能。
 
 ### 订单类型
 
-| 订单类型               | 支持 | 备注                                          |
-|------------------------|------|-----------------------------------------------|
-| `MARKET`               | ✓    | 以当前市场价格立即执行。不支持报价数量。      |
-| `LIMIT`                | ✓    | 仅以指定价格或更优价格执行。                  |
-| `STOP_MARKET`          | ✓    | 支持（设置 `trigger_price`）。                |
-| `STOP_LIMIT`           | ✓    | 支持（设置 `price` 和 `trigger_price`）。     |
-| `MARKET_IF_TOUCHED`    | ✓    | 支持（设置 `trigger_price`）。                |
-| `LIMIT_IF_TOUCHED`     | ✓    | 支持（设置 `price` 和 `trigger_price`）。     |
-| `TRAILING_STOP_MARKET` | ✓    | 支持（设置 `trailing_offset`）。仅价格偏移类型。|
+| 订单类型                   | 支持  | 备注                                |
+| ---------------------- | --- | --------------------------------- |
+| `MARKET`               | ✓   | 以当前市场价格立即执行。不支持报价数量。              |
+| `LIMIT`                | ✓   | 仅以指定价格或更优价格执行。                    |
+| `STOP_MARKET`          | ✓   | 支持（设置 `trigger_price`）。           |
+| `STOP_LIMIT`           | ✓   | 支持（设置 `price` 和 `trigger_price`）。 |
+| `MARKET_IF_TOUCHED`    | ✓   | 支持（设置 `trigger_price`）。           |
+| `LIMIT_IF_TOUCHED`     | ✓   | 支持（设置 `price` 和 `trigger_price`）。 |
+| `TRAILING_STOP_MARKET` | ✓   | 支持（设置 `trailing_offset`）。仅价格偏移类型。 |
 
 ### 执行指令
 
-| 指令          | 支持 | 备注                                                                              |
-|---------------|------|-----------------------------------------------------------------------------------|
-| `post_only`   | ✓    | 通过 `LIMIT` 订单上的 `ParticipateDoNotInitiate` 执行指令支持。                  |
-| `reduce_only` | ✓    | 通过 `ReduceOnly` 执行指令支持。                                                 |
+| 指令            | 支持  | 备注                                                 |
+| ------------- | --- | -------------------------------------------------- |
+| `post_only`   | ✓   | 通过 `LIMIT` 订单上的 `ParticipateDoNotInitiate` 执行指令支持。 |
+| `reduce_only` | ✓   | 通过 `ReduceOnly` 执行指令支持。                            |
 
 :::note
 Post-only 订单如果会穿越价差（Spread），BitMEX 会取消该订单而非拒绝。
@@ -215,11 +217,11 @@ BitMEX 支持多种参考价格来评估以下订单的止损/条件触发：
 
 选择与你的策略和/或风险偏好匹配的触发类型。
 
-| 参考价格     | Nautilus `TriggerType` | BitMEX 值     | 备注                                                                            |
-|--------------|------------------------|---------------|---------------------------------------------------------------------------------|
-| 最新成交价   | `LAST_PRICE`           | `LastPrice`   | BitMEX 默认值；基于最新成交价触发。                                             |
-| 标记价格     | `MARK_PRICE`           | `MarkPrice`   | 推荐用于许多止损场景，以减少因价格尖峰导致的止损触发。                          |
-| 指数价格     | `INDEX_PRICE`          | `IndexPrice`  | 跟踪外部指数；对某些合约有用。                                                  |
+| 参考价格  | Nautilus `TriggerType` | BitMEX 值     | 备注                          |
+| ----- | ---------------------- | ------------ | --------------------------- |
+| 最新成交价 | `LAST_PRICE`           | `LastPrice`  | BitMEX 默认值；基于最新成交价触发。       |
+| 标记价格  | `MARK_PRICE`           | `MarkPrice`  | 推荐用于许多止损场景，以减少因价格尖峰导致的止损触发。 |
+| 指数价格  | `INDEX_PRICE`          | `IndexPrice` | 跟踪外部指数；对某些合约有用。             |
 
 - 如果未提供 `trigger_type`，BitMEX 将使用其场所默认值（`LastPrice`）。
 - 这些触发参考由交易所评估；订单在被触发之前保持挂单状态。
@@ -279,12 +281,12 @@ BitMEX 支持自动跟踪参考价格的挂钩订单（Pegged Orders，BBO）。
 `submit_order` 上的 `params` 字典支持挂钩订单，这会在交易所端将订单类型
 覆盖为 `Pegged`。
 
-| 挂钩价格类型   | 描述                                                             |
-|----------------|------------------------------------------------------------------|
-| `PrimaryPeg`   | 挂钩到最优买价（买入）或最优卖价（卖出）。                       |
-| `MarketPeg`    | 挂钩到对手方（买入挂钩最优卖价，卖出挂钩最优买价）。             |
-| `MidPricePeg`  | 挂钩到买卖价之间的中间价。                                       |
-| `LastPeg`      | 挂钩到最新成交价。                                               |
+| 挂钩价格类型        | 描述                         |
+| ------------- | -------------------------- |
+| `PrimaryPeg`  | 挂钩到最优买价（买入）或最优卖价（卖出）。      |
+| `MarketPeg`   | 挂钩到对手方（买入挂钩最优卖价，卖出挂钩最优买价）。 |
+| `MidPricePeg` | 挂钩到买卖价之间的中间价。              |
+| `LastPeg`     | 挂钩到最新成交价。                  |
 
 **要求**：
 
@@ -315,13 +317,13 @@ self.submit_order(order, params={"peg_price_type": "MidPricePeg", "peg_offset_va
 
 ### 有效期
 
-| 有效期         | 支持 | 备注                                                |
-|----------------|------|-----------------------------------------------------|
-| `GTC`          | ✓    | 撤销前有效（Good Till Canceled，默认）。            |
-| `GTD`          | -    | *BitMEX 不支持*。                                   |
-| `FOK`          | ✓    | 全部成交否则取消（Fill or Kill）—— 完全成交或取消。 |
-| `IOC`          | ✓    | 立即成交否则取消（Immediate or Cancel）—— 允许部分成交。|
-| `DAY`          | ✓    | 在 UTC 00:00 到期（BitMEX 交易日边界）。            |
+| 有效期   | 支持  | 备注                                      |
+| ----- | --- | --------------------------------------- |
+| `GTC` | ✓   | 撤销前有效（Good Till Canceled，默认）。           |
+| `GTD` | -   | *BitMEX 不支持*。                           |
+| `FOK` | ✓   | 全部成交否则取消（Fill or Kill）—— 完全成交或取消。       |
+| `IOC` | ✓   | 立即成交否则取消（Immediate or Cancel）—— 允许部分成交。 |
+| `DAY` | ✓   | 在 UTC 00:00 到期（BitMEX 交易日边界）。           |
 
 :::note
 `DAY` 订单在 UTC 时间 12:00am 到期，这标志着 BitMEX 交易日的边界（当日交易时段结束）。
@@ -330,50 +332,50 @@ self.submit_order(order, params={"peg_price_type": "MidPricePeg", "peg_offset_va
 
 ### 高级订单功能
 
-| 功能             | 支持 | 备注                                                                     |
-|------------------|------|--------------------------------------------------------------------------|
-| 订单修改         | ✓    | 修改价格、数量和触发价格。                                               |
-| 条件单组合       | ✓    | 使用 `contingency_type` 和 `linked_order_ids`。                          |
-| 冰山订单         | ✓    | 使用 `display_qty`。                                                     |
-| 追踪止损         | ✓    | 使用 `trailing_offset`。仅价格偏移类型。                                 |
-| 挂钩订单         | ✓    | 使用带 `peg_price_type` 的 `params`。参见[挂钩订单](#挂钩订单)。         |
+| 功能    | 支持  | 备注                                               |
+| ----- | --- | ------------------------------------------------ |
+| 订单修改  | ✓   | 修改价格、数量和触发价格。                                    |
+| 条件单组合 | ✓   | 使用 `contingency_type` 和 `linked_order_ids`。      |
+| 冰山订单  | ✓   | 使用 `display_qty`。                                |
+| 追踪止损  | ✓   | 使用 `trailing_offset`。仅价格偏移类型。                    |
+| 挂钩订单  | ✓   | 使用带 `peg_price_type` 的 `params`。参见[挂钩订单](#挂钩订单)。 |
 
 ### 批量操作
 
-| 操作             | 支持 | 备注                                        |
-|------------------|------|---------------------------------------------|
-| 批量提交         | -    | *BitMEX 不支持*。                           |
-| 批量修改         | -    | *BitMEX 不支持*。                           |
-| 批量取消         | ✓    | 单次请求取消多个订单。                      |
+| 操作   | 支持  | 备注            |
+| ---- | --- | ------------- |
+| 批量提交 | -   | *BitMEX 不支持*。 |
+| 批量修改 | -   | *BitMEX 不支持*。 |
+| 批量取消 | ✓   | 单次请求取消多个订单。   |
 
 ### 持仓管理
 
-| 功能              | 支持 | 备注                                               |
-|-------------------|------|----------------------------------------------------|
-| 查询持仓          | ✓    | REST 和通过 WebSocket 的实时持仓更新。             |
-| 全仓保证金        | ✓    | 默认保证金模式。                                   |
-| 逐仓保证金        | ✓    |                                                    |
+| 功能    | 支持  | 备注                          |
+| ----- | --- | --------------------------- |
+| 查询持仓  | ✓   | REST 和通过 WebSocket 的实时持仓更新。 |
+| 全仓保证金 | ✓   | 默认保证金模式。                    |
+| 逐仓保证金 | ✓   |                             |
 
 ### 订单查询
 
-| 功能               | 支持 | 备注                                         |
-|---------------------|------|----------------------------------------------|
-| 查询未完成订单      | ✓    | 列出所有活跃订单。                           |
-| 查询订单历史        | ✓    | 历史订单数据。                               |
-| 订单状态更新        | ✓    | 通过 WebSocket 实时推送订单状态变化。        |
-| 交易历史            | ✓    | 执行和成交报告。                             |
+| 功能      | 支持  | 备注                       |
+| ------- | --- | ------------------------ |
+| 查询未完成订单 | ✓   | 列出所有活跃订单。                |
+| 查询订单历史  | ✓   | 历史订单数据。                  |
+| 订单状态更新  | ✓   | 通过 WebSocket 实时推送订单状态变化。 |
+| 交易历史    | ✓   | 执行和成交报告。                 |
 
 ### 强平和 ADL 处理
 
 BitMEX 通过 `execution` 频道上的 `execType` 字段呈现强制平仓的成交：
 
-| `execType`    | 含义                                                         |
-|---------------|--------------------------------------------------------------|
-| `Trade`       | 正常执行（用户或 taker 发起）。                              |
+| `execType`    | 含义                                           |
+| ------------- | -------------------------------------------- |
+| `Trade`       | 正常执行（用户或 taker 发起）。                          |
 | `Liquidation` | 持仓被强平引擎强制平仓。BitMEX 对自动减仓（ADL）和对手方强平成交都使用此代码。 |
-| `Bankruptcy`  | 账户破产；持仓针对保险基金平仓。                            |
-| `Settlement`  | 计划内的合约结算。                                           |
-| `Funding`     | 对未平仓持仓的资金费结算。                                   |
+| `Bankruptcy`  | 账户破产；持仓针对保险基金平仓。                             |
+| `Settlement`  | 计划内的合约结算。                                    |
+| `Funding`     | 对未平仓持仓的资金费结算。                                |
 
 适配器将 `Liquidation` 和 `Bankruptcy` 通过标准的 `FillReport` 路径路由，
 并在破产执行时记录警告。BitMEX 的公开 API **不**在 `execType` 中区分
@@ -459,10 +461,10 @@ BitMEX 实施双层限流（Rate Limiting）系统：
 
 如果你的账户拥有与默认值不同的限制，可以配置限流参数：
 
-| 参数                       | 默认值（认证）       | 默认值（未认证）         | 描述                                                |
-|----------------------------|----------------------|--------------------------|-----------------------------------------------------|
-| `max_requests_per_second`  | 10                   | 10                       | 每秒最大请求数（突发限制）。                        |
-| `max_requests_per_minute`  | 120                  | 30                       | 每分钟最大请求数（滚动窗口）。                      |
+| 参数                        | 默认值（认证） | 默认值（未认证） | 描述              |
+| ------------------------- | ------- | -------- | --------------- |
+| `max_requests_per_second` | 10      | 10       | 每秒最大请求数（突发限制）。  |
+| `max_requests_per_minute` | 120     | 30       | 每分钟最大请求数（滚动窗口）。 |
 
 :::info
 有关限流的更多详情，请参阅 [BitMEX API 限流文档](https://www.bitmex.com/app/restAPI#Limits)。
@@ -540,14 +542,14 @@ self.submit_order(order, params={"submit_tries": 3})
 
 #### 跟踪指标
 
-| 指标                     | 类型   | 描述                                                                                                                  |
-|--------------------------|--------|-----------------------------------------------------------------------------------------------------------------------|
-| `total_submits`          | `u64`  | 发起的提交操作总数。                                                                                                  |
-| `successful_submits`     | `u64`  | 成功收到 BitMEX 确认的提交操作数。                                                                                    |
-| `failed_submits`         | `u64`  | 池中所有 HTTP 客户端均失败（无健康客户端或所有请求失败）的提交操作数。                                                |
-| `expected_rejects`       | `u64`  | 检测到的预期拒绝模式数（如并行提交导致的重复 clOrdID）。                                                              |
-| `healthy_clients`        | `usize`| 池中当前健康的 HTTP 客户端数量（通过最近健康检查的客户端）。                                                          |
-| `total_clients`          | `usize`| 池中配置的 HTTP 客户端总数（`submitter_pool_size`）。                                                                 |
+| 指标                   | 类型      | 描述                                       |
+| -------------------- | ------- | ---------------------------------------- |
+| `total_submits`      | `u64`   | 发起的提交操作总数。                               |
+| `successful_submits` | `u64`   | 成功收到 BitMEX 确认的提交操作数。                    |
+| `failed_submits`     | `u64`   | 池中所有 HTTP 客户端均失败（无健康客户端或所有请求失败）的提交操作数。   |
+| `expected_rejects`   | `u64`   | 检测到的预期拒绝模式数（如并行提交导致的重复 clOrdID）。         |
+| `healthy_clients`    | `usize` | 池中当前健康的 HTTP 客户端数量（通过最近健康检查的客户端）。        |
+| `total_clients`      | `usize` | 池中配置的 HTTP 客户端总数（`submitter_pool_size`）。 |
 
 这些指标可以通过 `SubmitBroadcaster` 实例上的 `get_metrics()` 方法以编程方式访问。
 
@@ -555,10 +557,10 @@ self.submit_order(order, params={"submit_tries": 3})
 
 提交广播器通过执行客户端配置进行设置：
 
-| 选项                   | 默认值  | 描述                                                                                |
-|------------------------|---------|-------------------------------------------------------------------------------------|
-| `submitter_pool_size`  | `None`  | HTTP 客户端池大小。`None` 解析为 1（单个客户端，无冗余）。                          |
-| `submitter_proxy_urls` | `None`  | 可选的代理 URL 列表，用于提交广播器的路径多样性。*尚未通过 Python 集成接入。*       |
+| 选项                     | 默认值    | 描述                                             |
+| ---------------------- | ------ | ---------------------------------------------- |
+| `submitter_pool_size`  | `None` | HTTP 客户端池大小。`None` 解析为 1（单个客户端，无冗余）。           |
+| `submitter_proxy_urls` | `None` | 可选的代理 URL 列表，用于提交广播器的路径多样性。*尚未通过 Python 集成接入。* |
 
 **配置示例**：
 
@@ -607,15 +609,15 @@ BitMEX 执行客户端包含一个取消广播器（Cancel Broadcaster），通�
 
 #### 跟踪指标
 
-| 指标                     | 类型   | 描述                                                                                                                  |
-|--------------------------|--------|-----------------------------------------------------------------------------------------------------------------------|
-| `total_cancels`          | `u64`  | 发起的取消操作总数（包括单个、批量和全部取消请求）。                                                                  |
-| `successful_cancels`     | `u64`  | 成功收到 BitMEX 确认的取消操作数。                                                                                    |
-| `failed_cancels`         | `u64`  | 池中所有 HTTP 客户端均失败（无健康客户端或所有请求失败）的取消操作数。                                                |
-| `expected_rejects`       | `u64`  | 检测到的预期拒绝模式数（如 post-only 订单拒绝）。                                                                    |
-| `idempotent_successes`   | `u64`  | 幂等成功响应数（订单已取消、订单未找到、因状态无法取消）。                                                            |
-| `healthy_clients`        | `usize`| 池中当前健康的 HTTP 客户端数量（通过最近健康检查的客户端）。                                                          |
-| `total_clients`          | `usize`| 池中配置的 HTTP 客户端总数（`canceller_pool_size`）。                                                                 |
+| 指标                     | 类型      | 描述                                       |
+| ---------------------- | ------- | ---------------------------------------- |
+| `total_cancels`        | `u64`   | 发起的取消操作总数（包括单个、批量和全部取消请求）。               |
+| `successful_cancels`   | `u64`   | 成功收到 BitMEX 确认的取消操作数。                    |
+| `failed_cancels`       | `u64`   | 池中所有 HTTP 客户端均失败（无健康客户端或所有请求失败）的取消操作数。   |
+| `expected_rejects`     | `u64`   | 检测到的预期拒绝模式数（如 post-only 订单拒绝）。           |
+| `idempotent_successes` | `u64`   | 幂等成功响应数（订单已取消、订单未找到、因状态无法取消）。            |
+| `healthy_clients`      | `usize` | 池中当前健康的 HTTP 客户端数量（通过最近健康检查的客户端）。        |
+| `total_clients`        | `usize` | 池中配置的 HTTP 客户端总数（`canceller_pool_size`）。 |
 
 这些指标可以通过 `CancelBroadcaster` 实例上的 `get_metrics()` 方法以编程方式访问。
 
@@ -623,10 +625,10 @@ BitMEX 执行客户端包含一个取消广播器（Cancel Broadcaster），通�
 
 取消广播器通过执行客户端配置进行设置：
 
-| 选项                   | 默认值  | 描述                                                                                |
-|------------------------|---------|-------------------------------------------------------------------------------------|
-| `canceller_pool_size`  | `None`  | HTTP 客户端池大小。`None` 解析为 1（单个客户端，无冗余）。                          |
-| `canceller_proxy_urls` | `None`  | 可选的代理 URL 列表，用于取消广播器的路径多样性。*尚未通过 Python 集成接入。*       |
+| 选项                     | 默认值    | 描述                                             |
+| ---------------------- | ------ | ---------------------------------------------- |
+| `canceller_pool_size`  | `None` | HTTP 客户端池大小。`None` 解析为 1（单个客户端，无冗余）。           |
+| `canceller_proxy_urls` | `None` | 可选的代理 URL 列表，用于取消广播器的路径多样性。*尚未通过 Python 集成接入。* |
 
 **配置示例**：
 
@@ -760,49 +762,49 @@ BitMEX API 凭证可以直接在配置中提供，也可以通过环境变量提
 
 BitMEX 数据客户端提供以下配置选项：
 
-| 选项                              | 默认值    | 描述 |
-|-----------------------------------|-----------|------|
-| `api_key`                         | `None`    | 可选的 API 密钥；如果为 `None`，从 `environment` 所选的环境加载。 |
-| `api_secret`                      | `None`    | 可选的 API 密钥密文；如果为 `None`，从 `environment` 所选的环境加载。 |
-| `environment`                     | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。 |
-| `base_url_http`                   | `None`    | REST 基础 URL 覆盖（默认为生产环境）。 |
-| `base_url_ws`                     | `None`    | WebSocket 基础 URL 覆盖（默认为生产环境）。 |
-| `http_timeout_secs`               | `60`      | 应用于 HTTP 调用的请求超时。 |
-| `max_retries`                     | `3`       | HTTP 调用的最大重试次数。 |
-| `retry_delay_initial_ms`          | `1,000`   | 重试之间的初始退避延迟（毫秒）。 |
-| `retry_delay_max_ms`              | `10,000`  | 重试之间的最大退避延迟（毫秒）。 |
-| `recv_window_ms`                  | `10,000`  | 签名请求的过期窗口（毫秒）。参见[请求认证](#请求认证和过期)。 |
-| `update_instruments_interval_mins`| `60`      | 金融工具目录刷新间隔（分钟）。 |
-| `max_requests_per_second`         | `10`      | 适配器对 REST 调用执行的突发限流。 |
-| `max_requests_per_minute`         | `120`     | 适配器对 REST 调用执行的滚动分钟限流。 |
-| `proxy_url`                       | `None`    | 可选的 HTTP 和 WebSocket 传输代理 URL。 |
-| `transport_backend`               | `Sockudo` | WebSocket 传输后端。 |
+| 选项                                 | 默认值       | 描述                                               |
+| ---------------------------------- | --------- | ------------------------------------------------ |
+| `api_key`                          | `None`    | 可选的 API 密钥；如果为 `None`，从 `environment` 所选的环境加载。   |
+| `api_secret`                       | `None`    | 可选的 API 密钥密文；如果为 `None`，从 `environment` 所选的环境加载。 |
+| `environment`                      | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。                     |
+| `base_url_http`                    | `None`    | REST 基础 URL 覆盖（默认为生产环境）。                         |
+| `base_url_ws`                      | `None`    | WebSocket 基础 URL 覆盖（默认为生产环境）。                    |
+| `http_timeout_secs`                | `60`      | 应用于 HTTP 调用的请求超时。                                |
+| `max_retries`                      | `3`       | HTTP 调用的最大重试次数。                                  |
+| `retry_delay_initial_ms`           | `1,000`   | 重试之间的初始退避延迟（毫秒）。                                 |
+| `retry_delay_max_ms`               | `10,000`  | 重试之间的最大退避延迟（毫秒）。                                 |
+| `recv_window_ms`                   | `10,000`  | 签名请求的过期窗口（毫秒）。参见[请求认证](#请求认证和过期)。                |
+| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。                                  |
+| `max_requests_per_second`          | `10`      | 适配器对 REST 调用执行的突发限流。                             |
+| `max_requests_per_minute`          | `120`     | 适配器对 REST 调用执行的滚动分钟限流。                           |
+| `proxy_url`                        | `None`    | 可选的 HTTP 和 WebSocket 传输代理 URL。                   |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                  |
 
 ### 执行客户端配置选项
 
 BitMEX 执行客户端提供以下配置选项：
 
-| 选项                           | 默认值    | 描述 |
-|--------------------------------|-----------|------|
-| `api_key`                      | `None`    | 可选的 API 密钥；如果为 `None`，从 `environment` 所选的环境加载。 |
-| `api_secret`                   | `None`    | 可选的 API 密钥密文；如果为 `None`，从 `environment` 所选的环境加载。 |
-| `environment`                  | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。 |
-| `base_url_http`                | `None`    | REST 基础 URL 覆盖（默认为生产环境）。 |
-| `base_url_ws`                  | `None`    | WebSocket 基础 URL 覆盖（默认为生产环境）。 |
-| `http_timeout_secs`            | `60`      | 应用于 HTTP 调用的请求超时。 |
-| `max_retries`                  | `3`       | HTTP 调用的最大重试次数。 |
-| `retry_delay_initial_ms`       | `1,000`   | 重试之间的初始退避延迟（毫秒）。 |
-| `retry_delay_max_ms`           | `10,000`  | 重试之间的最大退避延迟（毫秒）。 |
-| `recv_window_ms`               | `10,000`  | 签名请求的过期窗口（毫秒）。参见[请求认证](#请求认证和过期)。 |
-| `max_requests_per_second`      | `10`      | 适配器对 REST 调用执行的突发限流。 |
-| `max_requests_per_minute`      | `120`     | 适配器对 REST 调用执行的滚动分钟限流。 |
-| `deadmans_switch_timeout_secs` | `None`    | 死人开关的超时秒数。`None` 表示禁用。参见[死人开关](#死人开关)。 |
+| 选项                             | 默认值       | 描述                                                  |
+| ------------------------------ | --------- | --------------------------------------------------- |
+| `api_key`                      | `None`    | 可选的 API 密钥；如果为 `None`，从 `environment` 所选的环境加载。      |
+| `api_secret`                   | `None`    | 可选的 API 密钥密文；如果为 `None`，从 `environment` 所选的环境加载。    |
+| `environment`                  | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。                        |
+| `base_url_http`                | `None`    | REST 基础 URL 覆盖（默认为生产环境）。                            |
+| `base_url_ws`                  | `None`    | WebSocket 基础 URL 覆盖（默认为生产环境）。                       |
+| `http_timeout_secs`            | `60`      | 应用于 HTTP 调用的请求超时。                                   |
+| `max_retries`                  | `3`       | HTTP 调用的最大重试次数。                                     |
+| `retry_delay_initial_ms`       | `1,000`   | 重试之间的初始退避延迟（毫秒）。                                    |
+| `retry_delay_max_ms`           | `10,000`  | 重试之间的最大退避延迟（毫秒）。                                    |
+| `recv_window_ms`               | `10,000`  | 签名请求的过期窗口（毫秒）。参见[请求认证](#请求认证和过期)。                   |
+| `max_requests_per_second`      | `10`      | 适配器对 REST 调用执行的突发限流。                                |
+| `max_requests_per_minute`      | `120`     | 适配器对 REST 调用执行的滚动分钟限流。                              |
+| `deadmans_switch_timeout_secs` | `None`    | 死人开关的超时秒数。`None` 表示禁用。参见[死人开关](#死人开关)。              |
 | `canceller_pool_size`          | `None`    | 取消广播器池中的 HTTP 客户端数量。`None` 解析为 1。参见[取消广播器](#取消广播器)。 |
 | `submitter_pool_size`          | `None`    | 提交广播器池中的 HTTP 客户端数量。`None` 解析为 1。参见[提交广播器](#提交广播器)。 |
-| `proxy_url`                    | `None`    | 可选的 HTTP 和 WebSocket 传输代理 URL。 |
-| `submitter_proxy_urls`         | `None`    | 可选的代理 URL 列表，用于提交广播器路径多样性。*尚未通过 Python 集成接入。* |
-| `canceller_proxy_urls`         | `None`    | 可选的代理 URL 列表，用于取消广播器路径多样性。*尚未通过 Python 集成接入。* |
-| `transport_backend`            | `Sockudo` | WebSocket 传输后端。 |
+| `proxy_url`                    | `None`    | 可选的 HTTP 和 WebSocket 传输代理 URL。                      |
+| `submitter_proxy_urls`         | `None`    | 可选的代理 URL 列表，用于提交广播器路径多样性。*尚未通过 Python 集成接入。*       |
+| `canceller_proxy_urls`         | `None`    | 可选的代理 URL 列表，用于取消广播器路径多样性。*尚未通过 Python 集成接入。*       |
+| `transport_backend`            | `Sockudo` | WebSocket 传输后端。                                     |
 
 ### 配置示例
 

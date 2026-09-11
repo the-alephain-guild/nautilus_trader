@@ -88,26 +88,26 @@ NautilusTrader 中的数据聚合将细粒度的行情数据转换为结构化�
 
 平台实现了多种聚合方法：
 
-| 名称               | 描述                                                                       | 类别         |
-|:-------------------|:---------------------------------------------------------------------------|:-------------|
-| `TICK`             | 按一定数量的 Tick 进行聚合。                                                | 阈值         |
-| `TICK_IMBALANCE`   | 按 Tick 的买卖不平衡进行聚合。                                              | 阈值         |
-| `TICK_RUNS`        | 按 Tick 的连续买卖序列进行聚合。                                            | 信息         |
-| `VOLUME`           | 按成交量进行聚合。                                                          | 阈值         |
-| `VOLUME_IMBALANCE` | 按成交量的买卖不平衡进行聚合。                                              | 阈值         |
-| `VOLUME_RUNS`      | 按成交量的连续买卖序列进行聚合。                                            | 信息         |
-| `VALUE`            | 按交易名义价值进行聚合（也称为"美元 K线"）。                                | 阈值         |
-| `VALUE_IMBALANCE`  | 按名义价值交易的买卖不平衡进行聚合。                                        | 阈值         |
-| `VALUE_RUNS`       | 按名义价值交易的连续买卖序列进行聚合。                                      | 信息         |
-| `RENKO`            | 基于固定价格变动（以 Tick 为砖块大小）进行聚合。                            | 阈值         |
-| `MILLISECOND`      | 按毫秒粒度的时间间隔聚合。                                                  | 时间         |
-| `SECOND`           | 按秒粒度的时间间隔聚合。                                                    | 时间         |
-| `MINUTE`           | 按分钟粒度的时间间隔聚合。                                                  | 时间         |
-| `HOUR`             | 按小时粒度的时间间隔聚合。                                                  | 时间         |
-| `DAY`              | 按天粒度的时间间隔聚合。                                                    | 时间         |
-| `WEEK`             | 按周粒度的时间间隔聚合。                                                    | 时间         |
-| `MONTH`            | 按月粒度的时间间隔聚合。                                                    | 时间         |
-| `YEAR`             | 按年粒度的时间间隔聚合。                                                    | 时间         |
+| 名称                 | 描述                          | 类别   |
+| :----------------- | :-------------------------- | :--- |
+| `TICK`             | 按一定数量的 Tick 进行聚合。           | 阈值   |
+| `TICK_IMBALANCE`   | 按 Tick 的买卖不平衡进行聚合。          | 阈值   |
+| `TICK_RUNS`        | 按 Tick 的连续买卖序列进行聚合。         | 信息   |
+| `VOLUME`           | 按成交量进行聚合。                   | 阈值   |
+| `VOLUME_IMBALANCE` | 按成交量的买卖不平衡进行聚合。             | 阈值   |
+| `VOLUME_RUNS`      | 按成交量的连续买卖序列进行聚合。            | 信息   |
+| `VALUE`            | 按交易名义价值进行聚合（也称为"美元 K线"）。    | 阈值   |
+| `VALUE_IMBALANCE`  | 按名义价值交易的买卖不平衡进行聚合。          | 阈值   |
+| `VALUE_RUNS`       | 按名义价值交易的连续买卖序列进行聚合。         | 信息   |
+| `RENKO`            | 基于固定价格变动（以 Tick 为砖块大小）进行聚合。 | 阈值   |
+| `MILLISECOND`      | 按毫秒粒度的时间间隔聚合。               | 时间   |
+| `SECOND`           | 按秒粒度的时间间隔聚合。                | 时间   |
+| `MINUTE`           | 按分钟粒度的时间间隔聚合。               | 时间   |
+| `HOUR`             | 按小时粒度的时间间隔聚合。               | 时间   |
+| `DAY`              | 按天粒度的时间间隔聚合。                | 时间   |
+| `WEEK`             | 按周粒度的时间间隔聚合。                | 时间   |
+| `MONTH`            | 按月粒度的时间间隔聚合。                | 时间   |
+| `YEAR`             | 按年粒度的时间间隔聚合。                | 时间   |
 
 ### 信息驱动型 K线
 
@@ -124,11 +124,11 @@ NautilusTrader 中的数据聚合将细粒度的行情数据转换为结构化�
 
 两个系列根据所衡量的对象各有三个变体：
 
-| 变体    | 不平衡             | 连续          | 衡量对象                            |
-|:--------|:-------------------|:--------------|:------------------------------------|
-| Tick    | `TICK_IMBALANCE`   | `TICK_RUNS`   | 成交笔数（每笔成交计为 1）           |
-| Volume  | `VOLUME_IMBALANCE` | `VOLUME_RUNS` | 成交量（数量）                       |
-| Value   | `VALUE_IMBALANCE`  | `VALUE_RUNS`  | 名义价值（价格 x 数量）              |
+| 变体     | 不平衡                | 连续            | 衡量对象           |
+| :----- | :----------------- | :------------ | :------------- |
+| Tick   | `TICK_IMBALANCE`   | `TICK_RUNS`   | 成交笔数（每笔成交计为 1） |
+| Volume | `VOLUME_IMBALANCE` | `VOLUME_RUNS` | 成交量（数量）        |
+| Value  | `VALUE_IMBALANCE`  | `VALUE_RUNS`  | 名义价值（价格 x 数量）  |
 
 :::note
 信息驱动型 K线需要 `TradeTick` 数据，因为它们需要 `aggressor_side` 字段来对每笔成交进行分类。
@@ -352,6 +352,7 @@ def on_historical_data(self, data):
     # 会自动使用历史数据进行更新
     pass
 
+
 def on_bar(self, bar):
     # 处理来自 subscribe_bars() 的实时单根 K线
     # 注册到此 K线类型的指标将自动更新，且会在调用此处理器之前完成更新
@@ -421,14 +422,14 @@ K线聚合器通过定点 `Price` 类型跟踪 OHLC 价格。Tick 和成交量�
 
 时间 K线的行为通过 `DataEngineConfig` 控制。以下选项适用于所有基于时间的聚合（从毫秒到年）：
 
-| 选项                                | 类型   | 默认值        | 描述                                                                                                          |
-|:------------------------------------|:-------|:--------------|:------------------------------------------------------------------------------------------------------------|
-| `time_bars_interval_type`           | `str`  | `"left-open"` | `"left-open"`：排除起点、包含终点。`"right-open"`：包含起点、排除终点。                                       |
-| `time_bars_timestamp_on_close`      | `bool` | `True`        | 为 `True` 时，`ts_event` 为 K线收盘时间。为 `False` 时，`ts_event` 为 K线开盘时间。                          |
-| `time_bars_skip_first_non_full_bar` | `bool` | `False`       | 当聚合从某个时段中途开始时跳过该 K线的发出，避免启动时出现不完整的 K线。                                      |
+| 选项                                  | 类型     | 默认值           | 描述                                                                                    |
+| :---------------------------------- | :----- | :------------ | :------------------------------------------------------------------------------------ |
+| `time_bars_interval_type`           | `str`  | `"left-open"` | `"left-open"`：排除起点、包含终点。`"right-open"`：包含起点、排除终点。                                     |
+| `time_bars_timestamp_on_close`      | `bool` | `True`        | 为 `True` 时，`ts_event` 为 K线收盘时间。为 `False` 时，`ts_event` 为 K线开盘时间。                       |
+| `time_bars_skip_first_non_full_bar` | `bool` | `False`       | 当聚合从某个时段中途开始时跳过该 K线的发出，避免启动时出现不完整的 K线。                                                |
 | `time_bars_build_with_no_updates`   | `bool` | `True`        | 为 `True` 时，即使该时段内没有市场更新到达，也会发出 K线。                                                    |
 | `time_bars_origin_offset`           | `dict` | `None`        | 将 `BarAggregation` 类型映射到 `pd.Timedelta` 或 `pd.DateOffset` 值，用于偏移 K线对齐（如对齐到 09:30 开盘）。 |
-| `time_bars_build_delay`             | `int`  | `0`           | 构建 K线前的延迟（微秒）。在回测中很有用，可确保 K线边界时间戳处的数据在定时器触发前已被处理。                |
+| `time_bars_build_delay`             | `int`  | `0`           | 构建 K线前的延迟（微秒）。在回测中很有用，可确保 K线边界时间戳处的数据在定时器触发前已被处理。                                     |
 
 ```python
 from nautilus_trader.data.config import DataEngineConfig
@@ -450,17 +451,17 @@ config = DataEngineConfig(
 
 ### 示例
 
-| **事件类型**     | **`ts_event`**                                        | **`ts_init`** |
-| -----------------| ------------------------------------------------------| --------------|
-| `TradeTick`      | 成交在交易所发生的时间。                                | Nautilus 接收到成交数据的时间。 |
-| `QuoteTick`      | 报价在交易所发生的时间。                                | Nautilus 接收到报价数据的时间。 |
-| `OrderBookDelta` | 订单簿更新在交易所发生的时间。                          | Nautilus 接收到订单簿更新的时间。 |
-| `Bar`            | K线收盘的时间（精确到分钟/小时）。                       | Nautilus 生成（内部 K线）或接收到 K线数据（外部 K线）的时间。 |
-| `DefiData`       | 区块或资金池事件发生的时间。                            | Nautilus 从链上数据创建对象的时间。 |
-| `OrderFilled`    | 订单在交易所被成交的时间。                              | Nautilus 接收并处理成交确认的时间。 |
-| `OrderCanceled`  | 撤单在交易所被处理的时间。                              | Nautilus 接收并处理撤单确认的时间。 |
-| `NewsEvent`      | 新闻发布的时间。                                       | Nautilus 中事件对象被创建（内部事件）或接收（外部事件）的时间。 |
-| 自定义事件       | 事件条件实际发生的时间。                                | Nautilus 中事件对象被创建（内部事件）或接收（外部事件）的时间。 |
+| **事件类型**         | **`ts_event`**     | **`ts_init`**                          |
+| ---------------- | ------------------ | -------------------------------------- |
+| `TradeTick`      | 成交在交易所发生的时间。       | Nautilus 接收到成交数据的时间。                   |
+| `QuoteTick`      | 报价在交易所发生的时间。       | Nautilus 接收到报价数据的时间。                   |
+| `OrderBookDelta` | 订单簿更新在交易所发生的时间。    | Nautilus 接收到订单簿更新的时间。                  |
+| `Bar`            | K线收盘的时间（精确到分钟/小时）。 | Nautilus 生成（内部 K线）或接收到 K线数据（外部 K线）的时间。 |
+| `DefiData`       | 区块或资金池事件发生的时间。     | Nautilus 从链上数据创建对象的时间。                 |
+| `OrderFilled`    | 订单在交易所被成交的时间。      | Nautilus 接收并处理成交确认的时间。                 |
+| `OrderCanceled`  | 撤单在交易所被处理的时间。      | Nautilus 接收并处理撤单确认的时间。                 |
+| `NewsEvent`      | 新闻发布的时间。           | Nautilus 中事件对象被创建（内部事件）或接收（外部事件）的时间。   |
+| 自定义事件            | 事件条件实际发生的时间。       | Nautilus 中事件对象被创建（内部事件）或接收（外部事件）的时间。   |
 
 :::note
 `ts_init` 字段表示的概念比事件的"接收时间"更为广泛。
@@ -586,7 +587,7 @@ NautilusTrader 对 `Price` 和 `Quantity` 类型使用定点运算，以实现�
 而非精度感知转换产生时，就会发生这种情况：
 
 ```python
-int(value * FIXED_SCALAR)             # 引入浮点误差
+int(value * FIXED_SCALAR)  # 引入浮点误差
 round(value * 10**precision) * scale  # 正确的精度感知转换
 ```
 
@@ -738,7 +739,7 @@ catalog = ParquetDataCatalog(
         "key": "your-access-key-id",
         "secret": "your-secret-access-key",
         "endpoint_url": "https://s3.amazonaws.com",  # 可选自定义端点
-    }
+    },
 )
 ```
 
@@ -751,7 +752,7 @@ catalog = ParquetDataCatalog(
     fs_storage_options={
         "project": "my-project-id",
         "token": "/path/to/service-account.json",  # 或 "cloud" 使用默认凭证
-    }
+    },
 )
 ```
 
@@ -767,7 +768,7 @@ catalog = ParquetDataCatalog(
         "account_name": "your-storage-account",
         "account_key": "your-account-key",
         # 或使用 SAS 令牌: "sas_token": "your-sas-token"
-    }
+    },
 )
 ```
 
@@ -781,7 +782,7 @@ catalog = ParquetDataCatalog(
         "account_name": "your-storage-account",
         "account_key": "your-account-key",
         # 或使用 SAS 令牌: "sas_token": "your-sas-token"
-    }
+    },
 )
 ```
 
@@ -799,10 +800,7 @@ catalog = ParquetDataCatalog.from_uri("s3://my-bucket/nautilus-data/")
 # 带存储选项
 catalog = ParquetDataCatalog.from_uri(
     "s3://my-bucket/nautilus-data/",
-    fs_storage_options={
-        "access_key_id": "your-key",
-        "secret_access_key": "your-secret"
-    }
+    fs_storage_options={"access_key_id": "your-key", "secret_access_key": "your-secret"},
 )
 ```
 
@@ -818,7 +816,7 @@ catalog.write_data(quote_ticks)
 catalog.write_data(
     trade_ticks,
     start=1704067200000000000,  # 可选的起始时间戳覆盖（UNIX 纳秒）
-    end=1704153600000000000,    # 可选的结束时间戳覆盖（UNIX 纳秒）
+    end=1704153600000000000,  # 可选的结束时间戳覆盖（UNIX 纳秒）
 )
 
 # 跳过不连续检查以处理重叠数据
@@ -873,7 +871,7 @@ quotes = catalog.query(
     data_cls=QuoteTick,
     identifiers=["EUR/USD.SIM"],
     start="2024-01-01T00:00:00Z",
-    end="2024-01-02T00:00:00Z"
+    end="2024-01-02T00:00:00Z",
 )
 
 # 查询特定金融工具和时间范围的成交 Tick
@@ -966,7 +964,7 @@ data_config = BacktestDataConfig(
     catalog_fs_storage_options={
         "key": "your-access-key",
         "secret": "your-secret-key",
-        "region": "us-east-1"
+        "region": "us-east-1",
     },
     data_cls=OrderBookDelta,
     instrument_id=InstrumentId.from_str("BTC/USD.COINBASE"),
@@ -1066,9 +1064,7 @@ run_config = BacktestRunConfig(
 from nautilus_trader.persistence.config import DataCatalogConfig
 
 catalog_config = DataCatalogConfig(
-    path="/path/to/catalog",
-    fs_protocol="file",
-    name="local_market_data"
+    path="/path/to/catalog", fs_protocol="file", name="local_market_data"
 )
 
 # 转换为目录实例
@@ -1085,9 +1081,9 @@ catalog_config = DataCatalogConfig(
         "key": "your-access-key",
         "secret": "your-secret-key",
         "region": "us-west-2",
-        "endpoint_url": "https://s3.us-west-2.amazonaws.com"
+        "endpoint_url": "https://s3.us-west-2.amazonaws.com",
     },
-    name="cloud_market_data"
+    name="cloud_market_data",
 )
 ```
 
@@ -1101,9 +1097,7 @@ from nautilus_trader.persistence.config import DataCatalogConfig
 
 # 为实盘系统配置目录
 catalog_config = DataCatalogConfig(
-    path="/data/nautilus/catalog",
-    fs_protocol="file",
-    name="historical_data"
+    path="/data/nautilus/catalog", fs_protocol="file", name="historical_data"
 )
 
 # 在交易节点配置中使用
@@ -1177,11 +1171,11 @@ streaming_config = StreamingConfig(
 
 ```python
 catalog.query(
-    data_cls=QuoteTick,                    # 要查询的数据类型
-    identifiers=["EUR/USD.SIM"],           # 金融工具标识符
-    start="2024-01-01T00:00:00Z",         # 起始时间（支持多种格式）
-    end="2024-01-02T00:00:00Z",           # 结束时间
-    files=None,                           # 留空以自动发现文件
+    data_cls=QuoteTick,  # 要查询的数据类型
+    identifiers=["EUR/USD.SIM"],  # 金融工具标识符
+    start="2024-01-01T00:00:00Z",  # 起始时间（支持多种格式）
+    end="2024-01-02T00:00:00Z",  # 结束时间
+    files=None,  # 留空以自动发现文件
 )
 ```
 
@@ -1238,9 +1232,7 @@ catalog.consolidate_catalog()
 
 # 在特定时间范围内合并文件
 catalog.consolidate_catalog(
-    start="2024-01-01T00:00:00Z",
-    end="2024-01-02T00:00:00Z",
-    ensure_contiguous_files=True
+    start="2024-01-01T00:00:00Z", end="2024-01-02T00:00:00Z", ensure_contiguous_files=True
 )
 ```
 
@@ -1252,10 +1244,7 @@ catalog.consolidate_data(QuoteTick)
 
 # 合并特定金融工具的文件
 catalog.consolidate_data(
-    TradeTick,
-    identifier="BTC/USD.BINANCE",
-    start="2024-01-01",
-    end="2024-01-31"
+    TradeTick, identifier="BTC/USD.BINANCE", start="2024-01-01", end="2024-01-31"
 )
 ```
 
@@ -1269,15 +1258,11 @@ catalog.consolidate_data(
 import pandas as pd
 
 # 按1天时间段合并所有文件
-catalog.consolidate_catalog_by_period(
-    period=pd.Timedelta(days=1)
-)
+catalog.consolidate_catalog_by_period(period=pd.Timedelta(days=1))
 
 # 在时间范围内按1小时时间段合并
 catalog.consolidate_catalog_by_period(
-    period=pd.Timedelta(hours=1),
-    start="2024-01-01T00:00:00Z",
-    end="2024-01-02T00:00:00Z"
+    period=pd.Timedelta(hours=1), start="2024-01-01T00:00:00Z", end="2024-01-02T00:00:00Z"
 )
 ```
 
@@ -1285,10 +1270,7 @@ catalog.consolidate_catalog_by_period(
 
 ```python
 # 按4小时时间段合并报价数据
-catalog.consolidate_data_by_period(
-    data_cls=QuoteTick,
-    period=pd.Timedelta(hours=4)
-)
+catalog.consolidate_data_by_period(data_cls=QuoteTick, period=pd.Timedelta(hours=4))
 
 # 按30分钟时间段合并特定金融工具
 catalog.consolidate_data_by_period(
@@ -1296,7 +1278,7 @@ catalog.consolidate_data_by_period(
     identifier="EUR/USD.SIM",
     period=pd.Timedelta(minutes=30),
     start="2024-01-01",
-    end="2024-01-31"
+    end="2024-01-31",
 )
 ```
 
@@ -1308,10 +1290,7 @@ catalog.consolidate_data_by_period(
 
 ```python
 # 删除整个目录中某个时间范围内的所有数据
-catalog.delete_catalog_range(
-    start="2024-01-01T00:00:00Z",
-    end="2024-01-02T00:00:00Z"
-)
+catalog.delete_catalog_range(start="2024-01-01T00:00:00Z", end="2024-01-02T00:00:00Z")
 
 # 删除从开始到特定时间的所有数据
 catalog.delete_catalog_range(end="2024-01-01T00:00:00Z")
@@ -1321,17 +1300,14 @@ catalog.delete_catalog_range(end="2024-01-01T00:00:00Z")
 
 ```python
 # 删除特定金融工具的所有报价 Tick 数据
-catalog.delete_data_range(
-    data_cls=QuoteTick,
-    identifier="BTC/USD.BINANCE"
-)
+catalog.delete_data_range(data_cls=QuoteTick, identifier="BTC/USD.BINANCE")
 
 # 删除特定时间范围内的成交数据
 catalog.delete_data_range(
     data_cls=TradeTick,
     identifier="EUR/USD.SIM",
     start="2024-01-01T00:00:00Z",
-    end="2024-01-31T23:59:59Z"
+    end="2024-01-31T23:59:59Z",
 )
 ```
 
@@ -1601,8 +1577,7 @@ data_config = BacktestDataConfig(
 
 ```python
 self.subscribe_data(
-    data_type=DataType(MyDataPoint,
-    metadata={"some_optional_category": 1}),
+    data_type=DataType(MyDataPoint, metadata={"some_optional_category": 1}),
     client_id=ClientId("MY_ADAPTER"),
 )
 ```
@@ -1629,6 +1604,7 @@ def on_data(self, data: Data) -> None:
 self.publish_signal("signal_name", value, ts_event)
 self.subscribe_signal("signal_name")
 
+
 def on_signal(self, signal):
     print("Signal", signal)
 ```
@@ -1653,7 +1629,8 @@ from nautilus_trader.core.datetime import dt_to_unix_nanos, unix_nanos_to_dt, fo
 
 class GreeksData(Data):
     def __init__(
-        self, instrument_id: InstrumentId = InstrumentId.from_str("ES.GLBX"),
+        self,
+        instrument_id: InstrumentId = InstrumentId.from_str("ES.GLBX"),
         ts_event: int = 0,
         ts_init: int = 0,
         delta: float = 0.0,
@@ -1664,7 +1641,7 @@ class GreeksData(Data):
         self.delta = delta
 
     def __repr__(self):
-        return (f"GreeksData(ts_init={unix_nanos_to_iso8601(self._ts_init)}, instrument_id={self.instrument_id}, delta={self.delta:.2f})")
+        return f"GreeksData(ts_init={unix_nanos_to_iso8601(self._ts_init)}, instrument_id={self.instrument_id}, delta={self.delta:.2f})"
 
     @property
     def ts_event(self):
@@ -1684,7 +1661,12 @@ class GreeksData(Data):
 
     @classmethod
     def from_dict(cls, data: dict):
-        return GreeksData(InstrumentId.from_str(data["instrument_id"]), data["ts_event"], data["ts_init"], data["delta"])
+        return GreeksData(
+            InstrumentId.from_str(data["instrument_id"]),
+            data["ts_event"],
+            data["ts_init"],
+            data["delta"],
+        )
 
     def to_bytes(self):
         return msgspec.msgpack.encode(self.to_dict())
@@ -1719,11 +1701,14 @@ class GreeksData(Data):
 ```python
 register_serializable_type(GreeksData, GreeksData.to_dict, GreeksData.from_dict)
 
+
 def publish_greeks(self, greeks_data: GreeksData):
     self.publish_data(DataType(GreeksData), greeks_data)
 
+
 def subscribe_to_greeks(self):
     self.subscribe_data(DataType(GreeksData))
+
 
 def on_data(self, data):
     if isinstance(data, GreeksData):
@@ -1738,8 +1723,10 @@ def on_data(self, data):
 def greeks_key(instrument_id: InstrumentId):
     return f"{instrument_id}_GREEKS"
 
+
 def cache_greeks(self, greeks_data: GreeksData):
     self.cache.add(greeks_key(greeks_data.instrument_id), greeks_data.to_bytes())
+
 
 def greeks_from_cache(self, instrument_id: InstrumentId):
     return GreeksData.from_bytes(self.cache.get(greeks_key(instrument_id)))
@@ -1754,7 +1741,8 @@ def greeks_from_cache(self, instrument_id: InstrumentId):
 register_arrow(GreeksData, GreeksData.schema(), GreeksData.to_catalog, GreeksData.from_catalog)
 
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
-catalog = ParquetDataCatalog('.')
+
+catalog = ParquetDataCatalog(".")
 
 catalog.write_data([GreeksData()])
 ```
@@ -1847,7 +1835,7 @@ class GreeksData(Data):
         ts_init: int = 0,
         instrument_id: InstrumentId = InstrumentId.from_str("ES.GLBX"),
         delta: float = 0.0,
-  ) -> GreeksData: ...
+    ) -> GreeksData: ...
 ```
 
 ## 相关指南

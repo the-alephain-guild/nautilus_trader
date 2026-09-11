@@ -12,10 +12,10 @@
 
 NautilusTrader 使用两个互补的 Rust 基准测试框架：
 
-| 框架 | 测量内容 | 何时优先选择 |
-|--------------------------------------------------------------|-------------------------------------------|------------------------------------------------------|
-| [**Criterion**](https://docs.rs/criterion/latest/criterion/) | 带置信区间的实际运行时间（wall-clock time） | 任何 ≥ 100 ns 的代码；绝对测量；对比比较。 |
-| [**iai**](https://docs.rs/iai/latest/iai/)                   | 已退役的 CPU 指令数（通过 Cachegrind 统计） | 低于 100 ns 的函数；CI 回归检测。 |
+| 框架                                                           | 测量内容                           | 何时优先选择                     |
+| ------------------------------------------------------------ | ------------------------------ | -------------------------- |
+| [**Criterion**](https://docs.rs/criterion/latest/criterion/) | 带置信区间的实际运行时间（wall-clock time）  | 任何 ≥ 100 ns 的代码；绝对测量；对比比较。 |
+| [**iai**](https://docs.rs/iai/latest/iai/)                   | 已退役的 CPU 指令数（通过 Cachegrind 统计） | 低于 100 ns 的函数；CI 回归检测。     |
 
 大多数热路径代码都能从两者中获益。Criterion 给出用户可见的数字；iai 给出无噪声的回归信号。
 
@@ -120,13 +120,13 @@ iai::main!(bench_add);
 
 ## 本地运行基准测试
 
-| 目标 | 命令 |
-|-------------------------------------|----------------------------------------------------------------------|
-| 某个 crate 中的全部基准测试 | `cargo bench -p nautilus-execution` |
-| 单个基准测试模块 | `cargo bench -p nautilus-execution --bench matching_core` |
-| 按名称模式运行某个特定基准测试 | `cargo bench -p nautilus-execution --bench matching_core -- iterate` |
-| 快速冒烟运行（低采样数） | `cargo bench ... -- --quick` |
-| 全部 CI 跟踪的基准测试 | `make cargo-ci-benches` |
+| 目标                | 命令                                                                   |
+| ----------------- | -------------------------------------------------------------------- |
+| 某个 crate 中的全部基准测试 | `cargo bench -p nautilus-execution`                                  |
+| 单个基准测试模块          | `cargo bench -p nautilus-execution --bench matching_core`            |
+| 按名称模式运行某个特定基准测试   | `cargo bench -p nautilus-execution --bench matching_core -- iterate` |
+| 快速冒烟运行（低采样数）      | `cargo bench ... -- --quick`                                         |
+| 全部 CI 跟踪的基准测试     | `make cargo-ci-benches`                                              |
 
 Criterion 将 HTML 报告写入 `target/criterion/`。打开
 `target/criterion/report/index.html` 即可查看。该报告包含每个基准测试的小提琴图

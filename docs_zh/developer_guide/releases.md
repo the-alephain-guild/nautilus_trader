@@ -66,10 +66,10 @@ flowchart TD
 
 本项目维护两个版本号：
 
-| 文件                     | 范围          | 示例      |
-|--------------------------|---------------|-----------|
-| `pyproject.toml`         | Python 包     | `1.223.0` |
-| `Cargo.toml`（workspace） | Rust crate    | `0.55.0`  |
+| 文件                      | 范围         | 示例        |
+| ----------------------- | ---------- | --------- |
+| `pyproject.toml`        | Python 包   | `1.223.0` |
+| `Cargo.toml`（workspace） | Rust crate | `0.55.0`  |
 
 它们各自独立升级。Python 版本号驱动发布标签（`v1.223.0`）。
 
@@ -77,8 +77,8 @@ flowchart TD
 
 `build` 工作流通过 `publish-cargo-crates` 作业发布 Cargo crate。该作业通过 GitHub Actions OIDC 使用 crates.io 的 Trusted Publishing，因此不使用持久化的 cargo token。请为每个 crate 在 crates.io 上配置：
 
-| 字段        | 值                |
-|-------------|-------------------|
+| 字段          | 值                 |
+| ----------- | ----------------- |
 | Owner       | `nautechsystems`  |
 | Repository  | `nautilus_trader` |
 | Workflow    | `build.yml`       |

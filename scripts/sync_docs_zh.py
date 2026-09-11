@@ -13,6 +13,7 @@ docs_zh 增量同步工具。
     verify           校验中文译文完整性（行数/代码围栏/admonition/日韩文）
     structure-check  对照 docs/docs_zh 三目录文件集，报缺译/多余
     bump             推进 .sync-state 到给定 commit
+
 """
 
 from __future__ import annotations
@@ -35,7 +36,9 @@ SYNC_OVERRIDES = "docs_zh/.sync-overrides"
 
 
 def _run_git(args: list[str]) -> str:
-    """在仓库根运行 git，返回 stdout。"""
+    """
+    在仓库根运行 git，返回 stdout。
+    """
     result = subprocess.run(  # noqa: S603 (safe - 命令固定为 git，无不可信输入)
         [GIT, *args],
         cwd=REPO_ROOT,
@@ -47,7 +50,9 @@ def _run_git(args: list[str]) -> str:
 
 
 def _load_json(rel_path: str) -> dict:
-    """读取仓库内 JSON 文件；不存在时返回空 dict。"""
+    """
+    读取仓库内 JSON 文件；不存在时返回空 dict。
+    """
     path = REPO_ROOT / rel_path
     if not path.is_file():
         return {}
@@ -55,7 +60,9 @@ def _load_json(rel_path: str) -> dict:
 
 
 def _rename_map() -> dict[str, str]:
-    """从 .sync-overrides 构造 rename 类型的 en_new -> zh_new 映射。"""
+    """
+    从 .sync-overrides 构造 rename 类型的 en_new -> zh_new 映射。
+    """
     overrides = _load_json(SYNC_OVERRIDES).get("overrides", [])
     mapping: dict[str, str] = {}
     for ov in overrides:
@@ -65,12 +72,16 @@ def _rename_map() -> dict[str, str]:
 
 
 def _default_zh(en_path: str) -> str:
-    """默认映射 docs/X -> docs_zh/X。"""
+    """
+    默认映射 docs/X -> docs_zh/X。
+    """
     return "docs_zh/" + en_path[len("docs/") :]
 
 
 def _count_lines(rel_path: str) -> int:
-    """统计文件行数（不存在返回 0）。"""
+    """
+    统计文件行数（不存在返回 0）。
+    """
     path = REPO_ROOT / rel_path
     if not path.is_file():
         return 0
@@ -78,7 +89,9 @@ def _count_lines(rel_path: str) -> int:
 
 
 def cmd_detect(args: argparse.Namespace) -> int:
-    """检测 base..HEAD 间 docs/ 的变更，分为待翻译清单与结构异常。"""
+    """
+    检测 base..HEAD 间 docs/ 的变更，分为待翻译清单与结构异常。
+    """
     base = args.base or _load_json(SYNC_STATE).get("upstream_commit")
     if not base:
         print(
@@ -107,7 +120,7 @@ def cmd_detect(args: argparse.Namespace) -> int:
                     "exists": (REPO_ROOT / zh).is_file(),
                     "en_lines": _count_lines(en),
                     "status": "added" if code == "A" else "modified",
-                }
+                },
             )
         else:
             # D（删除）/ R（改名）/ C（复制）等无法可靠自动映射 → 需人工确认
@@ -136,7 +149,9 @@ CJK_FORBIDDEN = re.compile("[\\u3040-\\u30ff\\uac00-\\ud7af]")
 
 
 def _iter_zh_files() -> list[str]:
-    """列出 docs_zh 三目录下全部 .md（相对仓库根路径）。"""
+    """
+    列出 docs_zh 三目录下全部 .md（相对仓库根路径）。
+    """
     files: list[str] = []
     for d in ("concepts", "developer_guide", "integrations"):
         base = REPO_ROOT / "docs_zh" / d
@@ -146,7 +161,9 @@ def _iter_zh_files() -> list[str]:
 
 
 def _verify_one(rel_path: str) -> list[str]:
-    """校验单个中文文件，返回问题列表（空列表表示通过）。"""
+    """
+    校验单个中文文件，返回问题列表（空列表表示通过）。
+    """
     path = REPO_ROOT / rel_path
     if not path.is_file():
         return ["文件不存在"]
@@ -180,7 +197,9 @@ def _verify_one(rel_path: str) -> list[str]:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    """校验中文译文完整性：行数/代码围栏/admonition/日韩文。"""
+    """
+    校验中文译文完整性：行数/代码围栏/admonition/日韩文。
+    """
     targets = _iter_zh_files() if args.all else list(args.files)
     if not targets:
         print("错误: 未指定文件，且未用 --all", file=sys.stderr)
@@ -204,7 +223,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def _docs_md_set(base_dir: str) -> set[str]:
-    """返回 base_dir（docs 或 docs_zh）三目录下 .md 的相对路径集合。"""
+    """
+    返回 base_dir（docs 或 docs_zh）三目录下 .md 的相对路径集合。
+    """
     out: set[str] = set()
     root = REPO_ROOT / base_dir
     for d in ("concepts", "developer_guide", "integrations"):
@@ -215,7 +236,9 @@ def _docs_md_set(base_dir: str) -> set[str]:
 
 
 def cmd_structure_check(args: argparse.Namespace) -> int:
-    """对照 docs/docs_zh 三目录文件集，报缺译/多余。"""
+    """
+    对照 docs/docs_zh 三目录文件集，报缺译/多余。
+    """
     en = _docs_md_set("docs")
     zh = _docs_md_set("docs_zh")
     missing = sorted(en - zh)
@@ -237,12 +260,16 @@ def cmd_structure_check(args: argparse.Namespace) -> int:
 
 
 def _today_utc() -> str:
-    """当前 UTC 日期（ISO 格式），timezone-aware 以满足 flake8-datetimez。"""
+    """
+    当前 UTC 日期（ISO 格式），timezone-aware 以满足 flake8-datetimez。
+    """
     return datetime.datetime.now(datetime.UTC).date().isoformat()
 
 
 def cmd_bump(args: argparse.Namespace) -> int:
-    """推进 .sync-state 到给定 commit（默认 upstream/develop 当前 HEAD）。"""
+    """
+    推进 .sync-state 到给定 commit（默认 upstream/develop 当前 HEAD）。
+    """
     commit = args.commit or _run_git(["rev-parse", "upstream/develop"]).strip()
     short = commit[:10]
     state = _load_json(SYNC_STATE)

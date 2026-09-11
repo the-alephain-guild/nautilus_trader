@@ -91,11 +91,11 @@ exposures = portfolio.net_exposures(venue=BINANCE, target_currency=USD)
 `Portfolio` 提供三个拉取式 (pull-style) 查询，用于持续对投资组合估值。
 每个查询都返回按币种区分的结果，键为相应账户的基础货币或原生结算货币。
 
-| 方法                                       | 返回内容                                                 |
-|--------------------------------------------|----------------------------------------------------------|
-| `mark_values(venue, account_id)`           | 未平仓持仓的带符号盯市 (MTM) 总额。                      |
-| `equity(venue, account_id)`                | 结合余额和持仓估值的总权益。                            |
-| `missing_price_instruments(venue)`         | 当前被标记为无法定价的金融工具。                        |
+| 方法                                 | 返回内容                  |
+| ---------------------------------- | --------------------- |
+| `mark_values(venue, account_id)`   | 未平仓持仓的带符号盯市 (MTM) 总额。 |
+| `equity(venue, account_id)`        | 结合余额和持仓估值的总权益。        |
+| `missing_price_instruments(venue)` | 当前被标记为无法定价的金融工具。      |
 
 多头贡献正名义价值，空头贡献负名义价值。平仓持仓 (flat positions) 将被跳过。
 
@@ -209,12 +209,12 @@ class WinRate(PortfolioStatistic):
 
 `PortfolioStatistic` 基类提供四种数据源方法，对应不同的分析需求：
 
-| 方法 | 数据来源 | 适用统计类型 |
-|------|---------|------------|
-| `calculate_from_realized_pnls(pnls: pd.Series)` | 已实现盈亏序列（浮点数，按币种聚合） | 胜率、盈亏比、平均盈利/亏损、期望值 |
-| `calculate_from_returns(returns: pd.Series)` | 持仓收益率时间序列 | 夏普比率、最大回撤、年化收益率、波动率 |
-| `calculate_from_positions(positions: list)` | 原始持仓对象列表 | 持仓持续时间统计、持仓频率、多空比 |
-| `calculate_from_orders(orders: list)` | 原始订单对象列表 | 成交率、撤单率、订单执行质量 |
+| 方法                                              | 数据来源               | 适用统计类型              |
+| ----------------------------------------------- | ------------------ | ------------------- |
+| `calculate_from_realized_pnls(pnls: pd.Series)` | 已实现盈亏序列（浮点数，按币种聚合） | 胜率、盈亏比、平均盈利/亏损、期望值  |
+| `calculate_from_returns(returns: pd.Series)`    | 持仓收益率时间序列          | 夏普比率、最大回撤、年化收益率、波动率 |
+| `calculate_from_positions(positions: list)`     | 原始持仓对象列表           | 持仓持续时间统计、持仓频率、多空比   |
+| `calculate_from_orders(orders: list)`           | 原始订单对象列表           | 成交率、撤单率、订单执行质量      |
 
 实现自定义统计时，只需重写用到的方法即可（可同时重写多个）。系统在回测结束后会调用所有已注册统计的全部 `calculate_from_*` 方法，并将结果显示在绩效报告中。
 :::

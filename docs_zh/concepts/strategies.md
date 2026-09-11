@@ -45,6 +45,7 @@ Nautilus 交易策略由两个主要部分组成：
 ```python
 from nautilus_trader.trading.strategy import Strategy
 
+
 class MyStrategy(Strategy):
     def __init__(self) -> None:
         super().__init__()  # <-- 必须调用父类来初始化策略
@@ -596,8 +597,8 @@ from nautilus_trader.trading.strategy import Strategy
 
 # 配置定义
 class MyStrategyConfig(StrategyConfig):
-    instrument_id: InstrumentId   # 示例值: "ETHUSDT-PERP.BINANCE"
-    bar_type: BarType             # 示例值: "ETHUSDT-PERP.BINANCE-15-MINUTE[LAST]-EXTERNAL"
+    instrument_id: InstrumentId  # 示例值: "ETHUSDT-PERP.BINANCE"
+    bar_type: BarType  # 示例值: "ETHUSDT-PERP.BINANCE-15-MINUTE[LAST]-EXTERNAL"
     fast_ema_period: int = 10
     slow_ema_period: int = 20
     trade_size: Decimal
@@ -616,11 +617,11 @@ class MyStrategy(Strategy):
         self.count_of_processed_bars: int = 0
 
     def on_start(self) -> None:
-        self.time_started = self.clock.utc_now()    # 记录策略启动时间
-        self.subscribe_bars(self.config.bar_type)   # 查看如何通过 `self.config` 暴露配置数据
+        self.time_started = self.clock.utc_now()  # 记录策略启动时间
+        self.subscribe_bars(self.config.bar_type)  # 查看如何通过 `self.config` 暴露配置数据
 
     def on_bar(self, bar: Bar):
-        self.count_of_processed_bars += 1           # 更新已处理的 K线 计数
+        self.count_of_processed_bars += 1  # 更新已处理的 K线 计数
 
 
 # 使用具体值实例化配置。通过设置：

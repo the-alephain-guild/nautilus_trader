@@ -40,11 +40,11 @@ Kraken 为用户提供了详尽的文档：
 
 Kraken 支持两个主要产品类别：
 
-| 产品类型               | 支持 | 备注                                                       |
-|------------------------|------|----------------------------------------------------------|
-| 现货                   | ✓    | 支持保证金（Margin）的标准加密货币交易对。                 |
-| 期货（永续）           | ✓    | 反向（`PI_`）和 USD 保证金（`PF_`）永续合约。              |
-| 期货（交割/弹性）      | ✓    | 固定到期（`FI_`）和弹性（`FF_`）合约。                     |
+| 产品类型      | 支持  | 备注                             |
+| --------- | --- | ------------------------------ |
+| 现货        | ✓   | 支持保证金（Margin）的标准加密货币交易对。       |
+| 期货（永续）    | ✓   | 反向（`PI_`）和 USD 保证金（`PF_`）永续合约。 |
+| 期货（交割/弹性） | ✓   | 固定到期（`FI_`）和弹性（`FF_`）合约。       |
 
 :::note
 **双产品部署**：当同时配置 `SPOT` 和 `FUTURES` 产品类型时，适配器会查询两个 API 并合并账户状态。这使执行引擎能够查看跨两个市场的抵押品。
@@ -56,17 +56,17 @@ Kraken 支持两个主要产品类别：
 
 Kraken 适配器通过 WebSocket 支持现货市场的实时 K 线（OHLC）数据流。以下时间间隔可用：
 
-| 时间间隔   | BarType 规格          |
-|------------|-----------------------|
-| 1 分钟     | `1-MINUTE-LAST`       |
-| 5 分钟     | `5-MINUTE-LAST`       |
-| 15 分钟    | `15-MINUTE-LAST`      |
-| 30 分钟    | `30-MINUTE-LAST`      |
-| 1 小时     | `1-HOUR-LAST`         |
-| 4 小时     | `4-HOUR-LAST`         |
-| 1 天       | `1-DAY-LAST`          |
-| 1 周       | `1-WEEK-LAST`         |
-| 15 天      | `15-DAY-LAST`         |
+| 时间间隔  | BarType 规格       |
+| ----- | ---------------- |
+| 1 分钟  | `1-MINUTE-LAST`  |
+| 5 分钟  | `5-MINUTE-LAST`  |
+| 15 分钟 | `15-MINUTE-LAST` |
+| 30 分钟 | `30-MINUTE-LAST` |
+| 1 小时  | `1-HOUR-LAST`    |
+| 4 小时  | `4-HOUR-LAST`    |
+| 1 天   | `1-DAY-LAST`     |
+| 1 周   | `1-WEEK-LAST`    |
+| 15 天  | `15-DAY-LAST`    |
 
 :::note
 **期货限制**：Kraken 期货不支持通过 WebSocket 进行 K 线数据流推送。请改用 `request_bars()` 获取历史 K 线数据。
@@ -106,10 +106,10 @@ Kraken 的 WebSocket OHLC 频道在每笔交易时推送*当前*（未完成的�
 
 Kraken 在其各个 API 中使用不同的比特币符号约定：
 
-| 市场    | 符号格式 | 示例               | 备注                                  |
-|---------|----------|--------------------|---------------------------------------|
-| 现货    | `BTC`    | `BTC/USD.KRAKEN`   | 适配器在加载时将 XBT 规范化为 BTC。    |
-| 期货    | `XBT`    | `PI_XBTUSD.KRAKEN` | 使用 Kraken 的原生 XBT 格式。         |
+| 市场  | 符号格式  | 示例                 | 备注                     |
+| --- | ----- | ------------------ | ---------------------- |
+| 现货  | `BTC` | `BTC/USD.KRAKEN`   | 适配器在加载时将 XBT 规范化为 BTC。 |
+| 期货  | `XBT` | `PI_XBTUSD.KRAKEN` | 使用 Kraken 的原生 XBT 格式。  |
 
 :::note
 Kraken 的 REST API 为比特币返回 `XBT`（遵循 ISO 4217 关于超国家货币的约定），但其 WebSocket v2 API 要求使用 `BTC` 格式。适配器在加载金融工具时会自动将现货符号规范化为 `BTC`，无论 XBT 出现在基础货币（例如 `XBT/USD` 转为 `BTC/USD`）还是报价货币（例如 `ETH/XBT` 转为 `ETH/BTC`）。期货则保留 Kraken 的原生 `XBT` 格式。
@@ -122,11 +122,11 @@ NautilusTrader 对 Kraken 现货金融工具符号使用 ISO 4217-A3 格式，�
 **金融工具 ID 格式：**
 
 ```python
-InstrumentId.from_str("BTC/USD.KRAKEN")   # 现货 BTC/USD
-InstrumentId.from_str("ETH/USD.KRAKEN")   # 现货 ETH/USD
-InstrumentId.from_str("SOL/USD.KRAKEN")   # 现货 SOL/USD
+InstrumentId.from_str("BTC/USD.KRAKEN")  # 现货 BTC/USD
+InstrumentId.from_str("ETH/USD.KRAKEN")  # 现货 ETH/USD
+InstrumentId.from_str("SOL/USD.KRAKEN")  # 现货 SOL/USD
 InstrumentId.from_str("BTC/USDT.KRAKEN")  # 现货 BTC/USDT
-InstrumentId.from_str("ETH/BTC.KRAKEN")   # 现货 ETH/BTC（从 ETH/XBT 规范化而来）
+InstrumentId.from_str("ETH/BTC.KRAKEN")  # 现货 ETH/BTC（从 ETH/XBT 规范化而来）
 ```
 
 ### 期货市场
@@ -150,26 +150,26 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # 永续固定保证金 BTC
 
 ### 订阅（实时）
 
-| 数据类型               | 现货 | 期货 | 备注                                   |
-|------------------------|------|------|----------------------------------------|
-| `QuoteTick`            | ✓    | ✓    | 派生自 ticker 频道。                   |
-| `TradeTick`            | ✓    | ✓    |                                        |
-| `OrderBookDeltas`      | ✓    | ✓    | 现货 L2/L3 和期货 L2 更新。            |
-| `OrderBookDepth10`     | -    | -    | 使用 `OrderBookDeltas` 并设置深度 `10`。 |
-| `Bar`                  | ✓    | -    | 现货 WS OHLC 频道。见 K 线小节。       |
-| `MarkPriceUpdate`      | -    | ✓    | 来自期货 ticker 推送。                 |
-| `IndexPriceUpdate`     | -    | ✓    | 来自期货 ticker 推送。                 |
-| `FundingRateUpdate`    | -    | ✓    | 仅永续合约。                           |
-| `InstrumentStatus`     | ✓    | ✓    | Python 适配器轮询金融工具刷新。        |
+| 数据类型                | 现货  | 期货  | 备注                               |
+| ------------------- | --- | --- | -------------------------------- |
+| `QuoteTick`         | ✓   | ✓   | 派生自 ticker 频道。                   |
+| `TradeTick`         | ✓   | ✓   |                                  |
+| `OrderBookDeltas`   | ✓   | ✓   | 现货 L2/L3 和期货 L2 更新。              |
+| `OrderBookDepth10`  | -   | -   | 使用 `OrderBookDeltas` 并设置深度 `10`。 |
+| `Bar`               | ✓   | -   | 现货 WS OHLC 频道。见 K 线小节。           |
+| `MarkPriceUpdate`   | -   | ✓   | 来自期货 ticker 推送。                  |
+| `IndexPriceUpdate`  | -   | ✓   | 来自期货 ticker 推送。                  |
+| `FundingRateUpdate` | -   | ✓   | 仅永续合约。                           |
+| `InstrumentStatus`  | ✓   | ✓   | Python 适配器轮询金融工具刷新。              |
 
 ### 请求（历史）
 
-| 数据类型               | 现货 | 期货 | 备注                                   |
-|------------------------|------|------|----------------------------------------|
-| `TradeTick`            | ✓    | ✓    |                                        |
-| `Bar`                  | ✓    | ✓    |                                        |
-| `OrderBook`（快照）    | ✓    | ✓    | 通过 HTTP depth 端点。                 |
-| `FundingRateUpdate`    | -    | ✓    | 客户端侧 start/end/limit 过滤。        |
+| 数据类型                | 现货  | 期货  | 备注                       |
+| ------------------- | --- | --- | ------------------------ |
+| `TradeTick`         | ✓   | ✓   |                          |
+| `Bar`               | ✓   | ✓   |                          |
+| `OrderBook`（快照）     | ✓   | ✓   | 通过 HTTP depth 端点。        |
+| `FundingRateUpdate` | -   | ✓   | 客户端侧 start/end/limit 过滤。 |
 
 ## L3 订单簿（market-by-order）
 
@@ -226,25 +226,25 @@ config = KrakenDataClientConfig(
 
 ### 订单类型
 
-| 订单类型               | 现货 | 期货 | 备注                                          |
-|------------------------|------|------|-----------------------------------------------|
-| `MARKET`               | ✓    | ✓    | 以市场价格立即执行。                          |
-| `LIMIT`                | ✓    | ✓    | 以指定价格或更优价格执行。                    |
-| `STOP_MARKET`          | ✓    | ✓    | 条件市价单（止损）。                          |
-| `MARKET_IF_TOUCHED`    | ✓    | ✓    | 条件市价单（止盈）。                          |
-| `STOP_LIMIT`           | ✓    | ✓    | 条件限价单（止损限价）。                      |
-| `LIMIT_IF_TOUCHED`     | ✓    | ✓    | 映射到带 `limit_price` 的 `take_profit`。     |
-| `TRAILING_STOP_MARKET` | ✓    | -    | 带 `trailing_offset` 的追踪止损。            |
-| `TRAILING_STOP_LIMIT`  | ✓    | -    | 带 `limit_offset` 的追踪止损限价。           |
+| 订单类型                   | 现货  | 期货  | 备注                                  |
+| ---------------------- | --- | --- | ----------------------------------- |
+| `MARKET`               | ✓   | ✓   | 以市场价格立即执行。                          |
+| `LIMIT`                | ✓   | ✓   | 以指定价格或更优价格执行。                       |
+| `STOP_MARKET`          | ✓   | ✓   | 条件市价单（止损）。                          |
+| `MARKET_IF_TOUCHED`    | ✓   | ✓   | 条件市价单（止盈）。                          |
+| `STOP_LIMIT`           | ✓   | ✓   | 条件限价单（止损限价）。                        |
+| `LIMIT_IF_TOUCHED`     | ✓   | ✓   | 映射到带 `limit_price` 的 `take_profit`。 |
+| `TRAILING_STOP_MARKET` | ✓   | -   | 带 `trailing_offset` 的追踪止损。          |
+| `TRAILING_STOP_LIMIT`  | ✓   | -   | 带 `limit_offset` 的追踪止损限价。           |
 
 ### 有效时间
 
-| 有效时间 | 现货 | 期货 | 备注                                                |
-|----------|------|------|-----------------------------------------------------|
-| `GTC`    | ✓    | ✓    | 撤销前有效（Good Till Canceled）。                  |
-| `GTD`    | ✓    | -    | 到期前有效（仅现货，需要 `expire_time`）。          |
-| `IOC`    | ✓    | ✓    | 立即成交或撤销（Immediate or Cancel）。            |
-| `FOK`    | ✓    | -    | 仅现货限价单。                                      |
+| 有效时间  | 现货  | 期货  | 备注                            |
+| ----- | --- | --- | ----------------------------- |
+| `GTC` | ✓   | ✓   | 撤销前有效（Good Till Canceled）。    |
+| `GTD` | ✓   | -   | 到期前有效（仅现货，需要 `expire_time`）。  |
+| `IOC` | ✓   | ✓   | 立即成交或撤销（Immediate or Cancel）。 |
+| `FOK` | ✓   | -   | 仅现货限价单。                       |
 
 :::note
 **市价单**本质上是立即执行的，不支持有效时间设置。`IOC` 仅适用于限价类订单。
@@ -252,22 +252,22 @@ config = KrakenDataClientConfig(
 
 ### 执行指令
 
-| 指令             | 现货 | 期货 | 备注                                                                 |
-|------------------|------|------|----------------------------------------------------------------------|
-| `post_only`      | ✓    | ✓    | 适用于限价单。                                                       |
-| `reduce_only`    | ✓    | ✓    | 现货需要 `spot_account_type=Margin`（仅保证金订单）。               |
-| `quote_quantity` | ✓    | -    | 仅现货。以报价货币计的成交量（`viqc`）。                            |
-| `display_qty`    | ✓    | -    | 仅现货。冰山订单（`displayvol`）。                                  |
+| 指令               | 现货  | 期货  | 备注                                       |
+| ---------------- | --- | --- | ---------------------------------------- |
+| `post_only`      | ✓   | ✓   | 适用于限价单。                                  |
+| `reduce_only`    | ✓   | ✓   | 现货需要 `spot_account_type=Margin`（仅保证金订单）。 |
+| `quote_quantity` | ✓   | -   | 仅现货。以报价货币计的成交量（`viqc`）。                  |
+| `display_qty`    | ✓   | -   | 仅现货。冰山订单（`displayvol`）。                  |
 
 ### 触发类型
 
 条件订单（止损、止盈、追踪止损）在现货上支持触发价格参考：
 
-| 触发类型      | 现货 | 期货 | 备注                                       |
-|---------------|------|------|--------------------------------------------|
-| `LAST_PRICE`  | ✓    | ✓    | 默认。最新成交价。                         |
-| `INDEX_PRICE` | ✓    | ✓    | 更广泛的市场指数价格。                     |
-| `MARK_PRICE`  | -    | ✓    | 仅期货。                                   |
+| 触发类型          | 现货  | 期货  | 备注          |
+| ------------- | --- | --- | ----------- |
+| `LAST_PRICE`  | ✓   | ✓   | 默认。最新成交价。   |
+| `INDEX_PRICE` | ✓   | ✓   | 更广泛的市场指数价格。 |
+| `MARK_PRICE`  | -   | ✓   | 仅期货。        |
 
 :::note
 适配器在提交时拒绝不支持的触发类型（例如 `BID_ASK`），而不是静默地强制转换它们。
@@ -275,11 +275,11 @@ config = KrakenDataClientConfig(
 
 ### 批量操作
 
-| 操作       | 现货 | 期货 | 备注                                                    |
-|------------|------|------|---------------------------------------------------------|
-| 批量提交   | ✓    | ✓    | 现货每批 15 个订单。期货每批 10 个。                    |
-| 批量修改   | -    | ✓    | 仅期货 HTTP 辅助方法。执行会逐条发送命令。              |
-| 批量取消   | ✓    | ✓    | 自动分块为每批 50 个。                                  |
+| 操作   | 现货  | 期货  | 备注                       |
+| ---- | --- | --- | ------------------------ |
+| 批量提交 | ✓   | ✓   | 现货每批 15 个订单。期货每批 10 个。   |
+| 批量修改 | -   | ✓   | 仅期货 HTTP 辅助方法。执行会逐条发送命令。 |
+| 批量取消 | ✓   | ✓   | 自动分块为每批 50 个。            |
 
 :::note
 **取消所有订单**：
@@ -292,30 +292,30 @@ config = KrakenDataClientConfig(
 
 ### 持仓管理
 
-| 功能          | 现货 | 期货 | 备注                                                    |
-|---------------|------|------|---------------------------------------------------------|
-| 查询持仓      | ✓    | ✓    | 现货保证金通过 `OpenPositions`；现货现金需选择启用。    |
-| 持仓模式      | -    | -    | 每个金融工具单一持仓。                                  |
-| 杠杆控制      | ✓    | ✓    | 现货分级；按订单 `params={"leverage": N}`。            |
-| 保证金模式    | ✓    | ✓    | 现货/期货全仓保证金；现货无逐仓保证金。                 |
+| 功能    | 现货  | 期货  | 备注                                 |
+| ----- | --- | --- | ---------------------------------- |
+| 查询持仓  | ✓   | ✓   | 现货保证金通过 `OpenPositions`；现货现金需选择启用。 |
+| 持仓模式  | -   | -   | 每个金融工具单一持仓。                        |
+| 杠杆控制  | ✓   | ✓   | 现货分级；按订单 `params={"leverage": N}`。 |
+| 保证金模式 | ✓   | ✓   | 现货/期货全仓保证金；现货无逐仓保证金。               |
 
 ### 订单查询
 
-| 功能             | 现货 | 期货 | 备注                                        |
-|------------------|------|------|---------------------------------------------|
-| 查询未结订单     | ✓    | ✓    | 列出所有活动订单。                          |
-| 查询历史订单     | ✓    | ✓    | 支持分页的历史订单数据。                    |
-| 订单状态更新     | ✓    | ✓    | 通过 WebSocket 实时更新订单状态。           |
-| 交易历史         | ✓    | ✓    | 成交和填充报告。                            |
+| 功能     | 现货  | 期货  | 备注                     |
+| ------ | --- | --- | ---------------------- |
+| 查询未结订单 | ✓   | ✓   | 列出所有活动订单。              |
+| 查询历史订单 | ✓   | ✓   | 支持分页的历史订单数据。           |
+| 订单状态更新 | ✓   | ✓   | 通过 WebSocket 实时更新订单状态。 |
+| 交易历史   | ✓   | ✓   | 成交和填充报告。               |
 
 ### 条件订单 (Contingent orders)
 
-| 功能            | 现货 | 期货 | 备注                                    |
-|-----------------|------|------|-----------------------------------------|
-| 订单列表        | -    | -    | *不支持*。                              |
-| OCO 订单        | -    | -    | *不支持*。                              |
-| 组合订单        | -    | -    | *不支持*。                              |
-| 条件订单        | ✓    | ✓    | 止损和止盈订单。                        |
+| 功能     | 现货  | 期货  | 备注       |
+| ------ | --- | --- | -------- |
+| 订单列表   | -   | -   | *不支持*。   |
+| OCO 订单 | -   | -   | *不支持*。   |
+| 组合订单   | -   | -   | *不支持*。   |
+| 条件订单   | ✓   | ✓   | 止损和止盈订单。 |
 
 ## 订单路由（现货）
 
@@ -327,19 +327,19 @@ Rust 现货执行客户端默认通过 Kraken 已认证的 WebSocket v2 trade �
 
 **Kraken WS v2 限制：**
 
-| 形态                       | 原因                                                        |
-|----------------------------|-------------------------------------------------------------|
-| 不支持的触发类型           | `triggers.reference` 仅接受 `last` 和 `index`。            |
-| 混合符号的订单列表         | `batch_add` 要求单一共享符号。                            |
+| 形态        | 原因                                         |
+| --------- | ------------------------------------------ |
+| 不支持的触发类型  | `triggers.reference` 仅接受 `last` 和 `index`。 |
+| 混合符号的订单列表 | `batch_add` 要求单一共享符号。                      |
 
 **本适配器尚未编码（后续工作，当前走 REST）：**
 
-| 形态                        | 备注                                                                                |
-|-----------------------------|-------------------------------------------------------------------------------------|
-| `FOK` 有效时间              | 可编码为 `FOK` 有效时间，但构建器路由到 REST。                                      |
-| 追踪止损 / 止损限价         | 可通过 `triggers.price` + `triggers.price_type` 编码，但构建器路由到 REST。        |
-| 冰山（`display_qty`）       | 可编码为 `order_type: "iceberg"` + `display_qty`，但构建器路由到 REST。            |
-| 报价数量订单                | 买入市价的报价数量映射到 `cash_order_qty`；目前路由到 REST。                        |
+| 形态                | 备注                                                            |
+| ----------------- | ------------------------------------------------------------- |
+| `FOK` 有效时间        | 可编码为 `FOK` 有效时间，但构建器路由到 REST。                                 |
+| 追踪止损 / 止损限价       | 可通过 `triggers.price` + `triggers.price_type` 编码，但构建器路由到 REST。 |
+| 冰山（`display_qty`） | 可编码为 `order_type: "iceberg"` + `display_qty`，但构建器路由到 REST。    |
+| 报价数量订单            | 买入市价的报价数量映射到 `cash_order_qty`；目前路由到 REST。                     |
 
 逐次调用的 `params={"use_ws_trade": False}` 覆盖会强制单个命令走 REST，无论配置的默认值如何。可在 `SubmitOrder`、`ModifyOrder`、`CancelOrder` 或 `SubmitOrderList` 上设置它。
 
@@ -361,10 +361,10 @@ Rust 现货执行客户端默认通过 Kraken 已认证的 WebSocket v2 trade �
 
 Rust 的 `KrakenExecClientConfig`（及其 pyo3 包装器）暴露：
 
-| 选项                      | 默认值 | 描述                                                          |
-|---------------------------|--------|---------------------------------------------------------------|
-| `use_ws_trade`            | `True` | 当 trade 频道处于活动状态时通过 WS 路由订单。                |
-| `ws_request_timeout_secs` | `5`    | 在将命令结果标记为未知之前的 WS 往返超时。                   |
+| 选项                        | 默认值    | 描述                           |
+| ------------------------- | ------ | ---------------------------- |
+| `use_ws_trade`            | `True` | 当 trade 频道处于活动状态时通过 WS 路由订单。 |
+| `ws_request_timeout_secs` | `5`    | 在将命令结果标记为未知之前的 WS 往返超时。      |
 
 这些选项未在 Python 实时 `KrakenExecClientConfig` 上暴露，因为 Python 实时执行客户端尚未支持它们。
 
@@ -429,7 +429,7 @@ Kraken 适配器为现货和期货市场提供对账功能，允许交易者在�
 **配置：**
 
 ```python
-exec_clients={
+exec_clients = {
     KRAKEN: {
         "use_spot_position_reports": True,
         "spot_positions_quote_currency": "USDT",  # 默认值
@@ -454,8 +454,8 @@ from nautilus_trader.model.enums import AccountType
 exec_clients = {
     KRAKEN: KrakenExecClientConfig(
         spot_account_type=AccountType.MARGIN,
-        default_leverage=3,             # 可选的配置级默认值
-        margin_balance_asset="ZGBP",    # 可选的摘要显示资产
+        default_leverage=3,  # 可选的配置级默认值
+        margin_balance_asset="ZGBP",  # 可选的摘要显示资产
     ),
 }
 ```
@@ -519,10 +519,10 @@ Margin metrics: equity=1234.56 GBP, free_margin=1100.00, unrealized_pnl=12.34
 
 适配器实现了自动速率限制以符合 Kraken 的 API 要求。
 
-| 端点类型             | 限制（请求/秒） | 备注                                |
-|----------------------|----------------|-------------------------------------|
-| 现货 REST（全局）    | 5              | 现货 API 的全局速率限制。           |
-| 期货 REST（全局）    | 5              | 期货 API 的全局速率限制。           |
+| 端点类型        | 限制（请求/秒） | 备注              |
+| ----------- | -------- | --------------- |
+| 现货 REST（全局） | 5        | 现货 API 的全局速率限制。 |
+| 期货 REST（全局） | 5        | 期货 API 的全局速率限制。 |
 
 :::info
 Kraken 使用基于计数器的速率限制系统，限制因等级而异：
@@ -545,9 +545,9 @@ Kraken 可能会临时封锁超出速率限制的 IP 地址。适配器会在接
 Kraken 的推荐设置：
 
 ```python
-exec_engine=LiveExecEngineConfig(
+exec_engine = LiveExecEngineConfig(
     reconciliation=True,
-    open_check_interval_secs=30.0,    # 入门等级最低 30s
+    open_check_interval_secs=30.0,  # 入门等级最低 30s
     position_check_interval_secs=120.0,  # 2 分钟
 )
 ```
@@ -560,53 +560,53 @@ exec_engine=LiveExecEngineConfig(
 
 ### 数据客户端配置选项
 
-| 选项                               | 默认值     | 描述                                                              |
-|------------------------------------|-----------|-------------------------------------------------------------------|
-| `api_key`                          | `None`    | API 密钥；省略时从环境变量加载。                                  |
-| `api_secret`                       | `None`    | API 密钥（secret）；省略时从环境变量加载。                        |
-| `environment`                      | `LIVE`    | 交易环境（`LIVE` 或 `DEMO`）；demo 仅适用于期货。                |
-| `product_types`                    | `(SPOT,)` | 产品类型元组（例如 `(KrakenProductType.SPOT,)`）。              |
-| `base_url_http_spot`               | `None`    | Kraken 现货 REST 基础 URL 覆盖。                                 |
-| `base_url_http_futures`            | `None`    | Kraken 期货 REST 基础 URL 覆盖。                                 |
-| `base_url_ws_spot`                 | `None`    | Kraken 现货 WebSocket URL 覆盖。                                 |
-| `base_url_ws_futures`              | `None`    | Kraken 期货 WebSocket URL 覆盖。                                 |
-| `base_url_ws_l3_spot`              | `None`    | Kraken 现货 L3 WebSocket URL 覆盖。                              |
-| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                          |
-| `update_instruments_interval_mins` | `60`      | 金融工具重新加载间隔；设为 `None` 可禁用重新加载。              |
-| `max_retries`                      | `None`    | REST 请求的最大重试次数。                                        |
-| `retry_delay_initial_ms`           | `None`    | 重试间的初始延迟（毫秒）。                                       |
-| `retry_delay_max_ms`               | `None`    | 重试间的最大延迟（毫秒）。                                       |
-| `http_timeout_secs`                | `None`    | HTTP 请求超时时间（秒）。                                        |
-| `ws_heartbeat_secs`                | `30`      | WebSocket 心跳间隔（秒）。                                       |
-| `max_requests_per_second`          | `None`    | 覆盖速率限制；默认为 5 请求/秒。                                |
-| `validate_l3_checksum`             | `True`    | 验证 Kraken 现货 L3 校验和，并在不匹配时重新同步。              |
-| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                             |
+| 选项                                 | 默认值       | 描述                                      |
+| ---------------------------------- | --------- | --------------------------------------- |
+| `api_key`                          | `None`    | API 密钥；省略时从环境变量加载。                      |
+| `api_secret`                       | `None`    | API 密钥（secret）；省略时从环境变量加载。              |
+| `environment`                      | `LIVE`    | 交易环境（`LIVE` 或 `DEMO`）；demo 仅适用于期货。      |
+| `product_types`                    | `(SPOT,)` | 产品类型元组（例如 `(KrakenProductType.SPOT,)`）。 |
+| `base_url_http_spot`               | `None`    | Kraken 现货 REST 基础 URL 覆盖。               |
+| `base_url_http_futures`            | `None`    | Kraken 期货 REST 基础 URL 覆盖。               |
+| `base_url_ws_spot`                 | `None`    | Kraken 现货 WebSocket URL 覆盖。             |
+| `base_url_ws_futures`              | `None`    | Kraken 期货 WebSocket URL 覆盖。             |
+| `base_url_ws_l3_spot`              | `None`    | Kraken 现货 L3 WebSocket URL 覆盖。          |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。           |
+| `update_instruments_interval_mins` | `60`      | 金融工具重新加载间隔；设为 `None` 可禁用重新加载。           |
+| `max_retries`                      | `None`    | REST 请求的最大重试次数。                         |
+| `retry_delay_initial_ms`           | `None`    | 重试间的初始延迟（毫秒）。                           |
+| `retry_delay_max_ms`               | `None`    | 重试间的最大延迟（毫秒）。                           |
+| `http_timeout_secs`                | `None`    | HTTP 请求超时时间（秒）。                         |
+| `ws_heartbeat_secs`                | `30`      | WebSocket 心跳间隔（秒）。                      |
+| `max_requests_per_second`          | `None`    | 覆盖速率限制；默认为 5 请求/秒。                      |
+| `validate_l3_checksum`             | `True`    | 验证 Kraken 现货 L3 校验和，并在不匹配时重新同步。         |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                         |
 
 ### 执行客户端配置选项
 
-| 选项                            | 默认值     | 描述                                                                   |
-|---------------------------------|-----------|------------------------------------------------------------------------|
-| `api_key`                       | `None`    | API 密钥；省略时从环境变量加载。                                       |
-| `api_secret`                    | `None`    | API 密钥（secret）；省略时从环境变量加载。                             |
-| `environment`                   | `LIVE`    | 交易环境（`LIVE` 或 `DEMO`）；demo 仅适用于期货。                     |
-| `product_types`                 | `(SPOT,)` | 产品类型元组；现货可用现金或保证金；期货使用保证金。                 |
-| `base_url_http_spot`            | `None`    | Kraken 现货 REST 基础 URL 覆盖。                                       |
-| `base_url_http_futures`         | `None`    | Kraken 期货 REST 基础 URL 覆盖。                                       |
-| `base_url_ws_spot`              | `None`    | Kraken 现货 WebSocket URL 覆盖。                                       |
-| `base_url_ws_futures`           | `None`    | Kraken 期货 WebSocket URL 覆盖。                                       |
-| `proxy_url`                     | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                |
-| `max_retries`                   | `None`    | 订单提交/取消调用的最大重试次数。                                     |
-| `retry_delay_initial_ms`        | `None`    | 重试间的初始延迟（毫秒）。                                            |
-| `retry_delay_max_ms`            | `None`    | 重试间的最大延迟（毫秒）。                                            |
-| `http_timeout_secs`             | `None`    | HTTP 请求超时时间（秒）。                                             |
-| `ws_heartbeat_secs`             | `30`      | WebSocket 心跳间隔（秒）。                                            |
-| `max_requests_per_second`       | `None`    | 覆盖速率限制；默认为 5 请求/秒。                                     |
-| `use_spot_position_reports`     | `False`   | 将钱包余额报告为持仓；仅现金模式。                                    |
-| `spot_positions_quote_currency` | `"USDT"`  | 现货钱包持仓报告的报价货币筛选。                                      |
-| `spot_account_type`             | `CASH`    | 现货交易的账户类型；`MARGIN` 启用杠杆和报告。                        |
-| `default_leverage`              | `None`    | 设置后以 `"N:1"` 形式发送的默认现货保证金杠杆。                      |
-| `margin_balance_asset`          | `None`    | `TradeBalance` 的摘要资产；`None` 默认为 `ZUSD`。                    |
-| `transport_backend`             | `Sockudo` | WebSocket 传输后端。                                                  |
+| 选项                              | 默认值       | 描述                                      |
+| ------------------------------- | --------- | --------------------------------------- |
+| `api_key`                       | `None`    | API 密钥；省略时从环境变量加载。                      |
+| `api_secret`                    | `None`    | API 密钥（secret）；省略时从环境变量加载。              |
+| `environment`                   | `LIVE`    | 交易环境（`LIVE` 或 `DEMO`）；demo 仅适用于期货。      |
+| `product_types`                 | `(SPOT,)` | 产品类型元组；现货可用现金或保证金；期货使用保证金。              |
+| `base_url_http_spot`            | `None`    | Kraken 现货 REST 基础 URL 覆盖。               |
+| `base_url_http_futures`         | `None`    | Kraken 期货 REST 基础 URL 覆盖。               |
+| `base_url_ws_spot`              | `None`    | Kraken 现货 WebSocket URL 覆盖。             |
+| `base_url_ws_futures`           | `None`    | Kraken 期货 WebSocket URL 覆盖。             |
+| `proxy_url`                     | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。           |
+| `max_retries`                   | `None`    | 订单提交/取消调用的最大重试次数。                       |
+| `retry_delay_initial_ms`        | `None`    | 重试间的初始延迟（毫秒）。                           |
+| `retry_delay_max_ms`            | `None`    | 重试间的最大延迟（毫秒）。                           |
+| `http_timeout_secs`             | `None`    | HTTP 请求超时时间（秒）。                         |
+| `ws_heartbeat_secs`             | `30`      | WebSocket 心跳间隔（秒）。                      |
+| `max_requests_per_second`       | `None`    | 覆盖速率限制；默认为 5 请求/秒。                      |
+| `use_spot_position_reports`     | `False`   | 将钱包余额报告为持仓；仅现金模式。                       |
+| `spot_positions_quote_currency` | `"USDT"`  | 现货钱包持仓报告的报价货币筛选。                        |
+| `spot_account_type`             | `CASH`    | 现货交易的账户类型；`MARGIN` 启用杠杆和报告。             |
+| `default_leverage`              | `None`    | 设置后以 `"N:1"` 形式发送的默认现货保证金杠杆。            |
+| `margin_balance_asset`          | `None`    | `TradeBalance` 的摘要资产；`None` 默认为 `ZUSD`。 |
+| `transport_backend`             | `Sockudo` | WebSocket 传输后端。                         |
 
 对于现货保证金，当订单没有逐订单杠杆参数时应用 `default_leverage`。`margin_balance_asset` 仅改变 `TradeBalance` 摘要的计价单位；逐持仓数字仍以该交易对的报价货币计。
 
@@ -714,14 +714,14 @@ node.build()
 
 有两种方式向 Kraken 客户端提供凭证。可以将对应的 `api_key` 和 `api_secret` 值传递给配置对象，或设置以下环境变量：
 
-| 环境变量                          | 描述                              |
-|-----------------------------------|-----------------------------------|
-| `KRAKEN_SPOT_API_KEY`             | Kraken 现货实时交易的 API 密钥。  |
-| `KRAKEN_SPOT_API_SECRET`          | Kraken 现货实时交易的 API 密钥（secret）。 |
-| `KRAKEN_FUTURES_API_KEY`          | Kraken 期货实时 API 密钥。        |
-| `KRAKEN_FUTURES_API_SECRET`       | Kraken 期货实时 API 密钥（secret）。 |
-| `KRAKEN_FUTURES_DEMO_API_KEY`     | Kraken 期货（模拟）的 API 密钥。  |
-| `KRAKEN_FUTURES_DEMO_API_SECRET`  | Kraken 期货（模拟）的 API 密钥（secret）。 |
+| 环境变量                             | 描述                             |
+| -------------------------------- | ------------------------------ |
+| `KRAKEN_SPOT_API_KEY`            | Kraken 现货实时交易的 API 密钥。         |
+| `KRAKEN_SPOT_API_SECRET`         | Kraken 现货实时交易的 API 密钥（secret）。 |
+| `KRAKEN_FUTURES_API_KEY`         | Kraken 期货实时 API 密钥。            |
+| `KRAKEN_FUTURES_API_SECRET`      | Kraken 期货实时 API 密钥（secret）。    |
+| `KRAKEN_FUTURES_DEMO_API_KEY`    | Kraken 期货（模拟）的 API 密钥。         |
+| `KRAKEN_FUTURES_DEMO_API_SECRET` | Kraken 期货（模拟）的 API 密钥（secret）。 |
 
 :::note
 **模拟环境**：只有 Kraken 期货提供模拟环境（`https://demo-futures.kraken.com`）用于无真实资金的测试。Kraken 现货没有模拟或测试网环境。

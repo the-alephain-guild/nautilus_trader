@@ -14,51 +14,51 @@ Betfair Rust adapter 正处于积极的功能对齐 (parity) 工作中。本页�
 
 ## 当前 Rust 状态
 
-| 领域                     | 当前 Rust 行为                                                                                              | 与当前 `betfair.md` 的差异                                                 | 切换工作                                            |
-|--------------------------|--------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|-----------------------------------------------------|
-| 订单类型                 | `MARKET` 仅支持 `AT_THE_CLOSE`；`LIMIT` 在收盘流程中支持 BSP。                                              | 稳定版指南在此领域仍是 Python 形态。                                       | 确定最终的 Betfair 市价单模型。                     |
-| 批量操作                 | `SubmitOrderList` 和 `BatchCancelOrders` 已实现。                                                            | 稳定版指南曾将这些标记为不支持。                                           | 保留并推广。                                        |
-| 对账范围                 | `reconcile_market_ids_only` 使用 `reconcile_market_ids`；否则回退到 `stream_market_ids_filter`。            | 稳定版指南称流过滤和对账是分开的。                                         | 决定 Rust 是保留还是移除这种耦合。                  |
-| 全量镜像缓存检查         | Rust 在启动时以及每次流重连时使用 `generate_mass_status()`；没有 `check_cache_against_order_image`。         | 稳定版指南描述了 Python 的全量镜像缓存检查。                               | 补齐对齐，或将 Rust 路径文档化为最终方案。          |
-| 重连后暂停               | 在对账进行中时，`submit_order` 和 `submit_order_list` 会发出 `OrderDenied STREAM_RECONCILING`。             | Python 在重连期间保持交易。                                               | 一旦 `betfair.md` 切换，将其推广为 Rust 默认行为。 |
-| 外部订单过滤             | `ignore_external_orders` 仅跳过没有 `rfo` 的 OCM 更新。                                                      | Python 还在全量镜像缓存检查期间使用它。                                    | 确定最终的过滤行为。                                |
-| 配置接口                 | 没有 `certs_dir`、没有 `instrument_config`，keep alive 固定，heartbeat 值为必填。                           | 稳定版指南仍记录了 Python 的配置接口。                                     | 决定是补齐对齐还是认可 Rust 接口。                  |
-| SSL 证书                 | 流客户端目前硬编码 `certs_dir=None`。                                                                        | 稳定版指南记录了证书配置和 `BETFAIR_CERTS_DIR`。                           | 补齐支持，或从未来的指南中移除。                    |
+| 领域       | 当前 Rust 行为                                                                              | 与当前 `betfair.md` 的差异               | 切换工作                                |
+| -------- | --------------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------- |
+| 订单类型     | `MARKET` 仅支持 `AT_THE_CLOSE`；`LIMIT` 在收盘流程中支持 BSP。                                       | 稳定版指南在此领域仍是 Python 形态。             | 确定最终的 Betfair 市价单模型。                |
+| 批量操作     | `SubmitOrderList` 和 `BatchCancelOrders` 已实现。                                            | 稳定版指南曾将这些标记为不支持。                   | 保留并推广。                              |
+| 对账范围     | `reconcile_market_ids_only` 使用 `reconcile_market_ids`；否则回退到 `stream_market_ids_filter`。 | 稳定版指南称流过滤和对账是分开的。                  | 决定 Rust 是保留还是移除这种耦合。                |
+| 全量镜像缓存检查 | Rust 在启动时以及每次流重连时使用 `generate_mass_status()`；没有 `check_cache_against_order_image`。      | 稳定版指南描述了 Python 的全量镜像缓存检查。         | 补齐对齐，或将 Rust 路径文档化为最终方案。            |
+| 重连后暂停    | 在对账进行中时，`submit_order` 和 `submit_order_list` 会发出 `OrderDenied STREAM_RECONCILING`。      | Python 在重连期间保持交易。                  | 一旦 `betfair.md` 切换，将其推广为 Rust 默认行为。 |
+| 外部订单过滤   | `ignore_external_orders` 仅跳过没有 `rfo` 的 OCM 更新。                                          | Python 还在全量镜像缓存检查期间使用它。            | 确定最终的过滤行为。                          |
+| 配置接口     | 没有 `certs_dir`、没有 `instrument_config`，keep alive 固定，heartbeat 值为必填。                     | 稳定版指南仍记录了 Python 的配置接口。            | 决定是补齐对齐还是认可 Rust 接口。                |
+| SSL 证书   | 流客户端目前硬编码 `certs_dir=None`。                                                             | 稳定版指南记录了证书配置和 `BETFAIR_CERTS_DIR`。 | 补齐支持，或从未来的指南中移除。                    |
 
 ## 订单能力 (Orders capability)
 
 ### 订单类型
 
-| 订单类型               | 是否支持 | 说明                                                                       |
-|------------------------|-----------|-----------------------------------------------------------------------------|
-| `MARKET`               | ✓*        | Rust 仅支持 `AT_THE_CLOSE`，它映射到 Betfair 的 `MARKET_ON_CLOSE`。         |
-| `LIMIT`                | ✓         | Rust 支持常规限价单以及收盘 BSP 限价单。                                     |
-| `STOP_MARKET`          | -         | 不支持。                                                                    |
-| `STOP_LIMIT`           | -         | 不支持。                                                                    |
-| `MARKET_IF_TOUCHED`    | -         | 不支持。                                                                    |
-| `LIMIT_IF_TOUCHED`     | -         | 不支持。                                                                    |
-| `TRAILING_STOP_MARKET` | -         | 不支持。                                                                    |
+| 订单类型                   | 是否支持 | 说明                                                        |
+| ---------------------- | ---- | --------------------------------------------------------- |
+| `MARKET`               | ✓*   | Rust 仅支持 `AT_THE_CLOSE`，它映射到 Betfair 的 `MARKET_ON_CLOSE`。 |
+| `LIMIT`                | ✓    | Rust 支持常规限价单以及收盘 BSP 限价单。                                 |
+| `STOP_MARKET`          | -    | 不支持。                                                      |
+| `STOP_LIMIT`           | -    | 不支持。                                                      |
+| `MARKET_IF_TOUCHED`    | -    | 不支持。                                                      |
+| `LIMIT_IF_TOUCHED`     | -    | 不支持。                                                      |
+| `TRAILING_STOP_MARKET` | -    | 不支持。                                                      |
 
 ### 有效期 (Time in force)
 
-| 有效期         | 是否支持 | 说明                                                        |
-|----------------|-----------|--------------------------------------------------------------|
-| `GTC`          | ✓         | 映射到 Betfair 的 `PERSIST`。                               |
-| `DAY`          | ✓         | 映射到 Betfair 的 `LAPSE`。                                 |
-| `FOK`          | ✓         | 映射到 Betfair 的 `FILL_OR_KILL`。                         |
-| `IOC`          | ✓         | 映射到 `FILL_OR_KILL`，并设置 `min_fill_size=0`。           |
-| `AT_THE_CLOSE` | ✓         | 用于 Betfair BSP 的 `LIMIT_ON_CLOSE` 和 `MARKET_ON_CLOSE`。 |
+| 有效期            | 是否支持 | 说明                                                     |
+| -------------- | ---- | ------------------------------------------------------ |
+| `GTC`          | ✓    | 映射到 Betfair 的 `PERSIST`。                               |
+| `DAY`          | ✓    | 映射到 Betfair 的 `LAPSE`。                                 |
+| `FOK`          | ✓    | 映射到 Betfair 的 `FILL_OR_KILL`。                          |
+| `IOC`          | ✓    | 映射到 `FILL_OR_KILL`，并设置 `min_fill_size=0`。              |
+| `AT_THE_CLOSE` | ✓    | 用于 Betfair BSP 的 `LIMIT_ON_CLOSE` 和 `MARKET_ON_CLOSE`。 |
 
 Rust 目前还接受 `AT_THE_OPEN` 模式下的 `LIMIT` 订单，并将其通过 Betfair 的
 `LIMIT_ON_CLOSE` 指令路由。请将其视为当前行为，而非已定型的公开契约。
 
 ### 批量操作
 
-| 操作         | 是否支持 | 说明                                       |
-|--------------|-----------|--------------------------------------------|
-| 批量提交     | ✓         | 通过 `SubmitOrderList` 实现。              |
-| 批量修改     | -         | 不支持。                                   |
-| 批量取消     | ✓         | 通过 `BatchCancelOrders` 实现。           |
+| 操作   | 是否支持 | 说明                         |
+| ---- | ---- | -------------------------- |
+| 批量提交 | ✓    | 通过 `SubmitOrderList` 实现。   |
+| 批量修改 | -    | 不支持。                       |
+| 批量取消 | ✓    | 通过 `BatchCancelOrders` 实现。 |
 
 ## 执行控制流 (Execution control flow)
 
@@ -87,11 +87,11 @@ Rust 目前还接受 `AT_THE_OPEN` 模式下的 `LIMIT` 订单，并将其通过
 
 Betfair 会话每 12-24 小时过期一次。Rust adapter 通过三种机制自动处理会话恢复：
 
-| 机制                | 触发条件                          | 动作                                                                 |
-|---------------------|-----------------------------------|----------------------------------------------------------------------|
-| 周期性 keep‑alive   | 每 10 小时。                      | 续期会话令牌，推送到所有流的 watch 通道。                            |
-| keep‑alive 回退     | keep‑alive 返回 `LoginFailed`。   | 通过 `reconnect()` 完整重新登录，向流推送新令牌。                    |
-| 流重连              | 断线后收到 `Connection` 消息。    | 先尝试 keep‑alive，在 `LoginFailed` 时回退到重新登录，更新认证信息。 |
+| 机制             | 触发条件                         | 动作                                              |
+| -------------- | ---------------------------- | ----------------------------------------------- |
+| 周期性 keep‑alive | 每 10 小时。                     | 续期会话令牌，推送到所有流的 watch 通道。                        |
+| keep‑alive 回退  | keep‑alive 返回 `LoginFailed`。 | 通过 `reconnect()` 完整重新登录，向流推送新令牌。                |
+| 流重连            | 断线后收到 `Connection` 消息。       | 先尝试 keep‑alive，在 `LoginFailed` 时回退到重新登录，更新认证信息。 |
 
 keep-alive 期间出现的瞬时错误（网络超时、5xx 响应）会被记录并跳过。现有的会话令牌
 会被保留，下一个 keep-alive 间隔会重试。只有 `LoginFailed` 错误（会话过期）才会触发
@@ -115,13 +115,13 @@ TCP 重连时从该通道读取，因此由 keep-alive 任务或重连处理器�
 发生偏离（特别是，成交可能在重连后的流镜像到达之前就已完成并从未匹配账本上滚落）。
 因此，在允许策略增加新敞口之前，它会在最近的时间窗口上运行一次批量状态对账。
 
-| 步骤 | 触发条件                                       | 动作                                                                                                          |
-|------|------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| 1    | 流断线后的第二条 `Connection` 消息。           | OCM 处理器置起 `pending_resync` 和 `is_reconciling`，向后台任务发送重连信号。                                  |
-| 2    | 重连任务收到信号。                             | 重新置起 `is_reconciling`，使排队中的第二次重连在其自身迭代期间也会暂停。                                      |
-| 3    | 重连任务主体。                                 | 刷新会话，更新流认证，获取 `getAccountFunds`，并调用 `listCurrentOrders` 取订单和成交。                       |
-| 4    | 批量状态构建完成。                             | 作为 `ExecutionReport::MassStatus` 派发，使引擎对账进缓存。                                                    |
-| 5    | 迭代结束。                                     | 清除 `is_reconciling`。失败的迭代也会清除它（fail‑open，与 Nautilus 其余部分一致）。                          |
+| 步骤  | 触发条件                      | 动作                                                              |
+| --- | ------------------------- | --------------------------------------------------------------- |
+| 1   | 流断线后的第二条 `Connection` 消息。 | OCM 处理器置起 `pending_resync` 和 `is_reconciling`，向后台任务发送重连信号。      |
+| 2   | 重连任务收到信号。                 | 重新置起 `is_reconciling`，使排队中的第二次重连在其自身迭代期间也会暂停。                   |
+| 3   | 重连任务主体。                   | 刷新会话，更新流认证，获取 `getAccountFunds`，并调用 `listCurrentOrders` 取订单和成交。 |
+| 4   | 批量状态构建完成。                 | 作为 `ExecutionReport::MassStatus` 派发，使引擎对账进缓存。                   |
+| 5   | 迭代结束。                     | 清除 `is_reconciling`。失败的迭代也会清除它（fail‑open，与 Nautilus 其余部分一致）。    |
 
 当 `is_reconciling` 被置起时：
 
@@ -142,18 +142,18 @@ TCP 重连时从该通道读取，因此由 keep-alive 任务或重连处理器�
 
 Betfair 使用分层 tick 方案，不同价格区间的增量各不相同：
 
-| 价格区间       | Tick 大小 |
-|----------------|-----------|
-| 1.01 - 2.00    | 0.01      |
-| 2.00 - 3.00    | 0.02      |
-| 3.00 - 4.00    | 0.05      |
-| 4.00 - 6.00    | 0.10      |
-| 6.00 - 10.00   | 0.20      |
-| 10.00 - 20.00  | 0.50      |
-| 20.00 - 30.00  | 1.00      |
-| 30.00 - 50.00  | 2.00      |
-| 50.00 - 100.00 | 5.00      |
-| 100.00 - 1000  | 10.00     |
+| 价格区间           | Tick 大小 |
+| -------------- | ------- |
+| 1.01 - 2.00    | 0.01    |
+| 2.00 - 3.00    | 0.02    |
+| 3.00 - 4.00    | 0.05    |
+| 4.00 - 6.00    | 0.10    |
+| 6.00 - 10.00   | 0.20    |
+| 10.00 - 20.00  | 0.50    |
+| 20.00 - 30.00  | 1.00    |
+| 30.00 - 50.00  | 2.00    |
+| 50.00 - 100.00 | 5.00    |
+| 100.00 - 1000  | 10.00   |
 
 最低价格为 1.01，最高价格为 1000.00。
 
@@ -194,10 +194,10 @@ adapter 在处理来自流的成交时会处理若干边界情况：
 
 adapter 使用独立的限速桶 (rate limit bucket)，使账户状态轮询和对账不会限制订单下单：
 
-| 桶      | 默认值  | 端点                                            |
-|---------|---------|-------------------------------------------------|
-| General | 5/s     | 账户状态、对账、keep‑alive。                    |
-| Orders  | 20/s    | `placeOrders`、`replaceOrders`、`cancelOrders`。 |
+| 桶       | 默认值  | 端点                                            |
+| ------- | ---- | --------------------------------------------- |
+| General | 5/s  | 账户状态、对账、keep‑alive。                           |
+| Orders  | 20/s | `placeOrders`、`replaceOrders`、`cancelOrders`。 |
 
 订单状态和成交报告查询在遇到会话错误时，会在刷新会话后重试一次。`TOO_MANY_REQUESTS`
 错误会在延迟 5 秒后重试。
@@ -216,14 +216,14 @@ adapter 从 instrument 的 `info` 字典中读取市场版本，该字典由 Exc
 Rust adapter 通过市场流和 race 流发出与 Python adapter 相同的自定义数据类型。当订阅
 市场时，所有自定义数据会自动流入。
 
-| 类型                       | 流     | 描述                                              |
-|----------------------------|--------|---------------------------------------------------|
-| `BetfairTicker`            | Market | 最后成交价、成交量、BSP 指标。                    |
-| `BetfairStartingPrice`     | Market | 市场收盘后已实现的 BSP。                          |
-| `BetfairSequenceCompleted` | Market | 标记一个市场变更序列的结束。                      |
-| `BetfairOrderVoided`       | Order  | 作废订单的详情（作废数量、价格、方向）。          |
-| `BetfairRaceRunnerData`    | Race   | 每个参赛者的实时 GPS 跟踪 (TPD)。                 |
-| `BetfairRaceProgress`      | Race   | 分段时间、跑位顺序、跨栏数据。                    |
+| 类型                         | 流      | 描述                     |
+| -------------------------- | ------ | ---------------------- |
+| `BetfairTicker`            | Market | 最后成交价、成交量、BSP 指标。      |
+| `BetfairStartingPrice`     | Market | 市场收盘后已实现的 BSP。         |
+| `BetfairSequenceCompleted` | Market | 标记一个市场变更序列的结束。         |
+| `BetfairOrderVoided`       | Order  | 作废订单的详情（作废数量、价格、方向）。   |
+| `BetfairRaceRunnerData`    | Race   | 每个参赛者的实时 GPS 跟踪 (TPD)。 |
+| `BetfairRaceProgress`      | Race   | 分段时间、跑位顺序、跨栏数据。        |
 
 Race 数据需要 Total Performance Data (TPD) 覆盖，以及一个具有 TPD 访问权限的 Betfair
 API key。通过 `subscribe_race_data=True` 启用。
@@ -240,63 +240,63 @@ API key。通过 `subscribe_race_data=True` 启用。
 
 ### 数据客户端配置
 
-| 选项                                | 默认值   | 说明                                          |
-|-------------------------------------|----------|-----------------------------------------------|
-| `account_currency`                  | 必填     | Betfair 账户币种。                            |
-| `username`                          | `None`   | 回退到 `BETFAIR_USERNAME`。                   |
-| `password`                          | `None`   | 回退到 `BETFAIR_PASSWORD`。                   |
-| `app_key`                           | `None`   | 回退到 `BETFAIR_APP_KEY`。                    |
-| `proxy_url`                         | `None`   | HTTP 请求的可选代理 URL。                     |
-| `request_rate_per_second`           | `5`      | General HTTP 限速。                           |
-| `default_min_notional`              | `None`   | 可选的最小名义金额覆盖。                      |
-| `event_type_ids`                    | `None`   | 可选的导航过滤器。                            |
-| `event_type_names`                  | `None`   | 可选的导航过滤器。                            |
-| `event_ids`                         | `None`   | 可选的导航过滤器。                            |
-| `country_codes`                     | `None`   | 可选的导航过滤器。                            |
-| `market_types`                      | `None`   | 可选的导航过滤器。                            |
-| `market_ids`                        | `None`   | 可选的导航过滤器。                            |
-| `min_market_start_time`             | `None`   | 可选的导航过滤器。                            |
-| `max_market_start_time`             | `None`   | 可选的导航过滤器。                            |
-| `stream_host`                       | `None`   | 可选的流主机覆盖。                            |
-| `stream_port`                       | `None`   | 可选的流端口覆盖。                            |
-| `stream_heartbeat_ms`               | `5,000`  | 目前在 Rust 中为必填。                        |
-| `stream_idle_timeout_ms`            | `60,000` | 重连前的空闲超时。                            |
-| `stream_reconnect_delay_initial_ms` | `2,000`  | 初始重连延迟。                                |
-| `stream_reconnect_delay_max_ms`     | `30,000` | 最大重连延迟。                                |
-| `stream_use_tls`                    | `True`   | 流连接使用 TLS。                              |
-| `stream_conflate_ms`                | `None`   | 显式的合并 (conflation) 设置。               |
-| `subscription_delay_secs`           | `3`      | 第一次市场订阅前的延迟。                      |
-| `subscribe_race_data`               | `False`  | 订阅 RCM 更新。                              |
+| 选项                                  | 默认值      | 说明                      |
+| ----------------------------------- | -------- | ----------------------- |
+| `account_currency`                  | 必填       | Betfair 账户币种。           |
+| `username`                          | `None`   | 回退到 `BETFAIR_USERNAME`。 |
+| `password`                          | `None`   | 回退到 `BETFAIR_PASSWORD`。 |
+| `app_key`                           | `None`   | 回退到 `BETFAIR_APP_KEY`。  |
+| `proxy_url`                         | `None`   | HTTP 请求的可选代理 URL。       |
+| `request_rate_per_second`           | `5`      | General HTTP 限速。        |
+| `default_min_notional`              | `None`   | 可选的最小名义金额覆盖。            |
+| `event_type_ids`                    | `None`   | 可选的导航过滤器。               |
+| `event_type_names`                  | `None`   | 可选的导航过滤器。               |
+| `event_ids`                         | `None`   | 可选的导航过滤器。               |
+| `country_codes`                     | `None`   | 可选的导航过滤器。               |
+| `market_types`                      | `None`   | 可选的导航过滤器。               |
+| `market_ids`                        | `None`   | 可选的导航过滤器。               |
+| `min_market_start_time`             | `None`   | 可选的导航过滤器。               |
+| `max_market_start_time`             | `None`   | 可选的导航过滤器。               |
+| `stream_host`                       | `None`   | 可选的流主机覆盖。               |
+| `stream_port`                       | `None`   | 可选的流端口覆盖。               |
+| `stream_heartbeat_ms`               | `5,000`  | 目前在 Rust 中为必填。          |
+| `stream_idle_timeout_ms`            | `60,000` | 重连前的空闲超时。               |
+| `stream_reconnect_delay_initial_ms` | `2,000`  | 初始重连延迟。                 |
+| `stream_reconnect_delay_max_ms`     | `30,000` | 最大重连延迟。                 |
+| `stream_use_tls`                    | `True`   | 流连接使用 TLS。              |
+| `stream_conflate_ms`                | `None`   | 显式的合并 (conflation) 设置。  |
+| `subscription_delay_secs`           | `3`      | 第一次市场订阅前的延迟。            |
+| `subscribe_race_data`               | `False`  | 订阅 RCM 更新。              |
 
 Rust 尚未暴露 `certs_dir` 或 `instrument_config`。Rust 还使用固定的 36,000 秒
 keep-alive 间隔。
 
 ### 执行客户端配置
 
-| 选项                                | 默认值        | 说明                                                  |
-|-------------------------------------|---------------|--------------------------------------------------------|
-| `trader_id`                         | `TRADER-001`  | 客户端核心的 Trader ID。                              |
-| `account_id`                        | `BETFAIR-001` | 客户端核心的 Account ID。                             |
-| `account_currency`                  | `GBP`         | Betfair 账户币种。                                    |
-| `username`                          | `None`        | 回退到 `BETFAIR_USERNAME`。                           |
-| `password`                          | `None`        | 回退到 `BETFAIR_PASSWORD`。                           |
-| `app_key`                           | `None`        | 回退到 `BETFAIR_APP_KEY`。                            |
-| `proxy_url`                         | `None`        | HTTP 请求的可选代理 URL。                             |
-| `request_rate_per_second`           | `5`           | General HTTP 限速。                                   |
-| `order_request_rate_per_second`     | `20`          | 订单端点限速。                                        |
-| `stream_host`                       | `None`        | 可选的流主机覆盖。                                    |
-| `stream_port`                       | `None`        | 可选的流端口覆盖。                                    |
-| `stream_heartbeat_ms`               | `5,000`       | 目前在 Rust 中为必填。                                |
-| `stream_idle_timeout_ms`            | `60,000`      | 重连前的空闲超时。                                    |
-| `stream_reconnect_delay_initial_ms` | `2,000`       | 初始重连延迟。                                        |
-| `stream_reconnect_delay_max_ms`     | `30,000`      | 最大重连延迟。                                        |
-| `stream_use_tls`                    | `True`        | 流连接使用 TLS。                                      |
-| `stream_market_ids_filter`          | `None`        | 可选的实时 OCM 市场过滤器。                           |
-| `ignore_external_orders`            | `False`       | 仅跳过没有 `rfo` 的 OCM 更新。                        |
-| `calculate_account_state`           | `True`        | 目前在 Rust 中控制周期性账户状态轮询的开关。          |
-| `request_account_state_secs`        | `300`         | 账户资金的轮询间隔。                                  |
-| `reconcile_market_ids_only`         | `False`       | 当为 `True` 时，使用 `reconcile_market_ids`。         |
-| `reconcile_market_ids`              | `None`        | 显式的启动对账市场 ID。                               |
+| 选项                                  | 默认值           | 说明                                     |
+| ----------------------------------- | ------------- | -------------------------------------- |
+| `trader_id`                         | `TRADER-001`  | 客户端核心的 Trader ID。                      |
+| `account_id`                        | `BETFAIR-001` | 客户端核心的 Account ID。                     |
+| `account_currency`                  | `GBP`         | Betfair 账户币种。                          |
+| `username`                          | `None`        | 回退到 `BETFAIR_USERNAME`。                |
+| `password`                          | `None`        | 回退到 `BETFAIR_PASSWORD`。                |
+| `app_key`                           | `None`        | 回退到 `BETFAIR_APP_KEY`。                 |
+| `proxy_url`                         | `None`        | HTTP 请求的可选代理 URL。                      |
+| `request_rate_per_second`           | `5`           | General HTTP 限速。                       |
+| `order_request_rate_per_second`     | `20`          | 订单端点限速。                                |
+| `stream_host`                       | `None`        | 可选的流主机覆盖。                              |
+| `stream_port`                       | `None`        | 可选的流端口覆盖。                              |
+| `stream_heartbeat_ms`               | `5,000`       | 目前在 Rust 中为必填。                         |
+| `stream_idle_timeout_ms`            | `60,000`      | 重连前的空闲超时。                              |
+| `stream_reconnect_delay_initial_ms` | `2,000`       | 初始重连延迟。                                |
+| `stream_reconnect_delay_max_ms`     | `30,000`      | 最大重连延迟。                                |
+| `stream_use_tls`                    | `True`        | 流连接使用 TLS。                             |
+| `stream_market_ids_filter`          | `None`        | 可选的实时 OCM 市场过滤器。                       |
+| `ignore_external_orders`            | `False`       | 仅跳过没有 `rfo` 的 OCM 更新。                  |
+| `calculate_account_state`           | `True`        | 目前在 Rust 中控制周期性账户状态轮询的开关。              |
+| `request_account_state_secs`        | `300`         | 账户资金的轮询间隔。                             |
+| `reconcile_market_ids_only`         | `False`       | 当为 `True` 时，使用 `reconcile_market_ids`。 |
+| `reconcile_market_ids`              | `None`        | 显式的启动对账市场 ID。                          |
 | `use_market_version`                | `False`       | 为下单和替换请求附加市场版本。                        |
 | `stream_gap_recovery_lookback_mins` | `10`          | 重连后批量状态对账的回看窗口。                        |
 

@@ -6,36 +6,36 @@
 
 ## 字段 (Fields)
 
-| 字段                  | Rust 类型          | Python 类型       | 必填/默认值       | 说明                                    |
-|-----------------------|--------------------|-------------------|------------------|-----------------------------------------|
-| `instrument_id`       | `InstrumentId`     | `InstrumentId`    | 必填             | 在 Rust 中以 `id` 存储。                |
-| `raw_symbol`          | `Symbol`           | `Symbol`          | 必填             | 交易所原生符号。                        |
-| `underlying`          | `Currency`         | `Currency`        | 必填             | 该合约所跟踪的加密资产。                |
-| `quote_currency`      | `Currency`         | `Currency`        | 必填             | 用于报价的货币。                        |
-| `settlement_currency` | `Currency`         | `Currency`        | 必填             | 用于结算盈亏和费用的货币。              |
-| `is_inverse`          | `bool`             | `bool`            | 必填             | 为 True 时，计量/计价采用反向方式。     |
-| `activation_ns`       | `UnixNanos`        | `int`             | 必填             | 合约激活时间戳。                        |
-| `expiration_ns`       | `UnixNanos`        | `int`             | 必填             | 合约到期时间戳。                        |
-| `price_precision`     | `u8`               | `int`             | 必填             | 价格允许的小数位数。                    |
-| `size_precision`      | `u8`               | `int`             | 必填             | 订单数量允许的小数位数。                |
-| `price_increment`     | `Price`            | `Price`           | 必填             | 最小有效价格步进。                      |
-| `size_increment`      | `Quantity`         | `Quantity`        | 必填             | 最小有效数量步进。                      |
-| `multiplier`          | `Quantity`         | `Quantity`        | `1`              | 合约乘数。                              |
-| `lot_size`            | `Quantity`         | `Quantity`        | `1`              | 取整后的手数或板块规模。                |
-| `max_quantity`        | `Option<Quantity>` | `Quantity \| None` | `None`           | 最大订单数量。                          |
-| `min_quantity`        | `Option<Quantity>` | `Quantity \| None` | `None`           | 最小订单数量。                          |
-| `max_notional`        | `Option<Money>`    | `Money \| None`    | `None`           | 最大订单名义价值。                      |
-| `min_notional`        | `Option<Money>`    | `Money \| None`    | `None`           | 最小订单名义价值。                      |
-| `max_price`           | `Option<Price>`    | `Price \| None`    | `None`           | 最大有效报价或订单价格。                |
-| `min_price`           | `Option<Price>`    | `Price \| None`    | `None`           | 最小有效报价或订单价格。                |
-| `margin_init`         | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 初始保证金率。                          |
-| `margin_maint`        | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 维持保证金率。                          |
-| `maker_fee`           | `Option<Decimal>`  | `Decimal \| None`  | `0`              | Maker 费率。负值表示返佣。              |
-| `taker_fee`           | `Option<Decimal>`  | `Decimal \| None`  | `0`              | Taker 费率。负值表示返佣。              |
-| `tick_scheme_name`    | N/A                | `str \| None`      | `None`           | 已注册的可变 tick 方案名称。            |
-| `info`                | `Option<Params>`   | `dict \| None`     | `None`           | 适配器元数据。                          |
-| `ts_event`            | `UnixNanos`        | `int`             | 必填             | 事件时间戳（纳秒）。                    |
-| `ts_init`             | `UnixNanos`        | `int`             | 必填             | 初始化时间戳（纳秒）。                  |
+| 字段                    | Rust 类型            | Python 类型          | 必填/默认值 | 说明                    |
+| --------------------- | ------------------ | ------------------ | ------ | --------------------- |
+| `instrument_id`       | `InstrumentId`     | `InstrumentId`     | 必填     | 在 Rust 中以 `id` 存储。    |
+| `raw_symbol`          | `Symbol`           | `Symbol`           | 必填     | 交易所原生符号。              |
+| `underlying`          | `Currency`         | `Currency`         | 必填     | 该合约所跟踪的加密资产。          |
+| `quote_currency`      | `Currency`         | `Currency`         | 必填     | 用于报价的货币。              |
+| `settlement_currency` | `Currency`         | `Currency`         | 必填     | 用于结算盈亏和费用的货币。         |
+| `is_inverse`          | `bool`             | `bool`             | 必填     | 为 True 时，计量/计价采用反向方式。 |
+| `activation_ns`       | `UnixNanos`        | `int`              | 必填     | 合约激活时间戳。              |
+| `expiration_ns`       | `UnixNanos`        | `int`              | 必填     | 合约到期时间戳。              |
+| `price_precision`     | `u8`               | `int`              | 必填     | 价格允许的小数位数。            |
+| `size_precision`      | `u8`               | `int`              | 必填     | 订单数量允许的小数位数。          |
+| `price_increment`     | `Price`            | `Price`            | 必填     | 最小有效价格步进。             |
+| `size_increment`      | `Quantity`         | `Quantity`         | 必填     | 最小有效数量步进。             |
+| `multiplier`          | `Quantity`         | `Quantity`         | `1`    | 合约乘数。                 |
+| `lot_size`            | `Quantity`         | `Quantity`         | `1`    | 取整后的手数或板块规模。          |
+| `max_quantity`        | `Option<Quantity>` | `Quantity \| None` | `None` | 最大订单数量。               |
+| `min_quantity`        | `Option<Quantity>` | `Quantity \| None` | `None` | 最小订单数量。               |
+| `max_notional`        | `Option<Money>`    | `Money \| None`    | `None` | 最大订单名义价值。             |
+| `min_notional`        | `Option<Money>`    | `Money \| None`    | `None` | 最小订单名义价值。             |
+| `max_price`           | `Option<Price>`    | `Price \| None`    | `None` | 最大有效报价或订单价格。          |
+| `min_price`           | `Option<Price>`    | `Price \| None`    | `None` | 最小有效报价或订单价格。          |
+| `margin_init`         | `Option<Decimal>`  | `Decimal \| None`  | `0`    | 初始保证金率。               |
+| `margin_maint`        | `Option<Decimal>`  | `Decimal \| None`  | `0`    | 维持保证金率。               |
+| `maker_fee`           | `Option<Decimal>`  | `Decimal \| None`  | `0`    | Maker 费率。负值表示返佣。      |
+| `taker_fee`           | `Option<Decimal>`  | `Decimal \| None`  | `0`    | Taker 费率。负值表示返佣。      |
+| `tick_scheme_name`    | N/A                | `str \| None`      | `None` | 已注册的可变 tick 方案名称。     |
+| `info`                | `Option<Params>`   | `dict \| None`     | `None` | 适配器元数据。               |
+| `ts_event`            | `UnixNanos`        | `int`              | 必填     | 事件时间戳（纳秒）。            |
+| `ts_init`             | `UnixNanos`        | `int`              | 必填     | 初始化时间戳（纳秒）。           |
 
 *注意：Python 构造函数使用 `instrument_id`；Rust 将同一值存储为 `id`。*
 

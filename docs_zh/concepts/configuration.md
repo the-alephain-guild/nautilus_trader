@@ -85,15 +85,15 @@ let config = BybitDataClientConfig::default();
 
 大多数适配器配置共享一组通用字段：
 
-| 字段                               | 类型   | 默认值  | 用途                          |
-|------------------------------------|--------|---------|-------------------------------|
-| `http_timeout_secs`                | `u64`  | 60      | REST 请求超时。               |
-| `max_retries`                      | `u32`  | 3       | 最大重试次数。                |
-| `retry_delay_initial_ms`           | `u64`  | 1,000   | 初始退避延迟。                |
-| `retry_delay_max_ms`               | `u64`  | 10,000  | 最大退避延迟。                |
-| `heartbeat_interval_secs`          | `u64`  | 视情况  | WebSocket 保活间隔。          |
-| `recv_window_ms`                   | `u64`  | 视情况  | 签名请求的过期窗口。          |
-| `update_instruments_interval_mins` | 视情况 | 视情况  | 周期性 instrument 刷新。      |
+| 字段                                 | 类型    | 默认值    | 用途                 |
+| ---------------------------------- | ----- | ------ | ------------------ |
+| `http_timeout_secs`                | `u64` | 60     | REST 请求超时。         |
+| `max_retries`                      | `u32` | 3      | 最大重试次数。            |
+| `retry_delay_initial_ms`           | `u64` | 1,000  | 初始退避延迟。            |
+| `retry_delay_max_ms`               | `u64` | 10,000 | 最大退避延迟。            |
+| `heartbeat_interval_secs`          | `u64` | 视情况    | WebSocket 保活间隔。    |
+| `recv_window_ms`                   | `u64` | 视情况    | 签名请求的过期窗口。         |
+| `update_instruments_interval_mins` | 视情况   | 视情况    | 周期性 instrument 刷新。 |
 
 适配器专属的字段（限速、轮询间隔、保证金模式）记录在每个适配器各自的集成指南中。
 
@@ -109,8 +109,8 @@ from nautilus_trader.config import LiveExecEngineConfig
 
 config = LiveExecEngineConfig(
     reconciliation=True,
-    open_check_interval_secs=30.0,       # 启用未成交订单轮询
-    open_check_lookback_mins=60,         # 回看 60 分钟
+    open_check_interval_secs=30.0,  # 启用未成交订单轮询
+    open_check_lookback_mins=60,  # 回看 60 分钟
     # position_check_interval_secs=None  # 默认禁用
 )
 ```

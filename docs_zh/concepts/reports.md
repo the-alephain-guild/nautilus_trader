@@ -34,24 +34,24 @@ orders_report = ReportProvider.generate_orders_report(orders)
 
 **返回 `pd.DataFrame`，关键列包括：**
 
-| 列                 | 描述                                          |
-|--------------------|-----------------------------------------------|
-| `client_order_id`  | 索引 - 唯一订单标识符。                       |
-| `instrument_id`    | 交易金融工具 (instrument)。                    |
-| `strategy_id`      | 创建该订单的策略。                             |
-| `trader_id`        | Trader 标识符。                                |
-| `account_id`       | 账户标识符（如已分配）。                       |
-| `venue_order_id`   | 交易场所分配的订单 ID（如已被接受）。          |
-| `side`             | BUY 或 SELL。                                  |
-| `type`             | MARKET、LIMIT 等。                             |
-| `status`           | 当前订单状态。                                 |
-| `quantity`         | 原始订单数量（字符串）。                       |
-| `filled_qty`       | 已成交数量（字符串）。                         |
-| `price`            | 限价（取决于订单类型）。                       |
-| `avg_px`           | 平均成交价格（如已成交）。                     |
-| `time_in_force`    | 有效期 (time-in-force) 指令。                  |
-| `ts_init`          | 订单初始化时间戳（Unix 纳秒）。               |
-| `ts_last`          | 最后更新时间戳（Unix 纳秒）。                 |
+| 列                 | 描述                      |
+| ----------------- | ----------------------- |
+| `client_order_id` | 索引 - 唯一订单标识符。           |
+| `instrument_id`   | 交易金融工具 (instrument)。    |
+| `strategy_id`     | 创建该订单的策略。               |
+| `trader_id`       | Trader 标识符。             |
+| `account_id`      | 账户标识符（如已分配）。            |
+| `venue_order_id`  | 交易场所分配的订单 ID（如已被接受）。    |
+| `side`            | BUY 或 SELL。             |
+| `type`            | MARKET、LIMIT 等。         |
+| `status`          | 当前订单状态。                 |
+| `quantity`        | 原始订单数量（字符串）。            |
+| `filled_qty`      | 已成交数量（字符串）。             |
+| `price`           | 限价（取决于订单类型）。            |
+| `avg_px`          | 平均成交价格（如已成交）。           |
+| `time_in_force`   | 有效期 (time-in-force) 指令。 |
+| `ts_init`         | 订单初始化时间戳（Unix 纳秒）。      |
+| `ts_last`         | 最后更新时间戳（Unix 纳秒）。       |
 
 附加列因订单类型而异（例如 stop 订单的 `trigger_price`、GTD 订单的 `expire_time`）。完整字段列表请参阅 `Order.to_dict()`。
 
@@ -85,24 +85,24 @@ fills_report = ReportProvider.generate_fills_report(orders)
 
 **返回 `pd.DataFrame`，关键列包括：**
 
-| 列                 | 描述                                 |
-|--------------------|--------------------------------------|
-| `client_order_id`  | 索引 - 订单标识符。                  |
-| `trade_id`         | 唯一交易/成交标识符。                |
-| `venue_order_id`   | 交易场所 (venue) 分配的订单 ID。     |
-| `instrument_id`    | 交易金融工具。                       |
-| `strategy_id`      | 创建该订单的策略。                   |
-| `account_id`       | 账户标识符。                         |
-| `position_id`      | 关联的持仓 ID（如适用）。            |
-| `order_side`       | BUY 或 SELL。                        |
-| `order_type`       | 订单类型（MARKET、LIMIT 等）。       |
-| `last_px`          | 成交执行价格（字符串）。             |
-| `last_qty`         | 成交执行数量（字符串）。             |
-| `currency`         | 成交币种。                           |
-| `liquidity_side`   | MAKER 或 TAKER。                     |
-| `commission`       | 手续费金额和币种。                   |
-| `ts_event`         | 成交时间戳（datetime）。             |
-| `ts_init`          | 初始化时间戳（datetime）。           |
+| 列                 | 描述                     |
+| ----------------- | ---------------------- |
+| `client_order_id` | 索引 - 订单标识符。            |
+| `trade_id`        | 唯一交易/成交标识符。            |
+| `venue_order_id`  | 交易场所 (venue) 分配的订单 ID。 |
+| `instrument_id`   | 交易金融工具。                |
+| `strategy_id`     | 创建该订单的策略。              |
+| `account_id`      | 账户标识符。                 |
+| `position_id`     | 关联的持仓 ID（如适用）。         |
+| `order_side`      | BUY 或 SELL。            |
+| `order_type`      | 订单类型（MARKET、LIMIT 等）。  |
+| `last_px`         | 成交执行价格（字符串）。           |
+| `last_qty`        | 成交执行数量（字符串）。           |
+| `currency`        | 成交币种。                  |
+| `liquidity_side`  | MAKER 或 TAKER。         |
+| `commission`      | 手续费金额和币种。              |
+| `ts_event`        | 成交时间戳（datetime）。       |
+| `ts_init`         | 初始化时间戳（datetime）。      |
 
 完整字段列表请参阅 `OrderFilled.to_dict()`。
 
@@ -119,37 +119,36 @@ positions_report = trader.generate_positions_report()
 positions = cache.positions()
 snapshots = cache.position_snapshots()  # 用于 NETTING OMS
 positions_report = ReportProvider.generate_positions_report(
-    positions=positions,
-    snapshots=snapshots
+    positions=positions, snapshots=snapshots
 )
 ```
 
 **返回 `pd.DataFrame`，关键列包括：**
 
-| 列                 | 描述                                   |
-|--------------------|----------------------------------------|
-| `position_id`      | 索引 - 唯一持仓标识符。               |
-| `instrument_id`    | 交易金融工具。                         |
-| `strategy_id`      | 管理该持仓的策略。                     |
-| `trader_id`        | Trader 标识符。                        |
-| `account_id`       | 账户标识符。                           |
-| `opening_order_id` | 开仓的订单 ID。                        |
-| `closing_order_id` | 平仓的订单 ID。                        |
-| `entry`            | 入场方向（BUY 或 SELL）。              |
-| `side`             | 持仓方向（LONG、SHORT 或 FLAT）。      |
-| `quantity`         | 当前持仓规模。                         |
-| `peak_qty`         | 达到的最大规模。                       |
-| `avg_px_open`      | 平均入场价格。                         |
-| `avg_px_close`     | 平均出场价格（如已平仓）。             |
-| `commissions`      | 已付手续费列表。                       |
-| `realized_pnl`     | 已实现盈亏。                           |
-| `realized_return`  | 收益率 (return) 百分比。               |
-| `ts_init`          | 持仓初始化时间戳。                     |
-| `ts_opened`        | 开仓时间戳（datetime）。               |
-| `ts_last`          | 最后更新时间戳。                       |
-| `ts_closed`        | 平仓时间戳（datetime 或 NA）。         |
-| `duration_ns`      | 持仓持续时间（纳秒）。                |
-| `is_snapshot`      | 是否为历史快照。                       |
+| 列                  | 描述                       |
+| ------------------ | ------------------------ |
+| `position_id`      | 索引 - 唯一持仓标识符。            |
+| `instrument_id`    | 交易金融工具。                  |
+| `strategy_id`      | 管理该持仓的策略。                |
+| `trader_id`        | Trader 标识符。              |
+| `account_id`       | 账户标识符。                   |
+| `opening_order_id` | 开仓的订单 ID。                |
+| `closing_order_id` | 平仓的订单 ID。                |
+| `entry`            | 入场方向（BUY 或 SELL）。        |
+| `side`             | 持仓方向（LONG、SHORT 或 FLAT）。 |
+| `quantity`         | 当前持仓规模。                  |
+| `peak_qty`         | 达到的最大规模。                 |
+| `avg_px_open`      | 平均入场价格。                  |
+| `avg_px_close`     | 平均出场价格（如已平仓）。            |
+| `commissions`      | 已付手续费列表。                 |
+| `realized_pnl`     | 已实现盈亏。                   |
+| `realized_return`  | 收益率 (return) 百分比。        |
+| `ts_init`          | 持仓初始化时间戳。                |
+| `ts_opened`        | 开仓时间戳（datetime）。         |
+| `ts_last`          | 最后更新时间戳。                 |
+| `ts_closed`        | 平仓时间戳（datetime 或 NA）。    |
+| `duration_ns`      | 持仓持续时间（纳秒）。              |
+| `is_snapshot`      | 是否为历史快照。                 |
 
 ### 账户报告
 
@@ -159,6 +158,7 @@ positions_report = ReportProvider.generate_positions_report(
 # 使用 Trader 辅助方法（推荐）
 # 需要 venue 参数
 from nautilus_trader.model.identifiers import Venue
+
 venue = Venue("BINANCE")
 account_report = trader.generate_account_report(venue)
 
@@ -169,19 +169,19 @@ account_report = ReportProvider.generate_account_report(account)
 
 **返回 `pd.DataFrame`，列包括：**
 
-| 列                 | 描述                                       |
-|--------------------|--------------------------------------------|
-| `ts_event`         | 索引 - 账户状态变更时间戳。                |
-| `account_id`       | 账户标识符。                               |
-| `account_type`     | 账户类型（如 SPOT、MARGIN）。              |
-| `base_currency`    | 账户基础货币。                             |
-| `total`            | 总余额（字符串）。                         |
-| `free`             | 可用余额（字符串）。                       |
-| `locked`           | 订单锁定的余额（字符串）。                 |
-| `currency`         | 余额币种。                                 |
-| `reported`         | 余额是否由交易场所报告。                   |
-| `margins`          | 保证金信息（列表，如适用）。               |
-| `info`             | 交易场所特定的附加信息。                   |
+| 列               | 描述                   |
+| --------------- | -------------------- |
+| `ts_event`      | 索引 - 账户状态变更时间戳。      |
+| `account_id`    | 账户标识符。               |
+| `account_type`  | 账户类型（如 SPOT、MARGIN）。 |
+| `base_currency` | 账户基础货币。              |
+| `total`         | 总余额（字符串）。            |
+| `free`          | 可用余额（字符串）。           |
+| `locked`        | 订单锁定的余额（字符串）。        |
+| `currency`      | 余额币种。                |
+| `reported`      | 余额是否由交易场所报告。         |
+| `margins`       | 保证金信息（列表，如适用）。       |
+| `info`          | 交易场所特定的附加信息。         |
 
 每一行代表一条余额条目；含多种货币的账户在每个账户状态事件下会产生多行。
 
@@ -339,11 +339,11 @@ uv pip install "nautilus_trader[visualization]"
 
 :::note 报告生成时机对比
 
-| 场景 | 报告生成时机 | 数据完整性 |
-|------|------------|----------|
-| **回测完成后** | `engine.run()` 返回后立即生成 | 完整（所有历史数据已处理） |
-| **实盘交易中** | 随时可生成（如定时调用） | 部分（仅已完成的持仓和订单） |
-| **实盘交易结束后** | `node.stop()` 后生成 | 完整（含当天所有数据） |
+| 场景          | 报告生成时机                 | 数据完整性          |
+| ----------- | ---------------------- | -------------- |
+| **回测完成后**   | `engine.run()` 返回后立即生成 | 完整（所有历史数据已处理）  |
+| **实盘交易中**   | 随时可生成（如定时调用）           | 部分（仅已完成的持仓和订单） |
+| **实盘交易结束后** | `node.stop()` 后生成      | 完整（含当天所有数据）    |
 
 在实盘交易**进行中**生成持仓报告时，未平仓持仓会以 `LONG`/`SHORT` 状态出现，`avg_px_close` 和 `ts_closed` 为 NA。若需评估未平仓持仓的实时盈亏，使用 `position.unrealized_pnl(current_price)`。
 :::
@@ -355,13 +355,14 @@ uv pip install "nautilus_trader[visualization]"
 ```python
 import pandas as pd
 
+
 class ReportingActor(Actor):
     def on_start(self):
         # 设置定期报告调度
         self.clock.set_timer(
             name="generate_reports",
             interval=pd.Timedelta(minutes=30),
-            callback=self.generate_reports
+            callback=self.generate_reports,
         )
 
     def generate_reports(self, event):

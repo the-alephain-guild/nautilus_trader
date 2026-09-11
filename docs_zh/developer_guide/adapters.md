@@ -102,17 +102,17 @@ nautilus_trader/adapters/your_adapter/
 
 构建底层网络和解析基础。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 1.1  | HTTP 错误类型              | 定义 HTTP 特定的错误枚举，包含可重试/不可重试变体（`http/error.rs`）。                       |
-| 1.2  | HTTP 客户端                | 实现凭证、请求签名、速率限制和重试逻辑。                                                     |
-| 1.3  | HTTP API 模型              | 定义 REST 端点的请求/响应结构体（`http/models.rs`、`http/query.rs`）。                        |
-| 1.4  | HTTP 解析                  | 将场所响应转换为 Nautilus 领域模型（`http/parse.rs`、`common/parse.rs`）。                    |
-| 1.5  | WebSocket 错误类型         | 定义 WebSocket 特定的错误枚举（`websocket/error.rs`）。                                      |
-| 1.6  | WebSocket 客户端           | 实现连接生命周期、认证、心跳和重连。                                                         |
-| 1.7  | WebSocket 消息             | 定义流载荷类型（`websocket/messages.rs`）。                                                  |
-| 1.8  | WebSocket 解析             | 将流消息转换为 Nautilus 领域模型（`websocket/parse.rs`）。                                   |
-| 1.9  | Python 绑定                | 通过 PyO3 暴露 Rust 功能（`python/mod.rs`）。                                                |
+| 步骤  | 组件             | 描述                                                         |
+| --- | -------------- | ---------------------------------------------------------- |
+| 1.1 | HTTP 错误类型      | 定义 HTTP 特定的错误枚举，包含可重试/不可重试变体（`http/error.rs`）。             |
+| 1.2 | HTTP 客户端       | 实现凭证、请求签名、速率限制和重试逻辑。                                       |
+| 1.3 | HTTP API 模型    | 定义 REST 端点的请求/响应结构体（`http/models.rs`、`http/query.rs`）。     |
+| 1.4 | HTTP 解析        | 将场所响应转换为 Nautilus 领域模型（`http/parse.rs`、`common/parse.rs`）。 |
+| 1.5 | WebSocket 错误类型 | 定义 WebSocket 特定的错误枚举（`websocket/error.rs`）。                |
+| 1.6 | WebSocket 客户端  | 实现连接生命周期、认证、心跳和重连。                                         |
+| 1.7 | WebSocket 消息   | 定义流载荷类型（`websocket/messages.rs`）。                          |
+| 1.8 | WebSocket 解析   | 将流消息转换为 Nautilus 领域模型（`websocket/parse.rs`）。               |
+| 1.9 | Python 绑定      | 通过 PyO3 暴露 Rust 功能（`python/mod.rs`）。                       |
 
 **里程碑**：Rust crate 编译通过，单元测试通过，HTTP/WebSocket 客户端可以认证并流式传输/请求原始数据。
 
@@ -120,11 +120,11 @@ nautilus_trader/adapters/your_adapter/
 
 金融工具是基础——数据客户端和执行客户端都依赖于它们。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 2.1  | 金融工具解析               | 将场所金融工具定义解析为 Nautilus 类型（现货、永续、期货、期权）。                            |
-| 2.2  | 工具提供者                 | 实现 `InstrumentProvider` 来加载、过滤和缓存金融工具。                                       |
-| 2.3  | 符号映射                   | 处理场所特定的符号格式和 Nautilus `InstrumentId` 转换。                                      |
+| 步骤  | 组件     | 描述                                       |
+| --- | ------ | ---------------------------------------- |
+| 2.1 | 金融工具解析 | 将场所金融工具定义解析为 Nautilus 类型（现货、永续、期货、期权）。   |
+| 2.2 | 工具提供者  | 实现 `InstrumentProvider` 来加载、过滤和缓存金融工具。   |
+| 2.3 | 符号映射   | 处理场所特定的符号格式和 Nautilus `InstrumentId` 转换。 |
 
 **里程碑**：`InstrumentProvider.load_all_async()` 返回有效的 Nautilus 金融工具。
 
@@ -132,11 +132,11 @@ nautilus_trader/adapters/your_adapter/
 
 构建数据订阅和历史数据请求。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 3.1  | 公共 WebSocket 流          | 订阅订单簿、成交、行情和其他公共频道。                                                       |
-| 3.2  | 历史数据请求               | 通过 HTTP 获取历史 K 线、成交和订单簿快照。                                                  |
-| 3.3  | 数据客户端（Python）       | 实现 `LiveDataClient` 或 `LiveMarketDataClient`，将 Rust 客户端接入数据引擎。                |
+| 步骤  | 组件             | 描述                                                             |
+| --- | -------------- | -------------------------------------------------------------- |
+| 3.1 | 公共 WebSocket 流 | 订阅订单簿、成交、行情和其他公共频道。                                            |
+| 3.2 | 历史数据请求         | 通过 HTTP 获取历史 K 线、成交和订单簿快照。                                     |
+| 3.3 | 数据客户端（Python）  | 实现 `LiveDataClient` 或 `LiveMarketDataClient`，将 Rust 客户端接入数据引擎。 |
 
 **里程碑**：数据客户端连接、订阅金融工具，并向平台发出市场数据。
 
@@ -144,13 +144,13 @@ nautilus_trader/adapters/your_adapter/
 
 构建订单管理和账户状态。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 4.1  | 私有 WebSocket 流          | 订阅订单更新、成交、持仓和账户余额变动。                                                     |
-| 4.2  | 基本订单提交               | 通过 HTTP 或 WebSocket 实现市价单和限价单。                                                  |
-| 4.3  | 订单修改/撤销              | 实现订单修改和撤销。                                                                         |
-| 4.4  | 执行客户端（Python）       | 实现 `LiveExecutionClient`，将 Rust 客户端接入执行引擎。                                     |
-| 4.5  | 执行对账                   | 生成订单、成交和持仓状态报告，用于启动时的对账。                                             |
+| 步骤  | 组件             | 描述                                         |
+| --- | -------------- | ------------------------------------------ |
+| 4.1 | 私有 WebSocket 流 | 订阅订单更新、成交、持仓和账户余额变动。                       |
+| 4.2 | 基本订单提交         | 通过 HTTP 或 WebSocket 实现市价单和限价单。             |
+| 4.3 | 订单修改/撤销        | 实现订单修改和撤销。                                 |
+| 4.4 | 执行客户端（Python）  | 实现 `LiveExecutionClient`，将 Rust 客户端接入执行引擎。 |
+| 4.5 | 执行对账           | 生成订单、成交和持仓状态报告，用于启动时的对账。                   |
 
 **里程碑**：执行客户端提交订单、接收成交，并在连接时对账状态。
 
@@ -158,32 +158,32 @@ nautilus_trader/adapters/your_adapter/
 
 根据场所能力扩展覆盖范围。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 5.1  | 高级订单类型               | 条件单、止损单、止盈单、追踪止损单、冰山单等。                                               |
-| 5.2  | 批量操作                   | 批量提交订单、批量撤销、全部撤销。                                                           |
-| 5.3  | 场所特定功能               | 期权链、资金费率、强平或其他场所特定数据。                                                   |
+| 步骤  | 组件     | 描述                      |
+| --- | ------ | ----------------------- |
+| 5.1 | 高级订单类型 | 条件单、止损单、止盈单、追踪止损单、冰山单等。 |
+| 5.2 | 批量操作   | 批量提交订单、批量撤销、全部撤销。       |
+| 5.3 | 场所特定功能 | 期权链、资金费率、强平或其他场所特定数据。   |
 
 ### 阶段 6：配置和工厂
 
 将所有组件组装在一起以供生产使用。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 6.1  | 配置类                     | 创建 `LiveDataClientConfig` 和 `LiveExecClientConfig` 子类。                                 |
-| 6.2  | 工厂函数                   | 实现工厂函数以从配置实例化客户端。                                                           |
-| 6.3  | 环境变量                   | 支持从环境变量解析凭证。                                                                     |
+| 步骤  | 组件   | 描述                                                     |
+| --- | ---- | ------------------------------------------------------ |
+| 6.1 | 配置类  | 创建 `LiveDataClientConfig` 和 `LiveExecClientConfig` 子类。 |
+| 6.2 | 工厂函数 | 实现工厂函数以从配置实例化客户端。                                      |
+| 6.3 | 环境变量 | 支持从环境变量解析凭证。                                           |
 
 ### 阶段 7：测试和文档
 
 验证集成并编写使用文档。
 
-| 步骤 | 组件                       | 描述                                                                                         |
-|------|----------------------------|----------------------------------------------------------------------------------------------|
-| 7.1  | Rust 单元测试              | 在 `#[cfg(test)]` 块中测试解析器、签名辅助和业务逻辑。                                      |
-| 7.2  | Rust 集成测试              | 在 `tests/` 中使用 mock Axum 服务器测试 HTTP/WebSocket 客户端。                              |
-| 7.3  | Python 集成测试            | 在 `tests/integration_tests/adapters/<adapter>/` 中测试数据/执行客户端。                     |
-| 7.4  | 示例脚本                   | 提供可运行的示例，演示数据订阅和订单执行。                                                   |
+| 步骤  | 组件          | 描述                                                           |
+| --- | ----------- | ------------------------------------------------------------ |
+| 7.1 | Rust 单元测试   | 在 `#[cfg(test)]` 块中测试解析器、签名辅助和业务逻辑。                          |
+| 7.2 | Rust 集成测试   | 在 `tests/` 中使用 mock Axum 服务器测试 HTTP/WebSocket 客户端。           |
+| 7.3 | Python 集成测试 | 在 `tests/integration_tests/adapters/<adapter>/` 中测试数据/执行客户端。 |
+| 7.4 | 示例脚本        | 提供可运行的示例，演示数据订阅和订单执行。                                        |
 
 有关详细的测试组织指南，请参阅[测试](#测试)部分。
 
@@ -468,13 +468,13 @@ let data_sender = get_data_event_sender();
 
 `DataEvent` 枚举携带客户端产生的所有数据类型：
 
-| 变体                          | 用途                                                  |
-|-------------------------------|-------------------------------------------------------|
-| `DataEvent::Instrument`       | 引导和更新期间的金融工具定义。                        |
-| `DataEvent::InstrumentStatus` | 来自轮询或 WS 流的市场状态变化。                      |
-| `DataEvent::Data`             | 市场数据（成交、报价、订单簿增量、K 线）。            |
-| `DataEvent::Response`         | 对历史数据请求的响应。                                |
-| `DataEvent::FundingRate`      | 衍生品的资金费率更新。                                |
+| 变体                            | 用途                     |
+| ----------------------------- | ---------------------- |
+| `DataEvent::Instrument`       | 引导和更新期间的金融工具定义。        |
+| `DataEvent::InstrumentStatus` | 来自轮询或 WS 流的市场状态变化。     |
+| `DataEvent::Data`             | 市场数据（成交、报价、订单簿增量、K 线）。 |
+| `DataEvent::Response`         | 对历史数据请求的响应。            |
+| `DataEvent::FundingRate`      | 衍生品的资金费率更新。            |
 
 使用 `self.data_sender.send(DataEvent::Instrument(instrument))` 发送事件。发送失败时记录警告，但不要传播错误，因为接收方关闭意味着系统正在关闭。为从异步工作中发出数据的衍生任务克隆 sender。
 
@@ -689,11 +689,11 @@ impl Credential {
 
 **命名约定：**
 
-| 环境         | API Key 变量              | API Secret 变量         |
-|--------------|---------------------------|-------------------------|
-| 主网/实盘    | `{VENUE}_API_KEY`         | `{VENUE}_API_SECRET`    |
-| 测试网       | `{VENUE}_TESTNET_API_KEY` | `{VENUE}_TESTNET_API_SECRET` |
-| 演示         | `{VENUE}_DEMO_API_KEY`    | `{VENUE}_DEMO_API_SECRET` |
+| 环境    | API Key 变量                | API Secret 变量                |
+| ----- | ------------------------- | ---------------------------- |
+| 主网/实盘 | `{VENUE}_API_KEY`         | `{VENUE}_API_SECRET`         |
+| 测试网   | `{VENUE}_TESTNET_API_KEY` | `{VENUE}_TESTNET_API_SECRET` |
+| 演示    | `{VENUE}_DEMO_API_KEY`    | `{VENUE}_DEMO_API_SECRET`    |
 
 某些场所需要额外的凭证：
 
@@ -723,12 +723,12 @@ impl Credential {
 
 **WebSocket 标准速率限制键：**
 
-| 键                              | 操作                             |
-|---------------------------------|----------------------------------|
-| `*_RATE_LIMIT_KEY_SUBSCRIPTION` | 订阅、取消订阅、登录。           |
-| `*_RATE_LIMIT_KEY_ORDER`        | 下单（普通单和算法单）。         |
-| `*_RATE_LIMIT_KEY_CANCEL`       | 撤单、批量撤单。                 |
-| `*_RATE_LIMIT_KEY_AMEND`        | 修改订单。                       |
+| 键                               | 操作           |
+| ------------------------------- | ------------ |
+| `*_RATE_LIMIT_KEY_SUBSCRIPTION` | 订阅、取消订阅、登录。  |
+| `*_RATE_LIMIT_KEY_ORDER`        | 下单（普通单和算法单）。 |
+| `*_RATE_LIMIT_KEY_CANCEL`       | 撤单、批量撤单。     |
+| `*_RATE_LIMIT_KEY_AMEND`        | 修改订单。        |
 
 **示例：**
 
@@ -956,20 +956,20 @@ fn spawn_auth_token_refresh(&self, credential: Credential) {
 
 一个**订阅**代表处于两种状态之一的任何主题：
 
-| 状态          | 描述 |
-|---------------|------|
-| **待确认**    | 订阅请求已发送到场所，等待确认。 |
-| **已确认**    | 场所已确认订阅并正在主动流式传输数据。 |
+| 状态      | 描述                  |
+| ------- | ------------------- |
+| **待确认** | 订阅请求已发送到场所，等待确认。    |
+| **已确认** | 场所已确认订阅并正在主动流式传输数据。 |
 
 状态转换遵循以下生命周期：
 
-| 触发器            | 调用的方法              | 原状态     | 新状态     | 备注 |
-|-------------------|------------------------|------------|-----------|------|
-| 用户订阅          | `mark_subscribe()`      | —          | 待确认     | 主题添加到待确认集合。 |
-| 场所确认          | `confirm()`             | 待确认     | 已确认     | 从待确认移到已确认。 |
-| 场所拒绝          | `mark_failure()`        | 待确认     | 待确认     | 保持待确认以在重连时重试。 |
-| 用户取消订阅      | `mark_unsubscribe()`    | 已确认     | 待确认     | 临时待确认直到收到确认。 |
-| 取消订阅确认      | `clear_pending()`       | 待确认     | 已移除     | 主题完全移除。 |
+| 触发器    | 调用的方法                | 原状态 | 新状态 | 备注            |
+| ------ | -------------------- | --- | --- | ------------- |
+| 用户订阅   | `mark_subscribe()`   | —   | 待确认 | 主题添加到待确认集合。   |
+| 场所确认   | `confirm()`          | 待确认 | 已确认 | 从待确认移到已确认。    |
+| 场所拒绝   | `mark_failure()`     | 待确认 | 待确认 | 保持待确认以在重连时重试。 |
+| 用户取消订阅 | `mark_unsubscribe()` | 已确认 | 待确认 | 临时待确认直到收到确认。  |
+| 取消订阅确认 | `clear_pending()`    | 待确认 | 已移除 | 主题完全移除。       |
 
 **关键原则**：
 
@@ -1007,12 +1007,12 @@ self.subscriptions.confirm_subscribe(&topic);
 
 适配器使用场所特定的分隔符来构造订阅主题：
 
-| 适配器       | 分隔符    | 示例                   | 模式                         |
-|--------------|-----------|------------------------|------------------------------|
-| **BitMEX**   | `:`       | `trade:XBTUSD`         | `{channel}:{symbol}`         |
-| **OKX**      | `:`       | `trades:BTC-USDT-SWAP` | `{channel}:{symbol}`         |
-| **Bybit**    | `.`       | `orderbook.50.BTCUSDT` | `{channel}.{depth}.{symbol}` |
-| **Lighter**  | `:` / `/` | `order_book:0`         | `{channel}:{market_index}`   |
+| 适配器         | 分隔符       | 示例                     | 模式                           |
+| ----------- | --------- | ---------------------- | ---------------------------- |
+| **BitMEX**  | `:`       | `trade:XBTUSD`         | `{channel}:{symbol}`         |
+| **OKX**     | `:`       | `trades:BTC-USDT-SWAP` | `{channel}:{symbol}`         |
+| **Bybit**   | `.`       | `orderbook.50.BTCUSDT` | `{channel}.{depth}.{symbol}` |
+| **Lighter** | `:` / `/` | `order_book:0`         | `{channel}:{market_index}`   |
 
 使用适当分隔符的 `split_once()` 解析主题以提取频道和符号组件。
 
@@ -1172,11 +1172,11 @@ impl MyWebSocketClient {
 
 定义处理器特定的调优常量以实现一致的行为：
 
-| 常量                       | 用途                                             | 典型值        |
-|----------------------------|--------------------------------------------------|---------------|
-| `DEFAULT_HEARTBEAT_SECS`   | 发送保活消息的间隔。                             | 15-30         |
-| `WEBSOCKET_AUTH_WINDOW_MS` | 认证时间戳的最大年龄。                           | 5000-30000    |
-| `BATCH_PROCESSING_LIMIT`   | 每个事件循环周期处理的最大消息数。               | 100-1000      |
+| 常量                         | 用途                | 典型值        |
+| -------------------------- | ----------------- | ---------- |
+| `DEFAULT_HEARTBEAT_SECS`   | 发送保活消息的间隔。        | 15-30      |
+| `WEBSOCKET_AUTH_WINDOW_MS` | 认证时间戳的最大年龄。       | 5000-30000 |
+| `BATCH_PROCESSING_LIMIT`   | 每个事件循环周期处理的最大消息数。 | 100-1000   |
 
 根据作用域将这些放在 `websocket/handler.rs` 或 `common/consts.rs` 中。
 
@@ -1257,13 +1257,13 @@ pub struct WsDispatchState {
 }
 ```
 
-| 字段                | 用途                                                            |
-|---------------------|-----------------------------------------------------------------|
-| `order_identities`  | 将客户端订单 ID 映射到提交时设置的标识元数据。                  |
-| `emitted_accepted`  | 防止重复的 `OrderAccepted` 事件。                              |
-| `triggered_orders`  | 跟踪已触发的条件单。                                            |
-| `filled_orders`     | 防止重连重放时重复的 `OrderFilled` 事件。                      |
-| `clearing`          | 在集合达到容量时守卫并发驱逐。                                  |
+| 字段                 | 用途                           |
+| ------------------ | ---------------------------- |
+| `order_identities` | 将客户端订单 ID 映射到提交时设置的标识元数据。    |
+| `emitted_accepted` | 防止重复的 `OrderAccepted` 事件。    |
+| `triggered_orders` | 跟踪已触发的条件单。                   |
+| `filled_orders`    | 防止重连重放时重复的 `OrderFilled` 事件。 |
+| `clearing`         | 在集合达到容量时守卫并发驱逐。              |
 
 每个 `DashSet` 受 `DEDUP_CAPACITY` 常量（通常为 10,000）限制。当集合达到容量时，`evict_if_full()` 使用对 `clearing` 标志的 compare-exchange 原子地清除它，以防止并发清除。
 
@@ -1410,10 +1410,10 @@ fn should_retry_error(error: &MyWsError) -> bool {
 
 WebSocket 消息通道在处理器内遵循两阶段转换管道：
 
-| 阶段  | 类型               | 描述                                | 示例 |
-|-------|--------------------|------------------------------------|------|
-| `raw` | 原始 WebSocket 帧  | 来自网络层的字节/文本。             | `raw_rx: UnboundedReceiver<Message>` |
-| `out` | 场所特定消息       | 解析后的场所消息类型。              | `out_tx: UnboundedSender<MyWsMessage>` |
+| 阶段    | 类型             | 描述           | 示例                                     |
+| ----- | -------------- | ------------ | -------------------------------------- |
+| `raw` | 原始 WebSocket 帧 | 来自网络层的字节/文本。 | `raw_rx: UnboundedReceiver<Message>`   |
+| `out` | 场所特定消息         | 解析后的场所消息类型。  | `out_tx: UnboundedSender<MyWsMessage>` |
 
 处理器将原始帧反序列化为场所特定类型，并在 `out_tx` 上发出它们。数据和执行客户端层随后将场所类型转换为 Nautilus 领域类型。
 
@@ -1446,14 +1446,14 @@ let handler = MyWsFeedHandler::new(
 
 持有对低层组件引用的结构体遵循以下约定：
 
-| 字段          | 类型                                                | 描述 |
-|---------------|-----------------------------------------------------|------|
-| `inner`       | `Option<WebSocketClient>`                           | 网络级 WebSocket 客户端（仅处理器，独占拥有）。 |
-| `cmd_tx`      | `Arc<tokio::sync::RwLock<UnboundedSender<...>>>`   | 到处理器的命令通道（客户端侧）。 |
-| `cmd_rx`      | `UnboundedReceiver<HandlerCommand>`                 | 来自客户端的命令通道（处理器侧）。 |
-| `out_tx`      | `UnboundedSender<{Venue}WsMessage>`                 | 到客户端的输出通道（处理器侧）。 |
-| `out_rx`      | `Option<Arc<UnboundedReceiver<{Venue}WsMessage>>>`  | 来自处理器的输出通道（客户端侧）。 |
-| `task_handle` | `Option<Arc<JoinHandle<()>>>`                       | 处理器任务句柄。 |
+| 字段            | 类型                                                 | 描述                            |
+| ------------- | -------------------------------------------------- | ----------------------------- |
+| `inner`       | `Option<WebSocketClient>`                          | 网络级 WebSocket 客户端（仅处理器，独占拥有）。 |
+| `cmd_tx`      | `Arc<tokio::sync::RwLock<UnboundedSender<...>>>`   | 到处理器的命令通道（客户端侧）。              |
+| `cmd_rx`      | `UnboundedReceiver<HandlerCommand>`                | 来自客户端的命令通道（处理器侧）。             |
+| `out_tx`      | `UnboundedSender<{Venue}WsMessage>`                | 到客户端的输出通道（处理器侧）。              |
+| `out_rx`      | `Option<Arc<UnboundedReceiver<{Venue}WsMessage>>>` | 来自处理器的输出通道（客户端侧）。             |
+| `task_handle` | `Option<Arc<JoinHandle<()>>>`                      | 处理器任务句柄。                      |
 
 **示例：**
 
@@ -1554,10 +1554,10 @@ src/
 
 类型名称包含子模块限定符以避免歧义：
 
-| 子模块       | 命令类型                             | 消息类型                            |
-|--------------|--------------------------------------|-------------------------------------|
-| `streams/`   | `{Venue}WsStreamsCommand`            | `{Venue}WsMessage`（场所类型）      |
-| `trading/`   | `{Venue}WsTradingCommand`            | `{Venue}WsTradingMessage`           |
+| 子模块        | 命令类型                      | 消息类型                      |
+| ---------- | ------------------------- | ------------------------- |
+| `streams/` | `{Venue}WsStreamsCommand` | `{Venue}WsMessage`（场所类型）  |
+| `trading/` | `{Venue}WsTradingCommand` | `{Venue}WsTradingMessage` |
 
 `{Venue}Ws` 前缀遵循标准类型命名约定。限定符（`Streams`、`Trading`）区分在子模块间本会冲突的类型。
 
@@ -1664,13 +1664,13 @@ fn query_order(&self, cmd: &QueryOrder) -> anyhow::Result<()> {
 
 `block_on` 在运行于 tokio 运行时之外的上下文中有效：
 
-| 上下文                        | 为何安全                                       |
-|-------------------------------|------------------------------------------------|
-| PyO3 `#[pymethods]`          | 从 Python 调用，无环境运行时                    |
-| 二进制 `main()` 函数          | 顶级入口点，运行时尚未启动                      |
-| 专用后台线程                  | 在 tokio 工作池之外创建的线程                  |
-| `block_in_place` 包装器       | 先将线程移出工作池                              |
-| 拥有自己运行时的测试代码      | `Runtime::new()` 创建一个隔离的运行时           |
+| 上下文                  | 为何安全                        |
+| -------------------- | --------------------------- |
+| PyO3 `#[pymethods]`  | 从 Python 调用，无环境运行时          |
+| 二进制 `main()` 函数      | 顶级入口点，运行时尚未启动               |
+| 专用后台线程               | 在 tokio 工作池之外创建的线程          |
+| `block_in_place` 包装器 | 先将线程移出工作池                   |
+| 拥有自己运行时的测试代码         | `Runtime::new()` 创建一个隔离的运行时 |
 
 ### 使用 `CancellationToken` 进行优雅关闭
 
@@ -1722,12 +1722,12 @@ crates/adapters/your_adapter/
 
 #### 测试文件组织
 
-| 文件                 | 用途                                                                                                                  |
-|----------------------|-----------------------------------------------------------------------------------------------------------------------|
-| `tests/data_client.rs` | 数据客户端集成测试——验证数据订阅、历史数据请求和市场数据解析。                                                       |
-| `tests/exec_client.rs` | 执行客户端集成测试——验证订单提交、修改、撤销和执行报告。                                                             |
-| `tests/http.rs`      | 底层 HTTP 客户端测试——使用 mock Axum 服务器验证请求签名、错误处理和响应解析。                                         |
-| `tests/websocket.rs` | WebSocket 客户端测试——验证连接生命周期、认证、订阅和消息路由。                                                        |
+| 文件                     | 用途                                               |
+| ---------------------- | ------------------------------------------------ |
+| `tests/data_client.rs` | 数据客户端集成测试——验证数据订阅、历史数据请求和市场数据解析。                 |
+| `tests/exec_client.rs` | 执行客户端集成测试——验证订单提交、修改、撤销和执行报告。                    |
+| `tests/http.rs`        | 底层 HTTP 客户端测试——使用 mock Axum 服务器验证请求签名、错误处理和响应解析。 |
+| `tests/websocket.rs`   | WebSocket 客户端测试——验证连接生命周期、认证、订阅和消息路由。            |
 
 **指导原则：**
 
@@ -1824,34 +1824,34 @@ WebSocket 单元测试涵盖三个领域：消息反序列化、解析分发和�
 
 **测试基础设施：**
 
-| 组件                          | 用途                                                                               |
-|-------------------------------|------------------------------------------------------------------------------------|
-| Mock Axum 服务器              | 提供 HTTP 端点（金融工具、费率、持仓）和 WebSocket 频道。                          |
-| `TestServerState`             | 跟踪连接、订阅和认证状态以供断言。                                                  |
-| 线程局部事件通道              | `set_data_event_sender()` / `set_exec_event_sender()`，用于捕获发出的事件。        |
-| `wait_until_async`            | 以超时方式轮询条件，用于确定性的异步断言。                                          |
+| 组件                 | 用途                                                               |
+| ------------------ | ---------------------------------------------------------------- |
+| Mock Axum 服务器      | 提供 HTTP 端点（金融工具、费率、持仓）和 WebSocket 频道。                            |
+| `TestServerState`  | 跟踪连接、订阅和认证状态以供断言。                                                |
+| 线程局部事件通道           | `set_data_event_sender()` / `set_exec_event_sender()`，用于捕获发出的事件。 |
+| `wait_until_async` | 以超时方式轮询条件，用于确定性的异步断言。                                            |
 
 **数据客户端覆盖：**
 
-| 测试场景                     | 验证                                                            |
-|------------------------------|----------------------------------------------------------------|
-| 连接/断开                    | 连接生命周期、WebSocket 建立、干净关闭。                       |
-| 订阅成交                     | 成交 tick 事件发出到数据通道。                                 |
-| 订阅报价                     | 来自行情（LINEAR）或订单簿（SPOT）的报价事件。                |
-| 订阅订单簿增量               | 来自订单簿快照/更新的 OrderBookDeltas 事件。                   |
-| 订阅标记/指数价格            | 按订阅状态过滤（仅在订阅时发出）。                             |
-| 重置状态                     | 订阅跟踪已清除，连接终止。                                     |
-| 连接时金融工具               | 连接设置期间发出的金融工具事件。                               |
+| 测试场景      | 验证                              |
+| --------- | ------------------------------- |
+| 连接/断开     | 连接生命周期、WebSocket 建立、干净关闭。       |
+| 订阅成交      | 成交 tick 事件发出到数据通道。              |
+| 订阅报价      | 来自行情（LINEAR）或订单簿（SPOT）的报价事件。    |
+| 订阅订单簿增量   | 来自订单簿快照/更新的 OrderBookDeltas 事件。 |
+| 订阅标记/指数价格 | 按订阅状态过滤（仅在订阅时发出）。               |
+| 重置状态      | 订阅跟踪已清除，连接终止。                   |
+| 连接时金融工具   | 连接设置期间发出的金融工具事件。                |
 
 **执行客户端覆盖：**
 
-| 测试场景                     | 验证                                                            |
-|------------------------------|----------------------------------------------------------------|
-| 连接/断开                    | 认证握手、私有 + 交易 WS 连接、订阅。                          |
-| 演示模式                     | 仅私有 WS 连接（交易 WS 因 HTTP 回退而跳过）。                |
-| 订单提交                     | 订单接受/拒绝事件、场所 ID 关联。                              |
-| 订单修改/撤销                | 更新和撤销确认事件。                                           |
-| 持仓/钱包更新                | PositionStatusReport 和 AccountState 事件。                    |
+| 测试场景    | 验证                                      |
+| ------- | --------------------------------------- |
+| 连接/断开   | 认证握手、私有 + 交易 WS 连接、订阅。                  |
+| 演示模式    | 仅私有 WS 连接（交易 WS 因 HTTP 回退而跳过）。          |
+| 订单提交    | 订单接受/拒绝事件、场所 ID 关联。                     |
+| 订单修改/撤销 | 更新和撤销确认事件。                              |
+| 持仓/钱包更新 | PositionStatusReport 和 AccountState 事件。 |
 
 **关键模式：**
 
@@ -1876,12 +1876,12 @@ tests/integration_tests/adapters/your_adapter/
 
 #### 测试文件组织
 
-| 文件                | 用途                                                                                                               |
-|---------------------|--------------------------------------------------------------------------------------------------------------------|
-| `test_data.py`      | 测试 `LiveDataClient` 和 `LiveMarketDataClient`——验证订阅、数据解析和消息处理。                                    |
-| `test_execution.py` | 测试 `LiveExecutionClient`——验证订单提交、修改、撤销和执行报告。                                                   |
-| `test_providers.py` | 测试 `InstrumentProvider`——验证金融工具加载、过滤和缓存行为。                                                      |
-| `test_factories.py` | 测试工厂函数——验证客户端实例化和配置接线。                                                                         |
+| 文件                  | 用途                                                            |
+| ------------------- | ------------------------------------------------------------- |
+| `test_data.py`      | 测试 `LiveDataClient` 和 `LiveMarketDataClient`——验证订阅、数据解析和消息处理。 |
+| `test_execution.py` | 测试 `LiveExecutionClient`——验证订单提交、修改、撤销和执行报告。                  |
+| `test_providers.py` | 测试 `InstrumentProvider`——验证金融工具加载、过滤和缓存行为。                    |
+| `test_factories.py` | 测试工厂函数——验证客户端实例化和配置接线。                                        |
 
 **指导原则：**
 
@@ -1943,18 +1943,20 @@ class TemplateInstrumentProvider(InstrumentProvider):
     async def load_all_async(self, filters: dict | None = None) -> None:
         raise NotImplementedError("implement `load_all_async` in your adapter subclass")
 
-    async def load_ids_async(self, instrument_ids: list[InstrumentId], filters: dict | None = None) -> None:
+    async def load_ids_async(
+        self, instrument_ids: list[InstrumentId], filters: dict | None = None
+    ) -> None:
         raise NotImplementedError("implement `load_ids_async` in your adapter subclass")
 
     async def load_async(self, instrument_id: InstrumentId, filters: dict | None = None) -> None:
         raise NotImplementedError("implement `load_async` in your adapter subclass")
 ```
 
-| 方法             | 描述                                                       |
-|------------------|-----------------------------------------------------------|
-| `load_all_async` | 异步加载所有金融工具，可选使用过滤器。                     |
-| `load_ids_async` | 按 ID 加载特定金融工具。                                   |
-| `load_async`     | 按 ID 加载单个金融工具。                                   |
+| 方法               | 描述                  |
+| ---------------- | ------------------- |
+| `load_all_async` | 异步加载所有金融工具，可选使用过滤器。 |
+| `load_ids_async` | 按 ID 加载特定金融工具。      |
+| `load_async`     | 按 ID 加载单个金融工具。      |
 
 ### DataClient
 
@@ -1987,13 +1989,13 @@ class TemplateLiveDataClient(LiveDataClient):
         raise NotImplementedError("implement `_request` in your adapter subclass")
 ```
 
-| 方法           | 描述                                       |
-|----------------|--------------------------------------------|
-| `_connect`     | 建立与数据提供商的连接。                   |
-| `_disconnect`  | 关闭与数据提供商的连接。                   |
-| `_subscribe`   | 订阅特定数据类型。                         |
-| `_unsubscribe` | 取消订阅特定数据类型。                     |
-| `_request`     | 从提供商请求数据。                         |
+| 方法             | 描述           |
+| -------------- | ------------ |
+| `_connect`     | 建立与数据提供商的连接。 |
+| `_disconnect`  | 关闭与数据提供商的连接。 |
+| `_subscribe`   | 订阅特定数据类型。    |
+| `_unsubscribe` | 取消订阅特定数据类型。  |
+| `_request`     | 从提供商请求数据。    |
 
 ### MarketDataClient
 
@@ -2055,10 +2057,14 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
         raise NotImplementedError("implement `_subscribe_instrument` in your adapter subclass")
 
     async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
-        raise NotImplementedError("implement `_subscribe_order_book_deltas` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_subscribe_order_book_deltas` in your adapter subclass"
+        )
 
     async def _subscribe_order_book_depth(self, command: SubscribeOrderBook) -> None:
-        raise NotImplementedError("implement `_subscribe_order_book_depth` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_subscribe_order_book_depth` in your adapter subclass"
+        )
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         raise NotImplementedError("implement `_subscribe_quote_ticks` in your adapter subclass")
@@ -2079,10 +2085,14 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
         raise NotImplementedError("implement `_subscribe_funding_rates` in your adapter subclass")
 
     async def _subscribe_instrument_status(self, command: SubscribeInstrumentStatus) -> None:
-        raise NotImplementedError("implement `_subscribe_instrument_status` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_subscribe_instrument_status` in your adapter subclass"
+        )
 
     async def _subscribe_instrument_close(self, command: SubscribeInstrumentClose) -> None:
-        raise NotImplementedError("implement `_subscribe_instrument_close` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_subscribe_instrument_close` in your adapter subclass"
+        )
 
     async def _subscribe_option_greeks(self, command: SubscribeOptionGreeks) -> None:
         raise NotImplementedError("implement `_subscribe_option_greeks` in your adapter subclass")
@@ -2097,10 +2107,14 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
         raise NotImplementedError("implement `_unsubscribe_instrument` in your adapter subclass")
 
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
-        raise NotImplementedError("implement `_unsubscribe_order_book_deltas` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_unsubscribe_order_book_deltas` in your adapter subclass"
+        )
 
     async def _unsubscribe_order_book_depth(self, command: UnsubscribeOrderBook) -> None:
-        raise NotImplementedError("implement `_unsubscribe_order_book_depth` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_unsubscribe_order_book_depth` in your adapter subclass"
+        )
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         raise NotImplementedError("implement `_unsubscribe_quote_ticks` in your adapter subclass")
@@ -2121,10 +2135,14 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
         raise NotImplementedError("implement `_unsubscribe_funding_rates` in your adapter subclass")
 
     async def _unsubscribe_instrument_status(self, command: UnsubscribeInstrumentStatus) -> None:
-        raise NotImplementedError("implement `_unsubscribe_instrument_status` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_unsubscribe_instrument_status` in your adapter subclass"
+        )
 
     async def _unsubscribe_instrument_close(self, command: UnsubscribeInstrumentClose) -> None:
-        raise NotImplementedError("implement `_unsubscribe_instrument_close` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_unsubscribe_instrument_close` in your adapter subclass"
+        )
 
     async def _unsubscribe_option_greeks(self, command: UnsubscribeOptionGreeks) -> None:
         raise NotImplementedError("implement `_unsubscribe_option_greeks` in your adapter subclass")
@@ -2145,7 +2163,9 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
         raise NotImplementedError("implement `_request_order_book_depth` in your adapter subclass")
 
     async def _request_order_book_snapshot(self, request: RequestOrderBookSnapshot) -> None:
-        raise NotImplementedError("implement `_request_order_book_snapshot` in your adapter subclass")
+        raise NotImplementedError(
+            "implement `_request_order_book_snapshot` in your adapter subclass"
+        )
 
     async def _request_quote_ticks(self, request: RequestQuoteTicks) -> None:
         raise NotImplementedError("implement `_request_quote_ticks` in your adapter subclass")
@@ -2155,51 +2175,50 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
 
     async def _request_bars(self, request: RequestBars) -> None:
         raise NotImplementedError("implement `_request_bars` in your adapter subclass")
-
 ```
 
-| 方法                               | 描述                                                    |
-|------------------------------------|---------------------------------------------------------|
-| `_connect`                         | 建立与场所 API 的连接。                                 |
-| `_disconnect`                      | 关闭与场所 API 的连接。                                 |
-| `_subscribe`                       | 订阅通用数据（自定义类型的基础）。                     |
-| `_subscribe_instruments`           | 订阅多个金融工具的市场数据。                           |
-| `_subscribe_instrument`            | 订阅单个金融工具的市场数据。                           |
-| `_subscribe_order_book_deltas`     | 订阅订单簿增量更新。                                   |
-| `_subscribe_order_book_depth`      | 订阅订单簿深度更新。                                   |
-| `_subscribe_quote_ticks`           | 订阅最优报价更新。                                     |
-| `_subscribe_trade_ticks`           | 订阅成交 tick 更新。                                   |
-| `_subscribe_mark_prices`           | 订阅标记价格更新。                                     |
-| `_subscribe_index_prices`          | 订阅指数价格更新。                                     |
-| `_subscribe_bars`                  | 订阅 K 线/蜡烛图更新。                                |
-| `_subscribe_funding_rates`         | 订阅资金费率更新。                                     |
-| `_subscribe_instrument_status`     | 订阅金融工具状态更新。                                 |
-| `_subscribe_instrument_close`      | 订阅金融工具收盘价更新。                               |
-| `_subscribe_option_greeks`         | 订阅期权希腊字母更新。                                 |
-| `_unsubscribe`                     | 取消订阅通用数据（自定义类型的基础）。                 |
-| `_unsubscribe_instruments`         | 取消订阅多个金融工具的市场数据。                       |
-| `_unsubscribe_instrument`          | 取消订阅单个金融工具的市场数据。                       |
-| `_unsubscribe_order_book_deltas`   | 取消订阅订单簿增量更新。                               |
-| `_unsubscribe_order_book_depth`    | 取消订阅订单簿深度更新。                               |
-| `_unsubscribe_quote_ticks`         | 取消订阅报价 tick 更新。                               |
-| `_unsubscribe_trade_ticks`         | 取消订阅成交 tick 更新。                               |
-| `_unsubscribe_mark_prices`         | 取消订阅标记价格更新。                                 |
-| `_unsubscribe_index_prices`        | 取消订阅指数价格更新。                                 |
-| `_unsubscribe_bars`                | 取消订阅 K 线更新。                                    |
-| `_unsubscribe_funding_rates`       | 取消订阅资金费率更新。                                 |
-| `_unsubscribe_instrument_status`   | 取消订阅金融工具状态更新。                             |
-| `_unsubscribe_instrument_close`    | 取消订阅金融工具收盘价更新。                           |
-| `_unsubscribe_option_greeks`       | 取消订阅期权希腊字母更新。                             |
-| `_request`                         | 请求通用数据（自定义类型的基础）。                     |
-| `_request_instrument`              | 请求单个金融工具的历史数据。                           |
-| `_request_instruments`             | 请求多个金融工具的历史数据。                           |
-| `_request_order_book_snapshot`     | 请求订单簿快照。                                       |
-| `_request_order_book_depth`        | 请求订单簿深度。                                       |
-| `_request_order_book_deltas`       | 请求历史订单簿增量。                                   |
-| `_request_quote_ticks`             | 请求历史报价 tick 数据。                               |
-| `_request_trade_ticks`             | 请求历史成交 tick 数据。                               |
-| `_request_bars`                    | 请求历史 K 线数据。                                    |
-| `_request_funding_rates`           | 请求历史资金费率数据。                                 |
+| 方法                               | 描述                  |
+| -------------------------------- | ------------------- |
+| `_connect`                       | 建立与场所 API 的连接。      |
+| `_disconnect`                    | 关闭与场所 API 的连接。      |
+| `_subscribe`                     | 订阅通用数据（自定义类型的基础）。   |
+| `_subscribe_instruments`         | 订阅多个金融工具的市场数据。      |
+| `_subscribe_instrument`          | 订阅单个金融工具的市场数据。      |
+| `_subscribe_order_book_deltas`   | 订阅订单簿增量更新。          |
+| `_subscribe_order_book_depth`    | 订阅订单簿深度更新。          |
+| `_subscribe_quote_ticks`         | 订阅最优报价更新。           |
+| `_subscribe_trade_ticks`         | 订阅成交 tick 更新。       |
+| `_subscribe_mark_prices`         | 订阅标记价格更新。           |
+| `_subscribe_index_prices`        | 订阅指数价格更新。           |
+| `_subscribe_bars`                | 订阅 K 线/蜡烛图更新。       |
+| `_subscribe_funding_rates`       | 订阅资金费率更新。           |
+| `_subscribe_instrument_status`   | 订阅金融工具状态更新。         |
+| `_subscribe_instrument_close`    | 订阅金融工具收盘价更新。        |
+| `_subscribe_option_greeks`       | 订阅期权希腊字母更新。         |
+| `_unsubscribe`                   | 取消订阅通用数据（自定义类型的基础）。 |
+| `_unsubscribe_instruments`       | 取消订阅多个金融工具的市场数据。    |
+| `_unsubscribe_instrument`        | 取消订阅单个金融工具的市场数据。    |
+| `_unsubscribe_order_book_deltas` | 取消订阅订单簿增量更新。        |
+| `_unsubscribe_order_book_depth`  | 取消订阅订单簿深度更新。        |
+| `_unsubscribe_quote_ticks`       | 取消订阅报价 tick 更新。     |
+| `_unsubscribe_trade_ticks`       | 取消订阅成交 tick 更新。     |
+| `_unsubscribe_mark_prices`       | 取消订阅标记价格更新。         |
+| `_unsubscribe_index_prices`      | 取消订阅指数价格更新。         |
+| `_unsubscribe_bars`              | 取消订阅 K 线更新。         |
+| `_unsubscribe_funding_rates`     | 取消订阅资金费率更新。         |
+| `_unsubscribe_instrument_status` | 取消订阅金融工具状态更新。       |
+| `_unsubscribe_instrument_close`  | 取消订阅金融工具收盘价更新。      |
+| `_unsubscribe_option_greeks`     | 取消订阅期权希腊字母更新。       |
+| `_request`                       | 请求通用数据（自定义类型的基础）。   |
+| `_request_instrument`            | 请求单个金融工具的历史数据。      |
+| `_request_instruments`           | 请求多个金融工具的历史数据。      |
+| `_request_order_book_snapshot`   | 请求订单簿快照。            |
+| `_request_order_book_depth`      | 请求订单簿深度。            |
+| `_request_order_book_deltas`     | 请求历史订单簿增量。          |
+| `_request_quote_ticks`           | 请求历史报价 tick 数据。     |
+| `_request_trade_ticks`           | 请求历史成交 tick 数据。     |
+| `_request_bars`                  | 请求历史 K 线数据。         |
+| `_request_funding_rates`         | 请求历史资金费率数据。         |
 
 #### 订单簿增量标志要求
 
@@ -2284,31 +2303,41 @@ class TemplateLiveExecutionClient(LiveExecutionClient):
         self,
         command: GenerateOrderStatusReport,
     ) -> OrderStatusReport | None:
-        raise NotImplementedError("method `generate_order_status_report` must be implemented in the subclass")
+        raise NotImplementedError(
+            "method `generate_order_status_report` must be implemented in the subclass"
+        )
 
     async def generate_order_status_reports(
         self,
         command: GenerateOrderStatusReports,
     ) -> list[OrderStatusReport]:
-        raise NotImplementedError("method `generate_order_status_reports` must be implemented in the subclass")
+        raise NotImplementedError(
+            "method `generate_order_status_reports` must be implemented in the subclass"
+        )
 
     async def generate_fill_reports(
         self,
         command: GenerateFillReports,
     ) -> list[FillReport]:
-        raise NotImplementedError("method `generate_fill_reports` must be implemented in the subclass")
+        raise NotImplementedError(
+            "method `generate_fill_reports` must be implemented in the subclass"
+        )
 
     async def generate_position_status_reports(
         self,
         command: GeneratePositionStatusReports,
     ) -> list[PositionStatusReport]:
-        raise NotImplementedError("method `generate_position_status_reports` must be implemented in the subclass")
+        raise NotImplementedError(
+            "method `generate_position_status_reports` must be implemented in the subclass"
+        )
 
     async def generate_mass_status(
         self,
         lookback_mins: int | None = None,
     ) -> ExecutionMassStatus | None:
-        raise NotImplementedError("method `generate_mass_status` must be implemented in the subclass")
+        raise NotImplementedError(
+            "method `generate_mass_status` must be implemented in the subclass"
+        )
 
     async def _submit_order(self, command: SubmitOrder) -> None:
         raise NotImplementedError("implement `_submit_order` in your adapter subclass")
@@ -2329,21 +2358,21 @@ class TemplateLiveExecutionClient(LiveExecutionClient):
         raise NotImplementedError("implement `_batch_cancel_orders` in your adapter subclass")
 ```
 
-| 方法                               | 描述                                                    |
-|------------------------------------|---------------------------------------------------------|
-| `_connect`                         | 建立与场所 API 的连接。                                 |
-| `_disconnect`                      | 关闭与场所 API 的连接。                                 |
-| `generate_order_status_report`     | 生成场所上特定订单的报告。                              |
-| `generate_order_status_reports`    | 生成场所上所有订单的报告。                              |
-| `generate_fill_reports`            | 生成场所上已成交订单的报告。                            |
-| `generate_position_status_reports` | 生成场所上持仓状态的报告。                              |
-| `generate_mass_status`             | 生成执行批量状态报告。                                  |
-| `_submit_order`                    | 向场所提交新订单。                                      |
-| `_submit_order_list`               | 向场所提交订单列表。                                    |
-| `_modify_order`                    | 修改场所上的现有订单。                                  |
-| `_cancel_order`                    | 撤销场所上的特定订单。                                  |
-| `_cancel_all_orders`               | 撤销场所上某个金融工具的所有订单。                      |
-| `_batch_cancel_orders`             | 批量撤销场所上某个金融工具的订单。                      |
+| 方法                                 | 描述                |
+| ---------------------------------- | ----------------- |
+| `_connect`                         | 建立与场所 API 的连接。    |
+| `_disconnect`                      | 关闭与场所 API 的连接。    |
+| `generate_order_status_report`     | 生成场所上特定订单的报告。     |
+| `generate_order_status_reports`    | 生成场所上所有订单的报告。     |
+| `generate_fill_reports`            | 生成场所上已成交订单的报告。    |
+| `generate_position_status_reports` | 生成场所上持仓状态的报告。     |
+| `generate_mass_status`             | 生成执行批量状态报告。       |
+| `_submit_order`                    | 向场所提交新订单。         |
+| `_submit_order_list`               | 向场所提交订单列表。        |
+| `_modify_order`                    | 修改场所上的现有订单。       |
+| `_cancel_order`                    | 撤销场所上的特定订单。       |
+| `_cancel_all_orders`               | 撤销场所上某个金融工具的所有订单。 |
+| `_batch_cancel_orders`             | 批量撤销场所上某个金融工具的订单。 |
 
 ### 配置
 

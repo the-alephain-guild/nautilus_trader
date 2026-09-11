@@ -4,25 +4,25 @@ NautilusTrader 使用模块化的*适配器 (adapters)* 连接交易场所 (venu
 
 目前支持以下集成：
 
-| 名称                                                                         | ID                    | 类型                    | 状态                                                    | 文档                       |
-| :--------------------------------------------------------------------------- | :-------------------- | :---------------------- | :------------------------------------------------------ | :----------------------- |
-| [AX Exchange](https://architect.exchange)                                    | `AX`                  | 永续合约交易所          | ![status](https://img.shields.io/badge/stable-green)    | [指南](architect_ax.md)  |
-| [Betfair](https://betfair.com)                                               | `BETFAIR`             | 体育博彩交易所          | ![status](https://img.shields.io/badge/stable-green)    | [指南](betfair.md)       |
-| [Binance](https://binance.com)                                               | `BINANCE`             | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](binance.md)       |
-| [Coinbase](https://coinbase.com)                                             | `COINBASE`            | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](coinbase.md)      |
-| [BitMEX](https://www.bitmex.com)                                             | `BITMEX`              | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](bitmex.md)        |
-| [Bybit](https://www.bybit.com)                                               | `BYBIT`               | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](bybit.md)         |
-| [Databento](https://databento.com)                                           | `DATABENTO`           | 数据提供商              | ![status](https://img.shields.io/badge/stable-green)    | [指南](databento.md)     |
-| [Deribit](https://www.deribit.com)                                           | `DERIBIT`             | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](deribit.md)       |
-| [Derive](https://www.derive.xyz)                                             | `DERIVE`              | 加密货币交易所 (DEX)    | ![status](https://img.shields.io/badge/beta-yellow)     | [指南](derive.md)        |
-| [dYdX](https://dydx.exchange/)                                               | `DYDX`                | 加密货币交易所 (DEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](dydx.md)          |
-| [Hyperliquid](https://hyperliquid.xyz)                                       | `HYPERLIQUID`         | 加密货币交易所 (DEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](hyperliquid.md)   |
-| [Lighter](https://lighter.xyz)                                               | `LIGHTER`             | 加密货币交易所 (DEX)    | ![status](https://img.shields.io/badge/beta-yellow)     | [指南](lighter.md)       |
-| [Interactive Brokers](https://www.interactivebrokers.com)                    | `INTERACTIVE_BROKERS` | 经纪商 (多交易场所)     | ![status](https://img.shields.io/badge/stable-green)    | [指南](ib.md)            |
-| [Kraken](https://kraken.com)                                                 | `KRAKEN`              | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](kraken.md)        |
-| [OKX](https://okx.com)                                                       | `OKX`                 | 加密货币交易所 (CEX)    | ![status](https://img.shields.io/badge/stable-green)    | [指南](okx.md)           |
-| [Polymarket](https://polymarket.com)                                         | `POLYMARKET`          | 预测市场 (DEX)          | ![status](https://img.shields.io/badge/stable-green)    | [指南](polymarket.md)    |
-| [Tardis](https://tardis.dev)                                                 | `TARDIS`              | 加密货币数据提供商      | ![status](https://img.shields.io/badge/stable-green)    | [指南](tardis.md)        |
+| 名称                                                        | ID                    | 类型            | 状态                                                   | 文档                    |
+| :-------------------------------------------------------- | :-------------------- | :------------ | :--------------------------------------------------- | :-------------------- |
+| [AX Exchange](https://architect.exchange)                 | `AX`                  | 永续合约交易所       | ![status](https://img.shields.io/badge/stable-green) | [指南](architect_ax.md) |
+| [Betfair](https://betfair.com)                            | `BETFAIR`             | 体育博彩交易所       | ![status](https://img.shields.io/badge/stable-green) | [指南](betfair.md)      |
+| [Binance](https://binance.com)                            | `BINANCE`             | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](binance.md)      |
+| [Coinbase](https://coinbase.com)                          | `COINBASE`            | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](coinbase.md)     |
+| [BitMEX](https://www.bitmex.com)                          | `BITMEX`              | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](bitmex.md)       |
+| [Bybit](https://www.bybit.com)                            | `BYBIT`               | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](bybit.md)        |
+| [Databento](https://databento.com)                        | `DATABENTO`           | 数据提供商         | ![status](https://img.shields.io/badge/stable-green) | [指南](databento.md)    |
+| [Deribit](https://www.deribit.com)                        | `DERIBIT`             | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](deribit.md)      |
+| [Derive](https://www.derive.xyz)                          | `DERIVE`              | 加密货币交易所 (DEX) | ![status](https://img.shields.io/badge/beta-yellow)  | [指南](derive.md)       |
+| [dYdX](https://dydx.exchange/)                            | `DYDX`                | 加密货币交易所 (DEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](dydx.md)         |
+| [Hyperliquid](https://hyperliquid.xyz)                    | `HYPERLIQUID`         | 加密货币交易所 (DEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](hyperliquid.md)  |
+| [Lighter](https://lighter.xyz)                            | `LIGHTER`             | 加密货币交易所 (DEX) | ![status](https://img.shields.io/badge/beta-yellow)  | [指南](lighter.md)      |
+| [Interactive Brokers](https://www.interactivebrokers.com) | `INTERACTIVE_BROKERS` | 经纪商 (多交易场所)   | ![status](https://img.shields.io/badge/stable-green) | [指南](ib.md)           |
+| [Kraken](https://kraken.com)                              | `KRAKEN`              | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](kraken.md)       |
+| [OKX](https://okx.com)                                    | `OKX`                 | 加密货币交易所 (CEX) | ![status](https://img.shields.io/badge/stable-green) | [指南](okx.md)          |
+| [Polymarket](https://polymarket.com)                      | `POLYMARKET`          | 预测市场 (DEX)    | ![status](https://img.shields.io/badge/stable-green) | [指南](polymarket.md)   |
+| [Tardis](https://tardis.dev)                              | `TARDIS`              | 加密货币数据提供商     | ![status](https://img.shields.io/badge/stable-green) | [指南](tardis.md)       |
 
 - **ID**：集成适配器客户端的默认客户端 ID。
 - **类型**：集成的类型（通常为交易场所类型）。

@@ -44,10 +44,10 @@ Cargo 的构建缓存以特性、配置文件和标志的精确组合为键—�
 
 ### 对齐目标（测试和代码检查）
 
-| 目标                        | 特性                             | 配置文件  | `--all-targets` | `--no-deps` | 用途           |
-|-----------------------------|----------------------------------|-----------|-----------------|-------------|----------------|
-| `cargo-test`                | `ffi,python,high-precision,defi` | `nextest` | ✓（隐式）       | 不适用      | 运行测试。     |
-| `cargo-clippy`（pre-commit）| `ffi,python,high-precision,defi` | `nextest` | ✓               | 不适用      | 检查所有代码。 |
+| 目标                         | 特性                               | 配置文件      | `--all-targets` | `--no-deps` | 用途      |
+| -------------------------- | -------------------------------- | --------- | --------------- | ----------- | ------- |
+| `cargo-test`               | `ffi,python,high-precision,defi` | `nextest` | ✓（隐式）           | 不适用         | 运行测试。   |
+| `cargo-clippy`（pre-commit） | `ffi,python,high-precision,defi` | `nextest` | ✓               | 不适用         | 检查所有代码。 |
 
 这些目标共享相同的特性集和配置文件，使 cargo 能在代码检查和测试之间复用编译产物，无需重新构建。
 `nextest` 配置文件的使用与大多数核心维护者使用 cargo-nextest 运行测试的工作流程保持一致。
@@ -64,10 +64,10 @@ cargo +nightly doc --all-features --no-deps --workspace
 
 ### 独立目标（Python 扩展构建）
 
-| 目标          | 特性                                 | 配置文件  | 说明 |
-|---------------|--------------------------------------|-----------|------|
-| `build`       | 包含 `extension-module` + 子集       | `release` | 需要不同的特性以构建 PyO3 扩展模块。 |
-| `build-debug` | 包含 `extension-module` + 子集       | `dev`     | 需要不同的特性以构建 PyO3 扩展模块。 |
+| 目标            | 特性                         | 配置文件      | 说明                    |
+| ------------- | -------------------------- | --------- | --------------------- |
+| `build`       | 包含 `extension-module` + 子集 | `release` | 需要不同的特性以构建 PyO3 扩展模块。 |
+| `build-debug` | 包含 `extension-module` + 子集 | `dev`     | 需要不同的特性以构建 PyO3 扩展模块。 |
 
 Python 扩展构建有意使用不同的特性（`extension-module` 是必需的），因此会触发重新构建。这是预期且不可避免的。
 
@@ -394,12 +394,12 @@ Python 类型桩（`.pyi` 文件）使用
 
 **注解类型：**
 
-| PyO3 构造          | 桩注解                                            |
-| ----------------- | ------------------------------------------------ |
-| `#[pyclass]`      | `pyo3_stub_gen::derive::gen_stub_pyclass`        |
-| 枚举 `#[pyclass]` | `pyo3_stub_gen::derive::gen_stub_pyclass_enum`   |
-| `#[pymethods]`    | `pyo3_stub_gen::derive::gen_stub_pymethods`      |
-| `#[pyfunction]`   | `pyo3_stub_gen::derive::gen_stub_pyfunction`     |
+| PyO3 构造         | 桩注解                                            |
+| --------------- | ---------------------------------------------- |
+| `#[pyclass]`    | `pyo3_stub_gen::derive::gen_stub_pyclass`      |
+| 枚举 `#[pyclass]` | `pyo3_stub_gen::derive::gen_stub_pyclass_enum` |
+| `#[pymethods]`  | `pyo3_stub_gen::derive::gen_stub_pymethods`    |
+| `#[pyfunction]` | `pyo3_stub_gen::derive::gen_stub_pyfunction`   |
 
 **放置规则：**
 
@@ -608,14 +608,14 @@ let mut prices: HashMap<InstrumentId, Price> = HashMap::new();
 配置文件）。时间为每次操作的耗时；比率是 `IndexMap` 相对于
 `AHashMap` 的比值（低于 1.0 的值有利于 `IndexMap`）。
 
-| 模式                  | 大小 | AHashMap | IndexMap | 比率  |
-|-----------------------|-----:|---------:|---------:|------:|
-| Insert（构建映射）    |    4 |  40.8 ns |  49.8 ns | 1.22x |
-| Insert（构建映射）    |   32 | 192.4 ns | 348.2 ns | 1.81x |
-| Insert（构建映射）    |  256 |  1.01 us |  2.74 us | 2.72x |
-| Lookup（随机 get）    |    4 |  2.56 ns |  9.36 ns | 3.66x |
-| Lookup（随机 get）    |   32 |  2.49 ns |  7.95 ns | 3.19x |
-| Lookup（随机 get）    |  256 |  3.00 ns |  9.48 ns | 3.16x |
+| 模式                    | 大小   | AHashMap | IndexMap | 比率    |
+| --------------------- | ---: | -------: | -------: | ----: |
+| Insert（构建映射）          |    4 |  40.8 ns |  49.8 ns | 1.22x |
+| Insert（构建映射）          |   32 | 192.4 ns | 348.2 ns | 1.81x |
+| Insert（构建映射）          |  256 |  1.01 us |  2.74 us | 2.72x |
+| Lookup（随机 get）        |    4 |  2.56 ns |  9.36 ns | 3.66x |
+| Lookup（随机 get）        |   32 |  2.49 ns |  7.95 ns | 3.19x |
+| Lookup（随机 get）        |  256 |  3.00 ns |  9.48 ns | 3.16x |
 | `.values().collect()` |    4 |  8.08 ns |  6.61 ns | 0.82x |
 | `.values().collect()` |   32 |  22.8 ns |  14.8 ns | 0.65x |
 | `.values().collect()` |  256 |   145 ns |   109 ns | 0.75x |
@@ -633,8 +633,8 @@ let mut prices: HashMap<InstrumentId, Price> = HashMap::new();
 以 `O(n)` 成本保留插入顺序；`swap_remove` 是 `O(1)`，但
 会将最后一个条目交换到被移除的槽位，从而破坏迭代顺序。
 
-| 模式       | 大小 | AHashMap.remove | IndexMap.shift_remove | IndexMap.swap_remove |
-|------------|-----:|----------------:|----------------------:|---------------------:|
+| 模式         | 大小   | AHashMap.remove | IndexMap.shift_remove | IndexMap.swap_remove |
+| ---------- | ---: | --------------: | --------------------: | -------------------: |
 | Remove one |    4 |         9.89 ns |               37.8 ns |              37.1 ns |
 | Remove one |   32 |         62.0 ns |                117 ns |              53.4 ns |
 | Remove one |  256 |         70.3 ns |                355 ns |               269 ns |
@@ -1294,15 +1294,15 @@ let callback = py_function;  // ✅
 
 选择机制：
 
-| 情况                                                               | 使用                                              |
-|--------------------------------------------------------------------|---------------------------------------------------|
-| 针对命名前置条件的公共 API 输入                                     | `nautilus_core::correctness` 中的 `check_*`       |
-| 已验证的构造函数（可能失败 + panic 配对）                          | `new_checked()` / `new()`                         |
-| 可恢复的非验证错误（I/O、解析、网络）                              | `Result<T, DomainError>`                          |
-| 编译器无法证明的内部不变量                                          | `debug_assert!`                                   |
-| 无匹配 `CorrectnessError` 的始终开启的内部不变量                   | `assert!`                                         |
-| 正确性关键的 `unsafe` 前置条件                                      | `assert!`（始终开启）                             |
-| 由设计维护的热路径 `unsafe` 前置条件                              | `debug_assert!` 加上记录在案的 `Safety` 子句     |
+| 情况                                 | 使用                                        |
+| ---------------------------------- | ----------------------------------------- |
+| 针对命名前置条件的公共 API 输入                 | `nautilus_core::correctness` 中的 `check_*` |
+| 已验证的构造函数（可能失败 + panic 配对）          | `new_checked()` / `new()`                 |
+| 可恢复的非验证错误（I/O、解析、网络）               | `Result<T, DomainError>`                  |
+| 编译器无法证明的内部不变量                      | `debug_assert!`                           |
+| 无匹配 `CorrectnessError` 的始终开启的内部不变量 | `assert!`                                 |
+| 正确性关键的 `unsafe` 前置条件               | `assert!`（始终开启）                           |
+| 由设计维护的热路径 `unsafe` 前置条件            | `debug_assert!` 加上记录在案的 `Safety` 子句       |
 
 风格：
 
@@ -1395,12 +1395,12 @@ actor 注册表、组件注册表和消息总线各自使用
 两个注册表都在线程本地映射中存储 `Rc<UnsafeCell<dyn Trait>>`，但
 在处理别名访问的方式上有所不同：
 
-| 属性              | Actor 注册表                       | 组件注册表                         |
-|-------------------|------------------------------------|------------------------------------|
-| 别名              | 允许（多个守卫）                   | 禁止（`BorrowGuard` + 集合）       |
-| 重入访问          | 是，回调所需                       | 否，生命周期操作是顺序的           |
-| 错误处理          | 查找失败时 panic 或返回 `None`     | 出错时返回 `anyhow::Result`        |
-| 守卫类型          | `ActorRef<T>`（Rc 支撑）           | 栈本地 `BorrowGuard`               |
+| 属性   | Actor 注册表              | 组件注册表                  |
+| ---- | ---------------------- | ---------------------- |
+| 别名   | 允许（多个守卫）               | 禁止（`BorrowGuard` + 集合） |
+| 重入访问 | 是，回调所需                 | 否，生命周期操作是顺序的           |
+| 错误处理 | 查找失败时 panic 或返回 `None` | 出错时返回 `anyhow::Result` |
+| 守卫类型 | `ActorRef<T>`（Rc 支撑）   | 栈本地 `BorrowGuard`      |
 
 actor 注册表选择重入访问而非别名防止，因为
 消息处理器经常回调进注册表以查找其他

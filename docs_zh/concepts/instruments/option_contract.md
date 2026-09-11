@@ -6,36 +6,36 @@
 
 ## 字段 (Fields)
 
-| Field              | Rust type          | Python type       | Required/default | Notes                                   |
-|--------------------|--------------------|-------------------|------------------|-----------------------------------------|
-| `instrument_id`    | `InstrumentId`     | `InstrumentId`    | Required         | 在 Rust 中以 `id` 存储。                 |
-| `raw_symbol`       | `Symbol`           | `Symbol`          | Required         | 交易场所的原生代码。                    |
-| `asset_class`      | `AssetClass`       | `AssetClass`      | Required         | 标的的资产类别。                       |
-| `exchange`         | `Option<Ustr>`     | `str \| None`      | `None`           | 已知时为交易所 MIC 或场所代码。        |
-| `underlying`       | `Ustr`             | `str`             | Required         | 标的资产、期货或指数。                 |
-| `option_kind`      | `OptionKind`       | `OptionKind`      | Required         | 看跌或看涨。                            |
-| `strike_price`     | `Price`            | `Price`           | Required         | 期权行权价。                            |
-| `activation_ns`    | `UnixNanos`        | `int`             | Required         | 合约生效时间戳。                        |
-| `expiration_ns`    | `UnixNanos`        | `int`             | Required         | 合约到期时间戳。                        |
-| `currency`         | `Currency`         | `Currency`        | Required         | 权利金报价与结算货币。                  |
-| `price_precision`  | `u8`               | `int`             | Required         | 价格允许的小数位数。                    |
-| `price_increment`  | `Price`            | `Price`           | Required         | 最小有效价格步长。                      |
-| `size_precision`   | `u8`               | `int`             | `0`              | 期权以整数张数交易。                    |
-| `size_increment`   | `Quantity`         | `Quantity`        | `1`              | 最小合约数量步长。                      |
-| `multiplier`       | `Quantity`         | `Quantity`        | Required         | 合约乘数。                              |
-| `lot_size`         | `Quantity`         | `Quantity`        | Required         | 取整后的手数或合约手数。                |
-| `margin_init`      | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 初始保证金率。                          |
-| `margin_maint`     | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 维持保证金率。                          |
-| `maker_fee`        | `Option<Decimal>`  | `Decimal \| None`  | `0`              | Maker 费率。负值表示返佣。              |
-| `taker_fee`        | `Option<Decimal>`  | `Decimal \| None`  | `0`              | Taker 费率。负值表示返佣。              |
-| `max_quantity`     | `Option<Quantity>` | `Quantity \| None` | `None`           | 最大下单数量。                          |
-| `min_quantity`     | `Option<Quantity>` | `Quantity \| None` | `1`              | 最小下单数量。                          |
-| `max_price`        | `Option<Price>`    | `Price \| None`    | `None`           | 最大有效报价或下单价格。                |
-| `min_price`        | `Option<Price>`    | `Price \| None`    | `None`           | 最小有效报价或下单价格。                |
-| `tick_scheme_name` | N/A                | `str \| None`      | `None`           | 已注册的可变 tick 方案名称。            |
-| `info`             | `Option<Params>`   | `dict \| None`     | `None`           | 适配器元数据。                          |
-| `ts_event`         | `UnixNanos`        | `int`             | Required         | 事件时间戳（纳秒）。                     |
-| `ts_init`          | `UnixNanos`        | `int`             | Required         | 初始化时间戳（纳秒）。                   |
+| Field              | Rust type          | Python type        | Required/default | Notes              |
+| ------------------ | ------------------ | ------------------ | ---------------- | ------------------ |
+| `instrument_id`    | `InstrumentId`     | `InstrumentId`     | Required         | 在 Rust 中以 `id` 存储。 |
+| `raw_symbol`       | `Symbol`           | `Symbol`           | Required         | 交易场所的原生代码。         |
+| `asset_class`      | `AssetClass`       | `AssetClass`       | Required         | 标的的资产类别。           |
+| `exchange`         | `Option<Ustr>`     | `str \| None`      | `None`           | 已知时为交易所 MIC 或场所代码。 |
+| `underlying`       | `Ustr`             | `str`              | Required         | 标的资产、期货或指数。        |
+| `option_kind`      | `OptionKind`       | `OptionKind`       | Required         | 看跌或看涨。             |
+| `strike_price`     | `Price`            | `Price`            | Required         | 期权行权价。             |
+| `activation_ns`    | `UnixNanos`        | `int`              | Required         | 合约生效时间戳。           |
+| `expiration_ns`    | `UnixNanos`        | `int`              | Required         | 合约到期时间戳。           |
+| `currency`         | `Currency`         | `Currency`         | Required         | 权利金报价与结算货币。        |
+| `price_precision`  | `u8`               | `int`              | Required         | 价格允许的小数位数。         |
+| `price_increment`  | `Price`            | `Price`            | Required         | 最小有效价格步长。          |
+| `size_precision`   | `u8`               | `int`              | `0`              | 期权以整数张数交易。         |
+| `size_increment`   | `Quantity`         | `Quantity`         | `1`              | 最小合约数量步长。          |
+| `multiplier`       | `Quantity`         | `Quantity`         | Required         | 合约乘数。              |
+| `lot_size`         | `Quantity`         | `Quantity`         | Required         | 取整后的手数或合约手数。       |
+| `margin_init`      | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 初始保证金率。            |
+| `margin_maint`     | `Option<Decimal>`  | `Decimal \| None`  | `0`              | 维持保证金率。            |
+| `maker_fee`        | `Option<Decimal>`  | `Decimal \| None`  | `0`              | Maker 费率。负值表示返佣。   |
+| `taker_fee`        | `Option<Decimal>`  | `Decimal \| None`  | `0`              | Taker 费率。负值表示返佣。   |
+| `max_quantity`     | `Option<Quantity>` | `Quantity \| None` | `None`           | 最大下单数量。            |
+| `min_quantity`     | `Option<Quantity>` | `Quantity \| None` | `1`              | 最小下单数量。            |
+| `max_price`        | `Option<Price>`    | `Price \| None`    | `None`           | 最大有效报价或下单价格。       |
+| `min_price`        | `Option<Price>`    | `Price \| None`    | `None`           | 最小有效报价或下单价格。       |
+| `tick_scheme_name` | N/A                | `str \| None`      | `None`           | 已注册的可变 tick 方案名称。  |
+| `info`             | `Option<Params>`   | `dict \| None`     | `None`           | 适配器元数据。            |
+| `ts_event`         | `UnixNanos`        | `int`              | Required         | 事件时间戳（纳秒）。         |
+| `ts_init`          | `UnixNanos`        | `int`              | Required         | 初始化时间戳（纳秒）。        |
 
 *注意：Python 构造函数使用 `instrument_id`；Rust 将同一值存储为 `id`。*
 

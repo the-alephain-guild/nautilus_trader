@@ -254,15 +254,15 @@ export NAUTILUS_LOG="stdout=Info;fileout=Debug;RiskEngine=Error;is_colored"
 
 **支持的键：**
 
-| 键                    | 类型       | 描述                                               |
-|-----------------------|------------|----------------------------------------------------|
-| `stdout`              | 日志级别   | stdout 输出的最大级别。                             |
-| `fileout`             | 日志级别   | 文件输出的最大级别。                                |
-| `is_colored`          | 标志       | 启用 ANSI 颜色（默认：true）。                      |
-| `print_config`        | 标志       | 启动时将配置打印到 stdout。                         |
-| `log_components_only` | 标志       | 仅记录具有显式过滤器的组件。                        |
-| `<Component>`         | 日志级别   | 组件特定级别（精确匹配）。                          |
-| `<module::path>`      | 日志级别   | 模块特定级别（前缀匹配，仅 Rust）。                 |
+| 键                     | 类型   | 描述                   |
+| --------------------- | ---- | -------------------- |
+| `stdout`              | 日志级别 | stdout 输出的最大级别。      |
+| `fileout`             | 日志级别 | 文件输出的最大级别。           |
+| `is_colored`          | 标志   | 启用 ANSI 颜色（默认：true）。 |
+| `print_config`        | 标志   | 启动时将配置打印到 stdout。    |
+| `log_components_only` | 标志   | 仅记录具有显式过滤器的组件。       |
+| `<Component>`         | 日志级别 | 组件特定级别（精确匹配）。        |
+| `<module::path>`      | 日志级别 | 模块特定级别（前缀匹配，仅 Rust）。 |
 
 标志通过在规范字符串中出现即可启用（无需值）。日志级别大小写不敏感：`Off`、`Trace`、`Debug`、`Info`、`Warning`（或 `Warn`）、`Error`。
 

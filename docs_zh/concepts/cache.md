@@ -52,8 +52,8 @@ def on_bar(self, bar: Bar) -> None:
     # 当前 K线 通过参数 'bar' 提供
 
     # 从缓存中获取历史 K线
-    last_bar = self.cache.bar(self.bar_type, index=0)        # 最新的 K线（实际上与 'bar' 参数相同）
-    previous_bar = self.cache.bar(self.bar_type, index=1)    # 前一根 K线
+    last_bar = self.cache.bar(self.bar_type, index=0)  # 最新的 K线（实际上与 'bar' 参数相同）
+    previous_bar = self.cache.bar(self.bar_type, index=1)  # 前一根 K线
     third_last_bar = self.cache.bar(self.bar_type, index=2)  # 倒数第三根 K线
 
     # 获取当前持仓信息
@@ -81,7 +81,7 @@ from nautilus_trader.config import CacheConfig, BacktestEngineConfig, TradingNod
 engine_config = BacktestEngineConfig(
     cache=CacheConfig(
         tick_capacity=10_000,  # 每个金融工具存储最近 10,000 个 Tick
-        bar_capacity=5_000,    # 每种 K线 类型存储最近 5,000 根 K线
+        bar_capacity=5_000,  # 每种 K线 类型存储最近 5,000 根 K线
     ),
 )
 
@@ -124,13 +124,13 @@ cache_config = CacheConfig(
 :::note
 `encoding` 支持两种格式：
 
-| | **msgpack**（默认） | **json** |
-|---|---|---|
-| 格式 | 二进制 | 文本 |
-| 体积 | 更小（通常小 20–30%） | 更大 |
-| 速度 | 序列化/反序列化更快 | 较慢 |
-| 可读性 | 不可读（二进制） | 人类可读 |
-| 调试 | 需要工具解码 | 可直接用 `redis-cli` 查看 |
+|     | **msgpack**（默认） | **json**            |
+| --- | --------------- | ------------------- |
+| 格式  | 二进制             | 文本                  |
+| 体积  | 更小（通常小 20–30%）  | 更大                  |
+| 速度  | 序列化/反序列化更快      | 较慢                  |
+| 可读性 | 不可读（二进制）        | 人类可读                |
+| 调试  | 需要工具解码          | 可直接用 `redis-cli` 查看 |
 
 **建议**：生产环境使用默认的 `msgpack` 以获得更好的性能；调试或开发时可切换为 `json` 以便直接查看 Redis 中的缓存内容。
 :::
@@ -155,11 +155,11 @@ from nautilus_trader.config import DatabaseConfig
 
 config = CacheConfig(
     database=DatabaseConfig(
-        type="redis",            # 数据库类型
-        host="localhost",        # 数据库主机
-        port=6379,               # 数据库端口
-        connection_timeout=2,    # 连接超时（秒）
-        response_timeout=2,      # 响应超时（秒）
+        type="redis",  # 数据库类型
+        host="localhost",  # 数据库主机
+        port=6379,  # 数据库端口
+        connection_timeout=2,  # 连接超时（秒）
+        response_timeout=2,  # 响应超时（秒）
     ),
 )
 ```
@@ -185,33 +185,37 @@ second_last_bar = self.cache.bar(bar_type, index=1)  # 返回 Bar 或 None（如
 
 # 检查 K线 是否存在并获取数量
 bar_count = self.cache.bar_count(bar_type)  # 返回指定 K线 类型在缓存中的 K线 数量
-has_bars = self.cache.has_bars(bar_type)    # 返回布尔值，表示指定 K线 类型是否存在 K线
+has_bars = self.cache.has_bars(bar_type)  # 返回布尔值，表示指定 K线 类型是否存在 K线
 ```
 
 #### 报价 Tick
 
 ```python
 # 获取报价
-quotes = self.cache.quote_ticks(instrument_id)                     # 返回 list[QuoteTick]，如果没有找到报价则返回空列表
-latest_quote = self.cache.quote_tick(instrument_id)                # 返回 QuoteTick 或 None（如果不存在该对象）
-second_last_quote = self.cache.quote_tick(instrument_id, index=1)  # 返回 QuoteTick 或 None（如果不存在该对象）
+quotes = self.cache.quote_ticks(instrument_id)  # 返回 list[QuoteTick]，如果没有找到报价则返回空列表
+latest_quote = self.cache.quote_tick(instrument_id)  # 返回 QuoteTick 或 None（如果不存在该对象）
+second_last_quote = self.cache.quote_tick(
+    instrument_id, index=1
+)  # 返回 QuoteTick 或 None（如果不存在该对象）
 
 # 检查报价可用性
 quote_count = self.cache.quote_tick_count(instrument_id)  # 返回该金融工具在缓存中的报价数量
-has_quotes = self.cache.has_quote_ticks(instrument_id)    # 返回布尔值，表示该金融工具是否存在报价
+has_quotes = self.cache.has_quote_ticks(instrument_id)  # 返回布尔值，表示该金融工具是否存在报价
 ```
 
 #### 成交 Tick
 
 ```python
 # 获取成交
-trades = self.cache.trade_ticks(instrument_id)         # 返回 list[TradeTick]，如果没有找到成交则返回空列表
-latest_trade = self.cache.trade_tick(instrument_id)    # 返回 TradeTick 或 None（如果不存在该对象）
-second_last_trade = self.cache.trade_tick(instrument_id, index=1)  # 返回 TradeTick 或 None（如果不存在该对象）
+trades = self.cache.trade_ticks(instrument_id)  # 返回 list[TradeTick]，如果没有找到成交则返回空列表
+latest_trade = self.cache.trade_tick(instrument_id)  # 返回 TradeTick 或 None（如果不存在该对象）
+second_last_trade = self.cache.trade_tick(
+    instrument_id, index=1
+)  # 返回 TradeTick 或 None（如果不存在该对象）
 
 # 检查成交可用性
 trade_count = self.cache.trade_tick_count(instrument_id)  # 返回该金融工具在缓存中的成交数量
-has_trades = self.cache.has_trade_ticks(instrument_id)    # 返回布尔值，表示是否存在成交
+has_trades = self.cache.has_trade_ticks(instrument_id)  # 返回布尔值，表示是否存在成交
 ```
 
 #### 订单簿
@@ -258,17 +262,19 @@ bar_types = self.cache.bar_types(
 class MarketDataStrategy(Strategy):
     def on_start(self):
         # 订阅 1 分钟 K线
-        self.bar_type = BarType.from_str(f"{self.instrument_id}-1-MINUTE-LAST-EXTERNAL")  # instrument_id 示例 = "EUR/USD.FXCM"
+        self.bar_type = BarType.from_str(
+            f"{self.instrument_id}-1-MINUTE-LAST-EXTERNAL"
+        )  # instrument_id 示例 = "EUR/USD.FXCM"
         self.subscribe_bars(self.bar_type)
 
     def on_bar(self, bar: Bar) -> None:
         bars = self.cache.bars(self.bar_type)[:3]
-        if len(bars) < 3:   # 等待至少有 3 根 K线
+        if len(bars) < 3:  # 等待至少有 3 根 K线
             return
 
         # 访问最近 3 根 K线 进行分析
-        current_bar = bars[0]    # 最新的 K线
-        prev_bar = bars[1]       # 倒数第二根 K线
+        current_bar = bars[0]  # 最新的 K线
+        prev_bar = bars[1]  # 倒数第二根 K线
         prev_prev_bar = bars[2]  # 倒数第三根 K线
 
         # 获取最新的报价和成交
@@ -303,8 +309,8 @@ order = self.cache.order(ClientOrderId("O-123"))
 orders = self.cache.orders()
 
 # 通过特定条件筛选订单
-orders_for_venue = self.cache.orders(venue=venue)                       # 特定交易场所的所有订单
-orders_for_strategy = self.cache.orders(strategy_id=strategy_id)        # 特定策略的所有订单
+orders_for_venue = self.cache.orders(venue=venue)  # 特定交易场所的所有订单
+orders_for_strategy = self.cache.orders(strategy_id=strategy_id)  # 特定策略的所有订单
 orders_for_instrument = self.cache.orders(instrument_id=instrument_id)  # 特定金融工具的所有订单
 ```
 
@@ -312,16 +318,18 @@ orders_for_instrument = self.cache.orders(instrument_id=instrument_id)  # 特定
 
 ```python
 # 按当前状态获取订单
-open_orders = self.cache.orders_open()                       # 当前在交易场所活跃的订单
-closed_orders = self.cache.orders_closed()                   # 已完成生命周期的订单
-emulated_orders = self.cache.orders_emulated()               # 系统在本地模拟的订单
-inflight_orders = self.cache.orders_inflight()               # 已提交（或修改）到交易场所但尚未确认的订单
-local_active_orders = self.cache.orders_active_local()       # 仍由本地管理的订单（已初始化、已模拟或已释放）
+open_orders = self.cache.orders_open()  # 当前在交易场所活跃的订单
+closed_orders = self.cache.orders_closed()  # 已完成生命周期的订单
+emulated_orders = self.cache.orders_emulated()  # 系统在本地模拟的订单
+inflight_orders = self.cache.orders_inflight()  # 已提交（或修改）到交易场所但尚未确认的订单
+local_active_orders = (
+    self.cache.orders_active_local()
+)  # 仍由本地管理的订单（已初始化、已模拟或已释放）
 
 # 检查特定订单状态
-exists = self.cache.order_exists(client_order_id)            # 检查缓存中是否存在具有给定 ID 的订单
-is_open = self.cache.is_order_open(client_order_id)          # 检查订单是否当前处于打开状态
-is_closed = self.cache.is_order_closed(client_order_id)      # 检查订单是否已关闭
+exists = self.cache.order_exists(client_order_id)  # 检查缓存中是否存在具有给定 ID 的订单
+is_open = self.cache.is_order_open(client_order_id)  # 检查订单是否当前处于打开状态
+is_closed = self.cache.is_order_closed(client_order_id)  # 检查订单是否已关闭
 is_emulated = self.cache.is_order_emulated(client_order_id)  # 检查订单是否正在本地模拟
 is_inflight = self.cache.is_order_inflight(client_order_id)  # 检查订单是否已提交或修改但尚未确认
 is_active_local = self.cache.is_order_active_local(client_order_id)  # 检查订单是否仍由本地管理
@@ -331,16 +339,18 @@ is_active_local = self.cache.is_order_active_local(client_order_id)  # 检查订
 
 ```python
 # 获取不同状态的订单数量
-open_count = self.cache.orders_open_count()                  # 未完成订单数量
-closed_count = self.cache.orders_closed_count()              # 已关闭订单数量
-emulated_count = self.cache.orders_emulated_count()          # 模拟订单数量
-inflight_count = self.cache.orders_inflight_count()          # 在途订单数量
-local_active_count = self.cache.orders_active_local_count()  # 本地活跃订单数量（已初始化、已模拟或已释放）
-total_count = self.cache.orders_total_count()                # 系统中的订单总数
+open_count = self.cache.orders_open_count()  # 未完成订单数量
+closed_count = self.cache.orders_closed_count()  # 已关闭订单数量
+emulated_count = self.cache.orders_emulated_count()  # 模拟订单数量
+inflight_count = self.cache.orders_inflight_count()  # 在途订单数量
+local_active_count = (
+    self.cache.orders_active_local_count()
+)  # 本地活跃订单数量（已初始化、已模拟或已释放）
+total_count = self.cache.orders_total_count()  # 系统中的订单总数
 
 # 获取带筛选条件的订单数量
 buy_orders_count = self.cache.orders_open_count(side=OrderSide.BUY)  # 当前未完成的买入订单数量
-venue_orders_count = self.cache.orders_total_count(venue=venue)      # 给定交易场所的订单总数
+venue_orders_count = self.cache.orders_total_count(venue=venue)  # 给定交易场所的订单总数
 ```
 
 #### 持仓
@@ -354,27 +364,27 @@ venue_orders_count = self.cache.orders_total_count(venue=venue)      # 给定交
 position = self.cache.position(PositionId("P-123"))
 
 # 按状态获取持仓
-all_positions = self.cache.positions()            # 系统中的所有持仓
-open_positions = self.cache.positions_open()      # 所有当前未平仓持仓
+all_positions = self.cache.positions()  # 系统中的所有持仓
+open_positions = self.cache.positions_open()  # 所有当前未平仓持仓
 closed_positions = self.cache.positions_closed()  # 所有已平仓持仓
 
 # 通过各种条件筛选持仓
-venue_positions = self.cache.positions(venue=venue)                       # 特定交易场所的持仓
+venue_positions = self.cache.positions(venue=venue)  # 特定交易场所的持仓
 instrument_positions = self.cache.positions(instrument_id=instrument_id)  # 特定金融工具的持仓
-strategy_positions = self.cache.positions(strategy_id=strategy_id)        # 特定策略的持仓
-long_positions = self.cache.positions(side=PositionSide.LONG)             # 所有多头持仓
+strategy_positions = self.cache.positions(strategy_id=strategy_id)  # 特定策略的持仓
+long_positions = self.cache.positions(side=PositionSide.LONG)  # 所有多头持仓
 ```
 
 ##### 持仓状态查询
 
 ```python
 # 检查持仓状态
-exists = self.cache.position_exists(position_id)        # 检查是否存在具有给定 ID 的持仓
-is_open = self.cache.is_position_open(position_id)      # 检查持仓是否未平仓
+exists = self.cache.position_exists(position_id)  # 检查是否存在具有给定 ID 的持仓
+is_open = self.cache.is_position_open(position_id)  # 检查持仓是否未平仓
 is_closed = self.cache.is_position_closed(position_id)  # 检查持仓是否已平仓
 
 # 获取持仓和订单的关联关系
-orders = self.cache.orders_for_position(position_id)       # 与特定持仓相关的所有订单
+orders = self.cache.orders_for_position(position_id)  # 与特定持仓相关的所有订单
 position = self.cache.position_for_order(client_order_id)  # 查找与特定订单关联的持仓
 ```
 
@@ -382,22 +392,24 @@ position = self.cache.position_for_order(client_order_id)  # 查找与特定订�
 
 ```python
 # 获取不同状态的持仓数量
-open_count = self.cache.positions_open_count()      # 当前未平仓持仓数量
+open_count = self.cache.positions_open_count()  # 当前未平仓持仓数量
 closed_count = self.cache.positions_closed_count()  # 已平仓持仓数量
-total_count = self.cache.positions_total_count()    # 系统中的持仓总数
+total_count = self.cache.positions_total_count()  # 系统中的持仓总数
 
 # 获取带筛选条件的持仓数量
-long_positions_count = self.cache.positions_open_count(side=PositionSide.LONG)              # 未平仓多头持仓数量
-instrument_positions_count = self.cache.positions_total_count(instrument_id=instrument_id)  # 给定金融工具的持仓数量
+long_positions_count = self.cache.positions_open_count(side=PositionSide.LONG)  # 未平仓多头持仓数量
+instrument_positions_count = self.cache.positions_total_count(
+    instrument_id=instrument_id
+)  # 给定金融工具的持仓数量
 ```
 
 #### 账户
 
 ```python
 # 访问账户信息
-account = self.cache.account(account_id)       # 通过 ID 获取账户
+account = self.cache.account(account_id)  # 通过 ID 获取账户
 account = self.cache.account_for_venue(venue)  # 获取特定交易场所的账户
-account_id = self.cache.account_id(venue)      # 获取交易场所的账户 ID
+account_id = self.cache.account_id(venue)  # 获取交易场所的账户 ID
 ```
 
 #### 金融工具和货币
@@ -406,15 +418,15 @@ account_id = self.cache.account_id(venue)      # 获取交易场所的账户 ID
 
 ```python
 # 获取金融工具信息
-instrument = self.cache.instrument(instrument_id) # 通过 ID 获取特定金融工具
-all_instruments = self.cache.instruments()        # 获取缓存中的所有金融工具
+instrument = self.cache.instrument(instrument_id)  # 通过 ID 获取特定金融工具
+all_instruments = self.cache.instruments()  # 获取缓存中的所有金融工具
 
 # 筛选金融工具
-venue_instruments = self.cache.instruments(venue=venue)              # 特定交易场所的金融工具
+venue_instruments = self.cache.instruments(venue=venue)  # 特定交易场所的金融工具
 instruments_by_underlying = self.cache.instruments(underlying="ES")  # 按标的资产筛选金融工具
 
 # 获取金融工具标识符
-instrument_ids = self.cache.instrument_ids()                   # 获取所有金融工具 ID
+instrument_ids = self.cache.instrument_ids()  # 获取所有金融工具 ID
 venue_instrument_ids = self.cache.instrument_ids(venue=venue)  # 获取特定交易场所的金融工具 ID
 ```
 
@@ -481,6 +493,7 @@ self.cache.purge_closed_orders(
 # 整个链中的所有订单（包括已关闭的）都不会被清除，
 # 直到所有子订单都关闭
 ```
+
 :::
 
 #### 实盘交易中的自动清除
@@ -592,6 +605,7 @@ class MyStrategy(Strategy):
 ```python
 import pickle
 
+
 class MyStrategy(Strategy):
     def on_start(self):
         # 准备要与其他策略共享的数据
@@ -611,6 +625,7 @@ class MyStrategy(Strategy):
 
 ```python
 import pickle
+
 
 class AnotherStrategy(Strategy):
     def on_start(self):

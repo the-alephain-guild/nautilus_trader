@@ -173,12 +173,12 @@ export HYPERLIQUID_TESTNET_VAULT="vault_address_here"
 Hyperliquid 提供线性永续期货、HIP-3 builder 部署的永续合约、原生现货市场，
 以及 HIP-4 二元结果市场。
 
-| 产品类型          | 数据源 | 交易 | 说明                                                    |
-|-------------------|--------|------|---------------------------------------------------------|
-| 现货（Spot）      | ✓      | ✓    | 原生现货市场。                                          |
-| 永续期货          | ✓      | ✓    | 以 USDC 结算的线性永续合约（验证者运营）。              |
-| HIP-3 永续合约    | ✓      | ✓    | builder 部署的永续合约，按各 dex 独立抵押品。需选择启用。 |
-| HIP-4 结果市场    | ✓      | ✓    | 以 USDH 结算的二元结果。需选择启用。                    |
+| 产品类型       | 数据源 | 交易  | 说明                                  |
+| ---------- | --- | --- | ----------------------------------- |
+| 现货（Spot）   | ✓   | ✓   | 原生现货市场。                             |
+| 永续期货       | ✓   | ✓   | 以 USDC 结算的线性永续合约（验证者运营）。            |
+| HIP-3 永续合约 | ✓   | ✓   | builder 部署的永续合约，按各 dex 独立抵押品。需选择启用。 |
+| HIP-4 结果市场 | ✓   | ✓   | 以 USDH 结算的二元结果。需选择启用。               |
 
 :::note
 标准 Hyperliquid 永续合约以 USDC 结算。HIP-3 dex 可能以其自身的抵押品代币结算，
@@ -336,7 +336,7 @@ HyperliquidExecClientConfig(
 一旦加载了 HIP-3 工具，您可以用 `InstrumentProviderConfig` 对其进行筛选：
 
 ```python
-instrument_provider=InstrumentProviderConfig(
+instrument_provider = InstrumentProviderConfig(
     load_all=True,
     filters={"market_types": ["perp_hip3"]},
 )
@@ -428,25 +428,25 @@ HyperliquidDataClientConfig(
 （在 Python 中通过 `info["key"]` 消费，在 Rust 中通过 `Params.get_str(...)`）。
 派生的标识符始终被填充；来自描述的字段在交易场所包含它们时才出现。
 
-| 字段               | 来源                           | 说明                                              |
-|--------------------|--------------------------------|---------------------------------------------------|
-| `outcome_index`    | 派生                           | 来自 `outcomeMeta` 的 `outcome`                   |
-| `outcome_side`     | 派生                           | `0` = Yes，`1` = No                               |
-| `side_name`        | 派生                           | `"Yes"` 或 `"No"`                                 |
-| `encoding`         | 派生                           | `10 * outcome_index + side`                       |
-| `asset_id`         | 派生                           | `100_000_000 + encoding`                          |
-| `market_name`      | `outcomeMeta.outcomes[*].name` | 交易场所市场标签                                  |
-| `class`            | 描述                           | `priceBinary` 或 `priceBucket`                    |
-| `underlying`       | 描述                           | 标的资产代码                                      |
-| `expiry`           | 描述                           | `YYYYMMDD-HHMM` UTC                               |
-| `target_price`     | 描述                           | 二元结算阈值                                      |
-| `period`           | 描述                           | 重复周期（例如 `1d`、`3m`）                       |
-| `price_thresholds` | 描述                           | 逗号分隔的阈值（bucket 市场）                     |
-| `named_index`      | 命名结果描述                   | 在父 `named_outcomes` 数组中的位置                |
-| `is_fallback`      | 回退结果描述                   | 对于问题的 `other` 结果为 `true`                 |
-| `question`         | 父问题                         | 问题 id                                           |
-| `question_name`    | 父问题                         | 问题标签                                          |
-| `question_*`       | 父问题描述                     | 每个解析出的问题字段，带 `question_` 前缀         |
+| 字段                 | 来源                             | 说明                            |
+| ------------------ | ------------------------------ | ----------------------------- |
+| `outcome_index`    | 派生                             | 来自 `outcomeMeta` 的 `outcome`  |
+| `outcome_side`     | 派生                             | `0` = Yes，`1` = No            |
+| `side_name`        | 派生                             | `"Yes"` 或 `"No"`              |
+| `encoding`         | 派生                             | `10 * outcome_index + side`   |
+| `asset_id`         | 派生                             | `100_000_000 + encoding`      |
+| `market_name`      | `outcomeMeta.outcomes[*].name` | 交易场所市场标签                      |
+| `class`            | 描述                             | `priceBinary` 或 `priceBucket` |
+| `underlying`       | 描述                             | 标的资产代码                        |
+| `expiry`           | 描述                             | `YYYYMMDD-HHMM` UTC           |
+| `target_price`     | 描述                             | 二元结算阈值                        |
+| `period`           | 描述                             | 重复周期（例如 `1d`、`3m`）            |
+| `price_thresholds` | 描述                             | 逗号分隔的阈值（bucket 市场）            |
+| `named_index`      | 命名结果描述                         | 在父 `named_outcomes` 数组中的位置    |
+| `is_fallback`      | 回退结果描述                         | 对于问题的 `other` 结果为 `true`      |
+| `question`         | 父问题                            | 问题 id                         |
+| `question_name`    | 父问题                            | 问题标签                          |
+| `question_*`       | 父问题描述                          | 每个解析出的问题字段，带 `question_` 前缀   |
 
 描述键从交易场所的 camelCase 转为 snake_case
 （`targetPrice` -> `target_price`，`priceThresholds` -> `price_thresholds`）。
@@ -496,11 +496,11 @@ await client.submit_merge_question(9, None)
 await client.submit_negate_outcome(9, 52, Decimal("1.0"))
 ```
 
-| Action                  | 用例 |
-|-------------------------|------|
-| `submit_split_outcome`  | 从报价货币铸造配对的 Yes + No 代币（初始做市、双向对冲） |
-| `submit_merge_outcome`  | 将配对的 Yes + No 销毁回报价货币，无需穿越价差 |
-| `submit_merge_question` | 原子地将完整的多结果篮子平回报价货币 |
+| Action                  | 用例                                 |
+| ----------------------- | ---------------------------------- |
+| `submit_split_outcome`  | 从报价货币铸造配对的 Yes + No 代币（初始做市、双向对冲）  |
+| `submit_merge_outcome`  | 将配对的 Yes + No 销毁回报价货币，无需穿越价差       |
+| `submit_merge_question` | 原子地将完整的多结果篮子平回报价货币                 |
 | `submit_negate_outcome` | 将某个结果的 No 份额转换为同一问题中其余每个结果的 Yes 份额 |
 
 对于方向性押注，普通的 `SubmitOrder` 路径就足够了；只有当您想在订单簿外
@@ -558,17 +558,17 @@ action 在问题层级操作，用于篮子平仓和跨结果轮换。
 金融工具提供者支持在通过 `InstrumentProviderConfig(filters=...)` 加载工具时
 进行筛选：
 
-| 筛选键                      | 类型        | 描述                                        |
-|-----------------------------|-------------|---------------------------------------------|
-| `market_types`（或 `kinds`）| `list[str]` | `"perp"`、`"perp_hip3"` 或 `"spot"`。       |
-| `bases`                     | `list[str]` | 基础货币代码，例如 `["BTC", "ETH"]`。       |
-| `quotes`                    | `list[str]` | 报价货币代码，例如 `["USDC"]`。             |
-| `symbols`                   | `list[str]` | 完整代码，例如 `["BTC-USD-PERP"]`。         |
+| 筛选键                       | 类型          | 描述                                 |
+| ------------------------- | ----------- | ---------------------------------- |
+| `market_types`（或 `kinds`） | `list[str]` | `"perp"`、`"perp_hip3"` 或 `"spot"`。 |
+| `bases`                   | `list[str]` | 基础货币代码，例如 `["BTC", "ETH"]`。        |
+| `quotes`                  | `list[str]` | 报价货币代码，例如 `["USDC"]`。              |
+| `symbols`                 | `list[str]` | 完整代码，例如 `["BTC-USD-PERP"]`。        |
 
 仅加载永续工具的示例：
 
 ```python
-instrument_provider=InstrumentProviderConfig(
+instrument_provider = InstrumentProviderConfig(
     load_all=True,
     filters={"market_types": ["perp"]},
 )
@@ -579,19 +579,19 @@ instrument_provider=InstrumentProviderConfig(
 适配器支持以下数据订阅。所有永续数据类型（标记价格、指数价格、资金费率）
 同时适用于标准永续合约和 HIP-3 永续合约。
 
-| 数据类型          | 订阅 | 快照 | 历史 | Nautilus 类型                 | 说明                                  |
-|-------------------|------|------|------|-------------------------------|---------------------------------------|
-| 成交 ticks        | ✓    | -    | -    | `TradeTick`                   | WebSocket 成交。                      |
-| 报价 ticks        | ✓    | -    | -    | `QuoteTick`                   | 最优买价/卖价。                       |
-| 订单簿增量        | ✓    | ✓    | -    | `OrderBookDelta`              | L2 快照。                            |
-| 订单簿深度        | ✓    | -    | -    | `OrderBookDepth10`            | 前 10 档 L2 快照。                    |
-| Bars              | ✓    | -    | ✓    | `Bar`                         | 支持的时间间隔见下文。               |
-| 标记价格          | ✓    | -    | -    | `MarkPriceUpdate`             | 永续标记价格 ticks。                 |
-| 指数价格          | ✓    | -    | -    | `IndexPriceUpdate`            | 标的参考价格。                       |
-| 资金费率          | ✓    | -    | ✓    | `FundingRateUpdate`           | `fundingHistory` 端点。              |
-| 未平仓合约        | ✓    | -    | -    | `HyperliquidOpenInterest`     | 来自 `activeAssetCtx` 的自定义数据。 |
-| 全部中间价        | ✓    | -    | -    | `HyperliquidAllMids`          | 来自 `allMids` 的自定义数据。        |
-| 全部 dex 上下文   | ✓    | -    | -    | `HyperliquidAllDexsAssetCtxs` | 来自 `allDexsAssetCtxs` 的自定义数据。|
+| 数据类型       | 订阅  | 快照  | 历史  | Nautilus 类型                   | 说明                            |
+| ---------- | --- | --- | --- | ----------------------------- | ----------------------------- |
+| 成交 ticks   | ✓   | -   | -   | `TradeTick`                   | WebSocket 成交。                 |
+| 报价 ticks   | ✓   | -   | -   | `QuoteTick`                   | 最优买价/卖价。                      |
+| 订单簿增量      | ✓   | ✓   | -   | `OrderBookDelta`              | L2 快照。                        |
+| 订单簿深度      | ✓   | -   | -   | `OrderBookDepth10`            | 前 10 档 L2 快照。                 |
+| Bars       | ✓   | -   | ✓   | `Bar`                         | 支持的时间间隔见下文。                   |
+| 标记价格       | ✓   | -   | -   | `MarkPriceUpdate`             | 永续标记价格 ticks。                 |
+| 指数价格       | ✓   | -   | -   | `IndexPriceUpdate`            | 标的参考价格。                       |
+| 资金费率       | ✓   | -   | ✓   | `FundingRateUpdate`           | `fundingHistory` 端点。          |
+| 未平仓合约      | ✓   | -   | -   | `HyperliquidOpenInterest`     | 来自 `activeAssetCtx` 的自定义数据。   |
+| 全部中间价      | ✓   | -   | -   | `HyperliquidAllMids`          | 来自 `allMids` 的自定义数据。          |
+| 全部 dex 上下文 | ✓   | -   | -   | `HyperliquidAllDexsAssetCtxs` | 来自 `allDexsAssetCtxs` 的自定义数据。 |
 
 :::note
 不支持历史报价和成交请求。Hyperliquid 不发布公开的成交带（trade-tape）端点；
@@ -631,11 +631,11 @@ self.subscribe_order_book_deltas(
 - `HyperliquidOpenInterest`，来自标记价格、指数价格和资金费率所共用的
   `activeAssetCtx` 源。
 
-| 字段       | 类型             | 描述                                                     |
-|------------|------------------|----------------------------------------------------------|
-| `mids`     | `dict[str, str]` | 工具 ID 到中间价的映射。                                 |
-| `ts_event` | `int`            | 更新发生时的 UNIX 纳秒时间戳。                           |
-| `ts_init`  | `int`            | 对象构建时的 UNIX 纳秒时间戳。                           |
+| 字段         | 类型               | 描述                 |
+| ---------- | ---------------- | ------------------ |
+| `mids`     | `dict[str, str]` | 工具 ID 到中间价的映射。     |
+| `ts_event` | `int`            | 更新发生时的 UNIX 纳秒时间戳。 |
+| `ts_init`  | `int`            | 对象构建时的 UNIX 纳秒时间戳。 |
 
 从 actor 或策略中使用 `DataType(HyperliquidAllMids)` 进行订阅。
 对于 HIP-3 dex 专属的流，请在 `metadata["dex"]` 中传入交易场所 dex：
@@ -654,12 +654,12 @@ self.subscribe_data(
 `HyperliquidOpenInterest` 携带某个永续工具的最新未平仓合约。请在
 `metadata["instrument_id"]` 中以规范的 Nautilus `instrument_id` 进行订阅：
 
-| 字段            | 类型           | 描述                                                                        |
-|-----------------|----------------|-----------------------------------------------------------------------------|
-| `instrument_id` | `InstrumentId` | 规范的 Nautilus 工具 ID。                                                   |
-| `open_interest` | `Decimal`      | 已解析为可直接算术运算的未平仓合约。                                        |
-| `ts_event`      | `int`          | 更新发生时的 UNIX 纳秒时间戳。镜像 `ts_init`。                              |
-| `ts_init`       | `int`          | 对象构建时的 UNIX 纳秒时间戳。                                              |
+| 字段              | 类型             | 描述                              |
+| --------------- | -------------- | ------------------------------- |
+| `instrument_id` | `InstrumentId` | 规范的 Nautilus 工具 ID。             |
+| `open_interest` | `Decimal`      | 已解析为可直接算术运算的未平仓合约。              |
+| `ts_event`      | `int`          | 更新发生时的 UNIX 纳秒时间戳。镜像 `ts_init`。 |
+| `ts_init`       | `int`          | 对象构建时的 UNIX 纳秒时间戳。              |
 
 ```python
 from nautilus_trader.adapters.hyperliquid import HYPERLIQUID_CLIENT_ID
@@ -687,6 +687,7 @@ from decimal import Decimal
 
 from nautilus_trader.adapters.hyperliquid import HyperliquidOpenInterest
 
+
 def on_data(self, data) -> None:
     if isinstance(data, HyperliquidOpenInterest):
         if data.open_interest > Decimal("1000"):
@@ -696,22 +697,22 @@ def on_data(self, data) -> None:
 `HyperliquidAllDexsAssetCtxs` 暴露的是整个源的聚合，而非每个工具一个主题，
 因此策略只需订阅一次，再筛选出它们需要的归一化条目：
 
-| 字段              | 类型                              | 描述                                                                       |
-|-------------------|-----------------------------------|----------------------------------------------------------------------------|
-| `dex`             | `str`                             | 来自 Hyperliquid `perpDexs` 的永续 dex 标识符。`""` 是默认 dex。           |
-| `instrument_id`   | `InstrumentId`                    | 该条目对应的规范 Nautilus 工具 ID。                                        |
-| `mark_price`      | `Price`                           | 当前标记价格。                                                            |
-| `oracle_price`    | `Price`                           | 当前预言机 / 指数参考价格。                                               |
-| `prev_day_price`  | `Price`                           | 来自交易场所 payload 的前一日参考价格。                                    |
-| `mid_price`       | `Price \| None`                   | 交易场所 payload 中存在时的中间价。                                        |
-| `impact_prices`   | `HyperliquidImpactPrices \| None` | 存在时的最优买/卖冲击价格。                                                |
-| `funding_rate`    | `Decimal`                         | 已解析为可直接算术运算的资金费率。                                        |
-| `open_interest`   | `Decimal`                         | 已解析为可直接算术运算的未平仓合约。                                      |
-| `premium`         | `Decimal \| None`                 | 交易场所 payload 中存在时的溢价。                                          |
-| `day_ntl_volume`  | `Decimal`                         | 24 小时名义成交量。                                                       |
-| `day_base_volume` | `Decimal`                         | 24 小时基础成交量。                                                       |
-| `ts_event`        | `int`                             | 更新发生时的 UNIX 纳秒时间戳。镜像 `ts_init`。                            |
-| `ts_init`         | `int`                             | 对象构建时的 UNIX 纳秒时间戳。                                            |
+| 字段                | 类型                                | 描述                                                  |
+| ----------------- | --------------------------------- | --------------------------------------------------- |
+| `dex`             | `str`                             | 来自 Hyperliquid `perpDexs` 的永续 dex 标识符。`""` 是默认 dex。 |
+| `instrument_id`   | `InstrumentId`                    | 该条目对应的规范 Nautilus 工具 ID。                            |
+| `mark_price`      | `Price`                           | 当前标记价格。                                             |
+| `oracle_price`    | `Price`                           | 当前预言机 / 指数参考价格。                                     |
+| `prev_day_price`  | `Price`                           | 来自交易场所 payload 的前一日参考价格。                            |
+| `mid_price`       | `Price \| None`                   | 交易场所 payload 中存在时的中间价。                              |
+| `impact_prices`   | `HyperliquidImpactPrices \| None` | 存在时的最优买/卖冲击价格。                                      |
+| `funding_rate`    | `Decimal`                         | 已解析为可直接算术运算的资金费率。                                   |
+| `open_interest`   | `Decimal`                         | 已解析为可直接算术运算的未平仓合约。                                  |
+| `premium`         | `Decimal \| None`                 | 交易场所 payload 中存在时的溢价。                               |
+| `day_ntl_volume`  | `Decimal`                         | 24 小时名义成交量。                                         |
+| `day_base_volume` | `Decimal`                         | 24 小时基础成交量。                                         |
+| `ts_event`        | `int`                             | 更新发生时的 UNIX 纳秒时间戳。镜像 `ts_init`。                     |
+| `ts_init`         | `int`                             | 对象构建时的 UNIX 纳秒时间戳。                                  |
 
 底层的 Hyperliquid 线路 payload 以 `ctxs: [[dex, ctxs[]], ...]` 形式到达。
 适配器解码这种实时交易场所格式，并在策略看到数据之前将其归一化为下面所示的
@@ -736,6 +737,7 @@ self.subscribe_data(
     client_id=HYPERLIQUID_CLIENT_ID,
 )
 
+
 def on_data(self, data) -> None:
     if isinstance(data, HyperliquidAllDexsAssetCtxs):
         for entry in data.entries:
@@ -745,22 +747,22 @@ def on_data(self, data) -> None:
 
 ### 支持的 Bar 时间间隔
 
-| 分辨率     | Hyperliquid K 线   |
-|------------|--------------------|
-| 1-MINUTE   | `1m`               |
-| 3-MINUTE   | `3m`               |
-| 5-MINUTE   | `5m`               |
-| 15-MINUTE  | `15m`              |
-| 30-MINUTE  | `30m`              |
-| 1-HOUR     | `1h`               |
-| 2-HOUR     | `2h`               |
-| 4-HOUR     | `4h`               |
-| 8-HOUR     | `8h`               |
-| 12-HOUR    | `12h`              |
-| 1-DAY      | `1d`               |
-| 3-DAY      | `3d`               |
-| 1-WEEK     | `1w`               |
-| 1-MONTH    | `1M`               |
+| 分辨率       | Hyperliquid K 线 |
+| --------- | --------------- |
+| 1-MINUTE  | `1m`            |
+| 3-MINUTE  | `3m`            |
+| 5-MINUTE  | `5m`            |
+| 15-MINUTE | `15m`           |
+| 30-MINUTE | `30m`           |
+| 1-HOUR    | `1h`            |
+| 2-HOUR    | `2h`            |
+| 4-HOUR    | `4h`            |
+| 8-HOUR    | `8h`            |
+| 12-HOUR   | `12h`           |
+| 1-DAY     | `1d`            |
+| 3-DAY     | `3d`            |
+| 1-WEEK    | `1w`            |
+| 1-MONTH   | `1M`            |
 
 ## 订单功能
 
@@ -774,14 +776,14 @@ HIP-3 builder 部署的永续合约。相同的订单类型、有效时间选项
 
 ### 订单类型
 
-| 订单类型            | 永续合约   | 现货 | 说明                                                |
-|---------------------|------------|------|-----------------------------------------------------|
-| `MARKET`            | ✓          | ✓    | 以 IOC 限价单方式执行，从最优 BBO 起带可配置的滑点。 |
-| `LIMIT`             | ✓          | ✓    |                                                     |
-| `STOP_MARKET`       | ✓          | ✓    | 止损订单。                                          |
-| `STOP_LIMIT`        | ✓          | ✓    | 带限价执行的止损订单。                              |
-| `MARKET_IF_TOUCHED` | ✓          | ✓    | 市价止盈。                                          |
-| `LIMIT_IF_TOUCHED`  | ✓          | ✓    | 带限价执行的止盈。                                  |
+| 订单类型                | 永续合约 | 现货  | 说明                              |
+| ------------------- | ---- | --- | ------------------------------- |
+| `MARKET`            | ✓    | ✓   | 以 IOC 限价单方式执行，从最优 BBO 起带可配置的滑点。 |
+| `LIMIT`             | ✓    | ✓   |                                 |
+| `STOP_MARKET`       | ✓    | ✓   | 止损订单。                           |
+| `STOP_LIMIT`        | ✓    | ✓   | 带限价执行的止损订单。                     |
+| `MARKET_IF_TOUCHED` | ✓    | ✓   | 市价止盈。                           |
+| `LIMIT_IF_TOUCHED`  | ✓    | ✓   | 带限价执行的止盈。                       |
 
 :::info
 条件订单（止损和触价订单）使用 Hyperliquid 原生的触发订单功能实现，
@@ -824,6 +826,7 @@ Hyperliquid 的价格约束。请确保您为打算用市价订单交易的任�
 ```python
 from decimal import Decimal, ROUND_DOWN
 
+
 def round_to_sig_figs(price: Decimal, sig_figs: int = 5) -> Decimal:
     if price == 0:
         return Decimal(0)
@@ -838,19 +841,19 @@ def round_to_sig_figs(price: Decimal, sig_figs: int = 5) -> Decimal:
 
 ### 有效时间
 
-| 有效时间      | 永续合约   | 现货 | 说明                 |
-|---------------|------------|------|----------------------|
-| `GTC`         | ✓          | ✓    | Good Till Canceled（撤销前有效）。 |
-| `IOC`         | ✓          | ✓    | Immediate or Cancel（立即成交或撤销）。 |
-| `FOK`         | -          | -    | *不支持*。           |
-| `GTD`         | -          | -    | *不支持*。           |
+| 有效时间  | 永续合约 | 现货  | 说明                            |
+| ----- | ---- | --- | ----------------------------- |
+| `GTC` | ✓    | ✓   | Good Till Canceled（撤销前有效）。    |
+| `IOC` | ✓    | ✓   | Immediate or Cancel（立即成交或撤销）。 |
+| `FOK` | -    | -   | *不支持*。                        |
+| `GTD` | -    | -   | *不支持*。                        |
 
 ### 执行指令
 
-| 指令          | 永续合约   | 现货 | 说明                             |
-|---------------|------------|------|----------------------------------|
-| `post_only`   | ✓          | ✓    | 等同于 ALO 有效时间。            |
-| `reduce_only` | ✓          | ✓    | 仅平仓订单。                    |
+| 指令            | 永续合约 | 现货  | 说明            |
+| ------------- | ---- | --- | ------------- |
+| `post_only`   | ✓    | ✓   | 等同于 ALO 有效时间。 |
+| `reduce_only` | ✓    | ✓   | 仅平仓订单。        |
 
 :::info
 会立即撮合成交的 post-only 订单会被 Hyperliquid 拒绝。适配器会检测到这一点
@@ -860,14 +863,14 @@ def round_to_sig_figs(price: Decimal, sig_figs: int = 5) -> Decimal:
 
 ### 订单操作
 
-| 操作              | 永续合约   | 现货 | 说明                                                  |
-|-------------------|------------|------|-------------------------------------------------------|
-| 提交订单          | ✓          | ✓    | 单笔订单提交。                                        |
-| 提交订单列表      | ✓          | ✓    | 批量订单提交（单次 API 调用）。                       |
-| 修改订单          | ✓          | ✓    | 需要交易场所订单 ID。                                 |
-| 撤销订单          | ✓          | ✓    | 通过客户端订单 ID 撤销。                              |
-| 撤销全部订单      | ✓          | ✓    | 对未结订单进行单次批量 `cancelByCloid`。             |
-| 批量撤销          | ✓          | ✓    | 对所提供列表进行单次批量 `cancelByCloid`。           |
+| 操作     | 永续合约 | 现货  | 说明                            |
+| ------ | ---- | --- | ----------------------------- |
+| 提交订单   | ✓    | ✓   | 单笔订单提交。                       |
+| 提交订单列表 | ✓    | ✓   | 批量订单提交（单次 API 调用）。            |
+| 修改订单   | ✓    | ✓   | 需要交易场所订单 ID。                  |
+| 撤销订单   | ✓    | ✓   | 通过客户端订单 ID 撤销。                |
+| 撤销全部订单 | ✓    | ✓   | 对未结订单进行单次批量 `cancelByCloid`。  |
+| 批量撤销   | ✓    | ✓   | 对所提供列表进行单次批量 `cancelByCloid`。 |
 
 :::info
 当交易场所在批量撤销响应中返回某个订单的权威性拒绝时（例如对已处于终态的
@@ -1115,35 +1118,35 @@ Hyperliquid 永续期货使用固定的 1 小时资金费间隔。适配器在�
 
 ### 数据客户端配置选项
 
-| 选项                | 默认值    | 描述 |
-|---------------------|-----------|-------------------------------------------------|
-| `environment`       | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。 |
-| `base_url_ws`       | `None`    | WebSocket 基础 URL 的覆盖值。 |
+| 选项                  | 默认值       | 描述                                       |
+| ------------------- | --------- | ---------------------------------------- |
+| `environment`       | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。             |
+| `base_url_ws`       | `None`    | WebSocket 基础 URL 的覆盖值。                   |
 | `product_types`     | `None`    | 可选的待加载产品类型，例如对 HIP-3 永续合约使用 `PERP_HIP3`。 |
-| `http_timeout_secs` | `10`      | 应用于 REST 调用的超时时间（秒）。 |
-| `proxy_url`         | `None`    | 用于 HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `transport_backend` | `Sockudo` | WebSocket 传输后端。 |
+| `http_timeout_secs` | `10`      | 应用于 REST 调用的超时时间（秒）。                     |
+| `proxy_url`         | `None`    | 用于 HTTP 和 WebSocket 传输的可选代理 URL。         |
+| `transport_backend` | `Sockudo` | WebSocket 传输后端。                          |
 
 ### 执行客户端配置选项
 
-| 选项                           | 默认值    | 描述 |
-|--------------------------------|-----------|-------------------------------------------------------------------------------------------|
-| `private_key`                  | `None`    | EVM 私钥；省略时从 `HYPERLIQUID_PK` 或 `HYPERLIQUID_TESTNET_PK` 加载。 |
-| `vault_address`                | `None`    | 金库地址；省略时从 `HYPERLIQUID_VAULT` 或 `HYPERLIQUID_TESTNET_VAULT` 加载。 |
-| `account_address`              | `None`    | 用于代理钱包交易的主账户地址；从 `HYPERLIQUID_ACCOUNT_ADDRESS` 加载。 |
-| `environment`                  | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）；未设置时解析为 `MAINNET`。 |
-| `base_url_ws`                  | `None`    | WebSocket 基础 URL 的覆盖值。 |
-| `product_types`                | `None`    | 可选的待加载产品类型，例如对 HIP-3 永续合约使用 `PERP_HIP3`。 |
-| `max_retries`                  | `None`    | 订单提交、撤销或修改请求的最大重试次数。仅 Rust。 |
-| `retry_delay_initial_ms`       | `None`    | 重试之间的初始延迟（毫秒）。仅 Rust。 |
-| `retry_delay_max_ms`           | `None`    | 重试之间的最大延迟（毫秒）。仅 Rust。 |
-| `http_timeout_secs`            | `10`      | 应用于 REST 调用的超时时间（秒）。 |
-| `normalize_prices`             | `True`    | 在提交前将订单价格归一化到 5 位有效数字。 |
-| `include_builder_attribution`  | `True`    | 在符合条件的主网订单上包含零费用的 Nautilus builder 归因。 |
-| `market_order_slippage_bps`    | `50`      | 应用于 MARKET 和止损触发派生的滑点缓冲（bps）。仅 Rust。 |
+| 选项                             | 默认值       | 描述                                                                        |
+| ------------------------------ | --------- | ------------------------------------------------------------------------- |
+| `private_key`                  | `None`    | EVM 私钥；省略时从 `HYPERLIQUID_PK` 或 `HYPERLIQUID_TESTNET_PK` 加载。               |
+| `vault_address`                | `None`    | 金库地址；省略时从 `HYPERLIQUID_VAULT` 或 `HYPERLIQUID_TESTNET_VAULT` 加载。           |
+| `account_address`              | `None`    | 用于代理钱包交易的主账户地址；从 `HYPERLIQUID_ACCOUNT_ADDRESS` 加载。                        |
+| `environment`                  | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）；未设置时解析为 `MAINNET`。                            |
+| `base_url_ws`                  | `None`    | WebSocket 基础 URL 的覆盖值。                                                    |
+| `product_types`                | `None`    | 可选的待加载产品类型，例如对 HIP-3 永续合约使用 `PERP_HIP3`。                                  |
+| `max_retries`                  | `None`    | 订单提交、撤销或修改请求的最大重试次数。仅 Rust。                                               |
+| `retry_delay_initial_ms`       | `None`    | 重试之间的初始延迟（毫秒）。仅 Rust。                                                     |
+| `retry_delay_max_ms`           | `None`    | 重试之间的最大延迟（毫秒）。仅 Rust。                                                     |
+| `http_timeout_secs`            | `10`      | 应用于 REST 调用的超时时间（秒）。                                                      |
+| `normalize_prices`             | `True`    | 在提交前将订单价格归一化到 5 位有效数字。                                                    |
+| `include_builder_attribution`  | `True`    | 在符合条件的主网订单上包含零费用的 Nautilus builder 归因。                                    |
+| `market_order_slippage_bps`    | `50`      | 应用于 MARKET 和止损触发派生的滑点缓冲（bps）。仅 Rust。                                      |
 | `outcome_settlement_poll_secs` | `0`       | HIP-4 `outcomeMeta` 结算轮询间隔（秒）。仅 Rust；交易场所的 `Settlement` 成交已覆盖结算，因此默认禁用轮询。 |
-| `proxy_url`                    | `None`    | 用于 HTTP 和 WebSocket 传输的可选代理 URL。 |
-| `transport_backend`            | `Sockudo` | WebSocket 传输后端。 |
+| `proxy_url`                    | `None`    | 用于 HTTP 和 WebSocket 传输的可选代理 URL。                                          |
+| `transport_backend`            | `Sockudo` | WebSocket 传输后端。                                                           |
 
 :::note
 "仅 Rust"的选项在执行客户端通过 Rust 原生的

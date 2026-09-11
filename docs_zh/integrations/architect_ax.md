@@ -33,13 +33,13 @@ AX Exchange 为用户提供了文档，可在 [Architect 文档站点](https://d
 
 AX Exchange 专注于传统资产类别上的永续期货合约。永续合约永不到期，从而消除了标准期货所带来的展期成本。
 
-| 资产类别   | 示例                               | 备注                |
-|------------|------------------------------------|---------------------|
-| 外汇       | GBPUSD-PERP, EURUSD-PERP           | 主要和次要外汇货币对。 |
-| 股指       | 股票指数永续合约                   |                     |
-| 金属       | XAU-PERP (黄金), XAG-PERP (白银)   | 贵金属永续合约。    |
-| 能源       | 原油、天然气                       | 能源商品永续合约。  |
-| 利率       | SOFR、国债收益率                   | 利率永续合约。      |
+| 资产类别 | 示例                           | 备注          |
+| ---- | ---------------------------- | ----------- |
+| 外汇   | GBPUSD-PERP, EURUSD-PERP     | 主要和次要外汇货币对。 |
+| 股指   | 股票指数永续合约                     |             |
+| 金属   | XAU-PERP (黄金), XAG-PERP (白银) | 贵金属永续合约。    |
+| 能源   | 原油、天然气                       | 能源商品永续合约。   |
+| 利率   | SOFR、国债收益率                   | 利率永续合约。     |
 
 ### 永续合约 (Perpetual contracts)
 
@@ -61,12 +61,12 @@ AX Exchange 使用直观的命名约定。所有金融工具都是永续期货�
 
 **格式**：`{SYMBOL}-PERP`
 
-| 标的       | AX 符号        | Nautilus InstrumentId |
-|------------|----------------|-----------------------|
-| GBP/USD    | `GBPUSD-PERP`  | `GBPUSD-PERP.AX`      |
-| EUR/USD    | `EURUSD-PERP`  | `EURUSD-PERP.AX`      |
-| 黄金       | `XAU-PERP`     | `XAU-PERP.AX`         |
-| 白银       | `XAG-PERP`     | `XAG-PERP.AX`         |
+| 标的      | AX 符号         | Nautilus InstrumentId |
+| ------- | ------------- | --------------------- |
+| GBP/USD | `GBPUSD-PERP` | `GBPUSD-PERP.AX`      |
+| EUR/USD | `EURUSD-PERP` | `EURUSD-PERP.AX`      |
+| 黄金      | `XAU-PERP`    | `XAU-PERP.AX`         |
+| 白银      | `XAG-PERP`    | `XAG-PERP.AX`         |
 
 场所标识符为 `AX`。要构造一个 Nautilus `InstrumentId`：
 
@@ -80,10 +80,10 @@ instrument_id = InstrumentId.from_str("GBPUSD-PERP.AX")
 
 AX Exchange 提供两个交易环境。在客户端配置中使用 `environment` 参数配置合适的环境。
 
-| 环境           | 配置                                   | 描述                       |
-|----------------|----------------------------------------|----------------------------|
-| **Sandbox**    | `environment=AxEnvironment.SANDBOX`    | 使用模拟资金的测试环境。   |
-| **Production** | `environment=AxEnvironment.PRODUCTION` | 使用真实资金的实盘交易。   |
+| 环境             | 配置                                     | 描述           |
+| -------------- | -------------------------------------- | ------------ |
+| **Sandbox**    | `environment=AxEnvironment.SANDBOX`    | 使用模拟资金的测试环境。 |
+| **Production** | `environment=AxEnvironment.PRODUCTION` | 使用真实资金的实盘交易。 |
 
 ### Sandbox
 
@@ -144,16 +144,16 @@ config = AxExecClientConfig(
 
 ### 数据类型 (Data types)
 
-| AX 数据           | Nautilus 数据类型    | 备注                                                       |
-|-------------------|----------------------|------------------------------------------------------------|
-| 订单簿 (L1)       | `QuoteTick`          | 来自 L1 订单簿订阅的最优买/卖盘口。                         |
-| 订单簿 (L2)       | `OrderBookDelta`     | 聚合的价格档位。                                            |
-| 订单簿 (L3)       | `OrderBookDelta`     | 单笔订单数量。                                              |
-| 成交              | `TradeTick`          | 来自 L1 订阅的实时成交事件。                                |
-| 标记价格          | `MarkPriceUpdate`    | 从 L1 ticker 订阅中提取。                                   |
-| K 线/蜡烛图       | `Bar`                | OHLCV 数据（仅总成交量，无买/卖分解）。                     |
-| 资金费率          | `FundingRateUpdate`  | 通过 HTTP 轮询（非实时 WebSocket）；间隔可配置。            |
-| 金融工具状态      | `InstrumentStatus`   | 来自 L1 ticker 订阅的状态变化（开市、暂停、收市）。         |
+| AX 数据    | Nautilus 数据类型       | 备注                               |
+| -------- | ------------------- | -------------------------------- |
+| 订单簿 (L1) | `QuoteTick`         | 来自 L1 订单簿订阅的最优买/卖盘口。             |
+| 订单簿 (L2) | `OrderBookDelta`    | 聚合的价格档位。                         |
+| 订单簿 (L3) | `OrderBookDelta`    | 单笔订单数量。                          |
+| 成交       | `TradeTick`         | 来自 L1 订阅的实时成交事件。                 |
+| 标记价格     | `MarkPriceUpdate`   | 从 L1 ticker 订阅中提取。               |
+| K 线/蜡烛图  | `Bar`               | OHLCV 数据（仅总成交量，无买/卖分解）。          |
+| 资金费率     | `FundingRateUpdate` | 通过 HTTP 轮询（非实时 WebSocket）；间隔可配置。 |
+| 金融工具状态   | `InstrumentStatus`  | 来自 L1 ticker 订阅的状态变化（开市、暂停、收市）。  |
 
 :::note
 AX Exchange 不支持历史报价 tick 请求。仅可通过 WebSocket L1 订单簿订阅获取实时报价数据。
@@ -161,15 +161,15 @@ AX Exchange 不支持历史报价 tick 请求。仅可通过 WebSocket L1 订单
 
 ### K 线周期 (Bar intervals)
 
-| 周期     | 描述        |
-|----------|-------------|
-| `1s`     | 1 秒        |
-| `5s`     | 5 秒        |
-| `1m`     | 1 分钟      |
-| `5m`     | 5 分钟      |
-| `15m`    | 15 分钟     |
-| `1h`     | 1 小时      |
-| `1d`     | 1 天        |
+| 周期    | 描述    |
+| ----- | ----- |
+| `1s`  | 1 秒   |
+| `5s`  | 5 秒   |
+| `1m`  | 1 分钟  |
+| `5m`  | 5 分钟  |
+| `15m` | 15 分钟 |
+| `1h`  | 1 小时  |
+| `1d`  | 1 天   |
 
 ## 订单能力 (Orders capability)
 
@@ -177,61 +177,61 @@ AX Exchange 支持带止损触发的市价单和限价单类型。
 
 ### 订单类型 (Order types)
 
-| 订单类型               | 是否支持 | 备注                                          |
-|------------------------|----------|-----------------------------------------------|
-| `MARKET`               | ✓        | 以最优可用价格立即执行。                      |
-| `LIMIT`                | ✓        | 以指定价格或更优价格执行。                    |
-| `STOP_LIMIT`           | ✓        | 当止损价被触及时触发一个限价单。              |
-| `LIMIT_IF_TOUCHED`     | -        | *AX Exchange 当前未实现*。                    |
-| `STOP_MARKET`          | -        | *不支持*。                                    |
-| `MARKET_IF_TOUCHED`    | -        | *不支持*。                                    |
-| `TRAILING_STOP_MARKET` | -        | *不支持*。                                    |
+| 订单类型                   | 是否支持 | 备注                   |
+| ---------------------- | ---- | -------------------- |
+| `MARKET`               | ✓    | 以最优可用价格立即执行。         |
+| `LIMIT`                | ✓    | 以指定价格或更优价格执行。        |
+| `STOP_LIMIT`           | ✓    | 当止损价被触及时触发一个限价单。     |
+| `LIMIT_IF_TOUCHED`     | -    | *AX Exchange 当前未实现*。 |
+| `STOP_MARKET`          | -    | *不支持*。               |
+| `MARKET_IF_TOUCHED`    | -    | *不支持*。               |
+| `TRAILING_STOP_MARKET` | -    | *不支持*。               |
 
 ### 执行指令 (Execution instructions)
 
-| 指令          | 是否支持 | 备注                                      |
-|---------------|----------|-------------------------------------------|
-| `post_only`   | ✓        | 仅做 maker；若订单会吃掉流动性则被拒绝。   |
-| `reduce_only` | -        | *不支持*。                                |
+| 指令            | 是否支持 | 备注                      |
+| ------------- | ---- | ----------------------- |
+| `post_only`   | ✓    | 仅做 maker；若订单会吃掉流动性则被拒绝。 |
+| `reduce_only` | -    | *不支持*。                  |
 
 ### 有效期 (Time in force)
 
-| 有效期        | 是否支持 | 备注                              |
-|---------------|----------|-----------------------------------|
-| `GTC`         | ✓        | Good Till Canceled（撤销前有效）。 |
-| `GTD`         | -        | *AX Exchange 不支持*。            |
-| `DAY`         | ✓        | 在交易日结束前有效。              |
-| `IOC`         | ✓        | Immediate or Cancel（立即成交否则取消）。 |
-| `FOK`         | ✓        | Fill or Kill（全部成交否则取消）。 |
-| `AT_THE_OPEN` | ✓        | 在开市时执行，否则失效。          |
-| `AT_THE_CLOSE`| ✓        | 在收市时执行，否则失效。          |
+| 有效期            | 是否支持 | 备注                             |
+| -------------- | ---- | ------------------------------ |
+| `GTC`          | ✓    | Good Till Canceled（撤销前有效）。     |
+| `GTD`          | -    | *AX Exchange 不支持*。             |
+| `DAY`          | ✓    | 在交易日结束前有效。                     |
+| `IOC`          | ✓    | Immediate or Cancel（立即成交否则取消）。 |
+| `FOK`          | ✓    | Fill or Kill（全部成交否则取消）。        |
+| `AT_THE_OPEN`  | ✓    | 在开市时执行，否则失效。                   |
+| `AT_THE_CLOSE` | ✓    | 在收市时执行，否则失效。                   |
 
 ### 高级订单特性 (Advanced order features)
 
-| 特性               | 是否支持 | 备注                                                        |
-|--------------------|----------|-------------------------------------------------------------|
-| 订单修改           | ✓        | 通过 `POST /replace_order` 原子替换。返回一个新的订单 ID。  |
-| 撤单               | ✓        | 单笔订单撤销。                                              |
-| 撤销全部订单       | ✓        | 撤销某个金融工具的所有未结订单。                            |
-| 批量撤单           | -        | *AX Exchange 不支持*。改用逐笔撤单。                        |
-| 订单列表           | ✓        | 顺序提交（订单逐笔提交，非原子）。                          |
+| 特性     | 是否支持 | 备注                                         |
+| ------ | ---- | ------------------------------------------ |
+| 订单修改   | ✓    | 通过 `POST /replace_order` 原子替换。返回一个新的订单 ID。 |
+| 撤单     | ✓    | 单笔订单撤销。                                    |
+| 撤销全部订单 | ✓    | 撤销某个金融工具的所有未结订单。                           |
+| 批量撤单   | -    | *AX Exchange 不支持*。改用逐笔撤单。                  |
+| 订单列表   | ✓    | 顺序提交（订单逐笔提交，非原子）。                          |
 
 ### 仓位管理 (Position management)
 
-| 特性             | 是否支持 | 备注                          |
-|------------------|----------|-------------------------------|
-| 查询仓位         | ✓        | 实时仓位更新。                |
-| 仓位模式         | -        | 仅支持净额 (netting) 模式。   |
-| 跨保证金         | ✓        | 跨所有金融工具的跨保证金。    |
+| 特性   | 是否支持 | 备注                  |
+| ---- | ---- | ------------------- |
+| 查询仓位 | ✓    | 实时仓位更新。             |
+| 仓位模式 | -    | 仅支持净额 (netting) 模式。 |
+| 跨保证金 | ✓    | 跨所有金融工具的跨保证金。       |
 
 ### 订单查询 (Order querying)
 
-| 特性                 | 是否支持 | 备注                                                      |
-|----------------------|----------|-----------------------------------------------------------|
-| 查询未结订单         | ✓        | 列出所有活动订单。                                        |
-| 查询单笔订单         | ✓        | 按场所订单 ID 或客户端订单 ID（任意订单状态）。           |
-| 订单状态报告         | ✓        | 从未结订单进行对账；见下方说明。                          |
-| 成交报告             | ✓        | 执行与成交历史。                                          |
+| 特性     | 是否支持 | 备注                          |
+| ------ | ---- | --------------------------- |
+| 查询未结订单 | ✓    | 列出所有活动订单。                   |
+| 查询单笔订单 | ✓    | 按场所订单 ID 或客户端订单 ID（任意订单状态）。 |
+| 订单状态报告 | ✓    | 从未结订单进行对账；见下方说明。            |
+| 成交报告   | ✓    | 执行与成交历史。                    |
 
 :::note
 用于对账的订单状态报告由未结订单端点生成。已成交或已撤销的订单不会包含在对账快照中。通过 `query_order` 进行的单笔订单查询使用专用的 `/order-status` 端点，该端点对任意订单状态都有效。
@@ -249,10 +249,10 @@ AX Exchange 使用 bearer token 认证：
 
 ### 环境与端点 (Environments and endpoints)
 
-| 环境        | HTTP API（市场数据）                             | HTTP API（订单）                                    | 市场数据 WS                                      | 订单 WS                                              |
-|-------------|--------------------------------------------------|-----------------------------------------------------|--------------------------------------------------|------------------------------------------------------|
-| Sandbox     | `https://gateway.sandbox.architect.exchange/api` | `https://gateway.sandbox.architect.exchange/orders` | `wss://gateway.sandbox.architect.exchange/md/ws` | `wss://gateway.sandbox.architect.exchange/orders/ws` |
-| Production  | `https://gateway.architect.exchange/api`         | `https://gateway.architect.exchange/orders`         | `wss://gateway.architect.exchange/md/ws`         | `wss://gateway.architect.exchange/orders/ws`         |
+| 环境         | HTTP API（市场数据）                                   | HTTP API（订单）                                        | 市场数据 WS                                          | 订单 WS                                                |
+| ---------- | ------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------- |
+| Sandbox    | `https://gateway.sandbox.architect.exchange/api` | `https://gateway.sandbox.architect.exchange/orders` | `wss://gateway.sandbox.architect.exchange/md/ws` | `wss://gateway.sandbox.architect.exchange/orders/ws` |
+| Production | `https://gateway.architect.exchange/api`         | `https://gateway.architect.exchange/orders`         | `wss://gateway.architect.exchange/md/ws`         | `wss://gateway.architect.exchange/orders/ws`         |
 
 :::info
 订单管理的 HTTP 端点（下单、撤单、订单状态）使用与市场数据端点不同的基础 URL。这由适配器配置自动处理。
@@ -260,44 +260,44 @@ AX Exchange 使用 bearer token 认证：
 
 ### 数据客户端配置选项 (Data client configuration options)
 
-| 选项                               | 默认值    | 描述                                                       |
-|------------------------------------|-----------|------------------------------------------------------------|
-| `api_key`                          | `None`    | API key；省略时从 `AX_API_KEY` 环境变量加载。              |
-| `api_secret`                       | `None`    | API secret；省略时从 `AX_API_SECRET` 环境变量加载。        |
-| `environment`                      | `SANDBOX` | 交易环境（`SANDBOX` 或 `PRODUCTION`）。                    |
-| `base_url_http`                    | `None`    | 覆盖 REST 基础 URL。                                       |
-| `base_url_ws_public`               | `None`    | 覆盖市场数据 WebSocket URL。                               |
-| `base_url_ws_private`              | `None`    | 覆盖订单 WebSocket URL。                                   |
-| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                     |
-| `http_timeout_secs`                | `60`      | REST 请求的超时时间（秒）。                                |
-| `max_retries`                      | `3`       | REST 请求的最大重试次数。                                  |
-| `retry_delay_initial_ms`           | `1000`    | 重试之间的初始延迟（毫秒）。                               |
+| 选项                                 | 默认值       | 描述                                      |
+| ---------------------------------- | --------- | --------------------------------------- |
+| `api_key`                          | `None`    | API key；省略时从 `AX_API_KEY` 环境变量加载。       |
+| `api_secret`                       | `None`    | API secret；省略时从 `AX_API_SECRET` 环境变量加载。 |
+| `environment`                      | `SANDBOX` | 交易环境（`SANDBOX` 或 `PRODUCTION`）。         |
+| `base_url_http`                    | `None`    | 覆盖 REST 基础 URL。                         |
+| `base_url_ws_public`               | `None`    | 覆盖市场数据 WebSocket URL。                   |
+| `base_url_ws_private`              | `None`    | 覆盖订单 WebSocket URL。                     |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。           |
+| `http_timeout_secs`                | `60`      | REST 请求的超时时间（秒）。                        |
+| `max_retries`                      | `3`       | REST 请求的最大重试次数。                         |
+| `retry_delay_initial_ms`           | `1000`    | 重试之间的初始延迟（毫秒）。                          |
 | `retry_delay_max_ms`               | `10000`   | 重试之间的最大延迟（毫秒，指数退避）。                     |
-| `heartbeat_interval_secs`          | `20`      | WebSocket 连接的心跳间隔（秒）。                           |
-| `recv_window_ms`                   | `5000`    | 签名请求的接收窗口（毫秒）。                               |
-| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新的间隔（分钟）。                           |
-| `funding_rate_poll_interval_mins`  | `15`      | 资金费率轮询请求的间隔（分钟）。                           |
-| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                       |
+| `heartbeat_interval_secs`          | `20`      | WebSocket 连接的心跳间隔（秒）。                   |
+| `recv_window_ms`                   | `5000`    | 签名请求的接收窗口（毫秒）。                          |
+| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新的间隔（分钟）。                        |
+| `funding_rate_poll_interval_mins`  | `15`      | 资金费率轮询请求的间隔（分钟）。                        |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                         |
 
 ### 执行客户端配置选项 (Execution client configuration options)
 
-| 选项                      | 默认值    | 描述                                                       |
-|---------------------------|-----------|------------------------------------------------------------|
-| `api_key`                 | `None`    | API key；省略时从 `AX_API_KEY` 环境变量加载。              |
-| `api_secret`              | `None`    | API secret；省略时从 `AX_API_SECRET` 环境变量加载。        |
-| `environment`             | `SANDBOX` | 交易环境（`SANDBOX` 或 `PRODUCTION`）。                    |
-| `base_url_http`           | `None`    | 覆盖 REST 基础 URL。                                       |
-| `base_url_orders`         | `None`    | 覆盖订单 REST 基础 URL。                                   |
-| `base_url_ws_private`     | `None`    | 覆盖订单 WebSocket URL。                                   |
-| `proxy_url`               | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                     |
-| `http_timeout_secs`       | `60`      | REST 请求的超时时间（秒）。                                |
-| `max_retries`             | `3`       | REST 请求的最大重试次数。                                  |
-| `retry_delay_initial_ms`  | `1000`    | 重试之间的初始延迟（毫秒）。                               |
+| 选项                        | 默认值       | 描述                                      |
+| ------------------------- | --------- | --------------------------------------- |
+| `api_key`                 | `None`    | API key；省略时从 `AX_API_KEY` 环境变量加载。       |
+| `api_secret`              | `None`    | API secret；省略时从 `AX_API_SECRET` 环境变量加载。 |
+| `environment`             | `SANDBOX` | 交易环境（`SANDBOX` 或 `PRODUCTION`）。         |
+| `base_url_http`           | `None`    | 覆盖 REST 基础 URL。                         |
+| `base_url_orders`         | `None`    | 覆盖订单 REST 基础 URL。                       |
+| `base_url_ws_private`     | `None`    | 覆盖订单 WebSocket URL。                     |
+| `proxy_url`               | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。           |
+| `http_timeout_secs`       | `60`      | REST 请求的超时时间（秒）。                        |
+| `max_retries`             | `3`       | REST 请求的最大重试次数。                         |
+| `retry_delay_initial_ms`  | `1000`    | 重试之间的初始延迟（毫秒）。                          |
 | `retry_delay_max_ms`      | `10000`   | 重试之间的最大延迟（毫秒，指数退避）。                     |
-| `heartbeat_interval_secs` | `30`      | WebSocket 连接的心跳间隔（秒）。                           |
-| `recv_window_ms`          | `5000`    | 签名请求的接收窗口（毫秒）。                               |
-| `cancel_on_disconnect`    | `false`   | 当订单 WebSocket 断开时撤销所有未结订单。                  |
-| `transport_backend`       | `Sockudo` | WebSocket 传输后端。                                       |
+| `heartbeat_interval_secs` | `30`      | WebSocket 连接的心跳间隔（秒）。                   |
+| `recv_window_ms`          | `5000`    | 签名请求的接收窗口（毫秒）。                          |
+| `cancel_on_disconnect`    | `false`   | 当订单 WebSocket 断开时撤销所有未结订单。              |
+| `transport_backend`       | `Sockudo` | WebSocket 传输后端。                         |
 
 最常见的使用场景是配置一个实时 `TradingNode`，使其包含 AX Exchange 的数据和执行客户端。为此，请在你的客户端配置中添加一个 `AX` 部分：
 

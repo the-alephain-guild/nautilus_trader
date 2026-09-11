@@ -4,12 +4,12 @@ Nautilus 是事件驱动的：系统中的每一次状态变化都由一个事�
 
 ## 事件分类
 
-| 分类     | 示例                                            | 来源                            |
-|----------|-------------------------------------------------|---------------------------------|
-| Order    | `OrderAccepted`、`OrderFilled`、`OrderCanceled` | `ExecutionEngine`（来自交易场所）|
-| Position | `PositionOpened`、`PositionChanged`             | `ExecutionEngine`（来自成交）   |
-| Account  | `AccountState`                                  | `ExecutionClient` / `Portfolio` |
-| Time     | `TimeEvent`                                     | `Clock`（计时器和提醒）         |
+| 分类       | 示例                                            | 来源                              |
+| -------- | --------------------------------------------- | ------------------------------- |
+| Order    | `OrderAccepted`、`OrderFilled`、`OrderCanceled` | `ExecutionEngine`（来自交易场所）       |
+| Position | `PositionOpened`、`PositionChanged`            | `ExecutionEngine`（来自成交）         |
+| Account  | `AccountState`                                | `ExecutionClient` / `Portfolio` |
+| Time     | `TimeEvent`                                   | `Clock`（计时器和提醒）                 |
 
 ## 处理器分派
 
@@ -35,41 +35,41 @@ Nautilus 是事件驱动的：系统中的每一次状态变化都由一个事�
 
 每个订单事件都对应[订单状态机](orders/index.md#order-state-flow)中的一次状态转换。`ExecutionEngine` 将事件应用到订单上，更新 `Cache`，并将其发布到 `MessageBus`。下表展示了主要的状态转换；部分成交和已触发的订单还支持其他转换，详见完整的[订单状态流](orders/index.md#order-state-flow)。
 
-| 事件                   | 主要转换                            | 处理器                     |
-|------------------------|-------------------------------------|----------------------------|
-| `OrderInitialized`     | （在本地创建）                      | `on_order_initialized`     |
-| `OrderDenied`          | Initialized -> Denied               | `on_order_denied`          |
-| `OrderEmulated`        | Initialized -> Emulated             | `on_order_emulated`        |
-| `OrderReleased`        | Emulated -> Released                | `on_order_released`        |
-| `OrderSubmitted`       | Initialized/Released -> Submitted   | `on_order_submitted`       |
-| `OrderAccepted`        | Submitted -> Accepted               | `on_order_accepted`        |
-| `OrderRejected`        | Submitted -> Rejected               | `on_order_rejected`        |
-| `OrderTriggered`       | Accepted -> Triggered               | `on_order_triggered`       |
-| `OrderPendingUpdate`   | Accepted -> PendingUpdate           | `on_order_pending_update`  |
-| `OrderPendingCancel`   | Accepted -> PendingCancel           | `on_order_pending_cancel`  |
-| `OrderUpdated`         | PendingUpdate -> Accepted           | `on_order_updated`         |
-| `OrderModifyRejected`  | PendingUpdate -> Accepted           | `on_order_modify_rejected` |
-| `OrderCancelRejected`  | PendingCancel -> Accepted           | `on_order_cancel_rejected` |
-| `OrderCanceled`        | PendingCancel/Accepted -> Canceled  | `on_order_canceled`        |
-| `OrderExpired`         | Accepted -> Expired                 | `on_order_expired`         |
-| `OrderFilled`          | Accepted -> Filled/PartiallyFilled  | `on_order_filled`          |
+| 事件                    | 主要转换                               | 处理器                        |
+| --------------------- | ---------------------------------- | -------------------------- |
+| `OrderInitialized`    | （在本地创建）                            | `on_order_initialized`     |
+| `OrderDenied`         | Initialized -> Denied              | `on_order_denied`          |
+| `OrderEmulated`       | Initialized -> Emulated            | `on_order_emulated`        |
+| `OrderReleased`       | Emulated -> Released               | `on_order_released`        |
+| `OrderSubmitted`      | Initialized/Released -> Submitted  | `on_order_submitted`       |
+| `OrderAccepted`       | Submitted -> Accepted              | `on_order_accepted`        |
+| `OrderRejected`       | Submitted -> Rejected              | `on_order_rejected`        |
+| `OrderTriggered`      | Accepted -> Triggered              | `on_order_triggered`       |
+| `OrderPendingUpdate`  | Accepted -> PendingUpdate          | `on_order_pending_update`  |
+| `OrderPendingCancel`  | Accepted -> PendingCancel          | `on_order_pending_cancel`  |
+| `OrderUpdated`        | PendingUpdate -> Accepted          | `on_order_updated`         |
+| `OrderModifyRejected` | PendingUpdate -> Accepted          | `on_order_modify_rejected` |
+| `OrderCancelRejected` | PendingCancel -> Accepted          | `on_order_cancel_rejected` |
+| `OrderCanceled`       | PendingCancel/Accepted -> Canceled | `on_order_canceled`        |
+| `OrderExpired`        | Accepted -> Expired                | `on_order_expired`         |
+| `OrderFilled`         | Accepted -> Filled/PartiallyFilled | `on_order_filled`          |
 
 ### 通用订单事件字段
 
 所有订单事件都共享以下字段：
 
-| 字段               | 说明                                     |
-|--------------------|------------------------------------------|
-| `trader_id`        | 交易者实例标识符。                       |
-| `strategy_id`      | 提交该订单的策略。                       |
-| `instrument_id`    | 该订单对应的金融工具。                   |
-| `client_order_id`  | 客户端分配的订单标识符。                 |
-| `venue_order_id`   | 交易场所分配的订单标识符。               |
-| `account_id`       | 该订单所属的账户。                       |
-| `reconciliation`   | 是否在对账过程中生成。                   |
-| `event_id`         | 唯一的事件标识符。                       |
-| `ts_event`         | 事件发生时的时间戳。                     |
-| `ts_init`          | 事件创建时的时间戳。                     |
+| 字段                | 说明            |
+| ----------------- | ------------- |
+| `trader_id`       | 交易者实例标识符。     |
+| `strategy_id`     | 提交该订单的策略。     |
+| `instrument_id`   | 该订单对应的金融工具。   |
+| `client_order_id` | 客户端分配的订单标识符。  |
+| `venue_order_id`  | 交易场所分配的订单标识符。 |
+| `account_id`      | 该订单所属的账户。     |
+| `reconciliation`  | 是否在对账过程中生成。   |
+| `event_id`        | 唯一的事件标识符。     |
+| `ts_event`        | 事件发生时的时间戳。    |
+| `ts_init`         | 事件创建时的时间戳。    |
 
 各个具体事件会添加其特有的字段（例如 `OrderFilled` 会添加 `last_qty`、`last_px`、`trade_id`、`commission`）。每种事件类型的完整字段列表请参阅 API 参考文档。
 
@@ -81,11 +81,11 @@ Nautilus 是事件驱动的：系统中的每一次状态变化都由一个事�
 
 持仓事件是成交事件的直接结果。`ExecutionEngine` 处理每一个 `OrderFilled`，更新或创建一个持仓，并发出对应的持仓事件。
 
-| 事件                | 触发时机                                  | 处理器                |
-|---------------------|-------------------------------------------|-----------------------|
-| `PositionOpened`    | 首次成交创建一个新持仓。                  | `on_position_opened`  |
-| `PositionChanged`   | 后续成交改变了数量或方向。                | `on_position_changed` |
-| `PositionClosed`    | 成交将数量减少至零。                      | `on_position_closed`  |
+| 事件                | 触发时机          | 处理器                   |
+| ----------------- | ------------- | --------------------- |
+| `PositionOpened`  | 首次成交创建一个新持仓。  | `on_position_opened`  |
+| `PositionChanged` | 后续成交改变了数量或方向。 | `on_position_changed` |
+| `PositionClosed`  | 成交将数量减少至零。    | `on_position_closed`  |
 
 ### 从成交到持仓：因果链条
 
@@ -128,34 +128,34 @@ sequenceDiagram
 
 ### 持仓事件字段
 
-| 字段                 | Opened | Changed | Closed | 说明                              |
-|----------------------|--------|---------|--------|-----------------------------------|
-| `trader_id`          | ✓      | ✓       | ✓      | 交易者实例标识符。                |
-| `strategy_id`        | ✓      | ✓       | ✓      | 拥有该持仓的策略。                |
-| `instrument_id`      | ✓      | ✓       | ✓      | 该持仓对应的金融工具。            |
-| `position_id`        | ✓      | ✓       | ✓      | 唯一的持仓标识符。                |
-| `account_id`         | ✓      | ✓       | ✓      | 该持仓所属的账户。                |
-| `opening_order_id`   | ✓      | ✓       | ✓      | 开立该持仓的订单。                |
-| `closing_order_id`   | -      | -       | ✓      | 平掉该持仓的订单。                |
-| `entry`              | ✓      | ✓       | ✓      | 开仓成交的方向。                  |
-| `side`               | ✓      | ✓       | ✓      | 当前持仓方向。                    |
-| `signed_qty`         | ✓      | ✓       | ✓      | 带符号的数量（负=空头）。         |
-| `quantity`           | ✓      | ✓       | ✓      | 无符号的持仓数量。                |
-| `peak_qty`           | -      | ✓       | ✓      | 持有过的最大数量。                |
-| `last_qty`           | ✓      | ✓       | ✓      | 最近一笔成交的数量。              |
-| `last_px`            | ✓      | ✓       | ✓      | 最近一笔成交的价格。              |
-| `currency`           | ✓      | ✓       | ✓      | 结算货币。                        |
-| `avg_px_open`        | ✓      | ✓       | ✓      | 平均开仓价格。                    |
-| `avg_px_close`       | -      | ✓       | ✓      | 平均平仓价格。                    |
-| `realized_return`    | -      | ✓       | ✓      | 已实现收益率（比率形式）。        |
-| `realized_pnl`       | -      | ✓       | ✓      | 已实现盈亏。                      |
-| `unrealized_pnl`     | -      | ✓       | ✓      | 未实现盈亏。                      |
-| `duration_ns`        | -      | -       | ✓      | 持有时长（纳秒）。                |
-| `ts_opened`          | -      | ✓       | ✓      | 持仓开立时的时间戳。              |
-| `ts_closed`          | -      | -       | ✓      | 持仓平掉时的时间戳。              |
-| `event_id`           | ✓      | ✓       | ✓      | 唯一的事件标识符。                |
-| `ts_event`           | ✓      | ✓       | ✓      | 触发事件的成交的时间戳。          |
-| `ts_init`            | ✓      | ✓       | ✓      | 事件创建时的时间戳。              |
+| 字段                 | Opened | Changed | Closed | 说明            |
+| ------------------ | ------ | ------- | ------ | ------------- |
+| `trader_id`        | ✓      | ✓       | ✓      | 交易者实例标识符。     |
+| `strategy_id`      | ✓      | ✓       | ✓      | 拥有该持仓的策略。     |
+| `instrument_id`    | ✓      | ✓       | ✓      | 该持仓对应的金融工具。   |
+| `position_id`      | ✓      | ✓       | ✓      | 唯一的持仓标识符。     |
+| `account_id`       | ✓      | ✓       | ✓      | 该持仓所属的账户。     |
+| `opening_order_id` | ✓      | ✓       | ✓      | 开立该持仓的订单。     |
+| `closing_order_id` | -      | -       | ✓      | 平掉该持仓的订单。     |
+| `entry`            | ✓      | ✓       | ✓      | 开仓成交的方向。      |
+| `side`             | ✓      | ✓       | ✓      | 当前持仓方向。       |
+| `signed_qty`       | ✓      | ✓       | ✓      | 带符号的数量（负=空头）。 |
+| `quantity`         | ✓      | ✓       | ✓      | 无符号的持仓数量。     |
+| `peak_qty`         | -      | ✓       | ✓      | 持有过的最大数量。     |
+| `last_qty`         | ✓      | ✓       | ✓      | 最近一笔成交的数量。    |
+| `last_px`          | ✓      | ✓       | ✓      | 最近一笔成交的价格。    |
+| `currency`         | ✓      | ✓       | ✓      | 结算货币。         |
+| `avg_px_open`      | ✓      | ✓       | ✓      | 平均开仓价格。       |
+| `avg_px_close`     | -      | ✓       | ✓      | 平均平仓价格。       |
+| `realized_return`  | -      | ✓       | ✓      | 已实现收益率（比率形式）。 |
+| `realized_pnl`     | -      | ✓       | ✓      | 已实现盈亏。        |
+| `unrealized_pnl`   | -      | ✓       | ✓      | 未实现盈亏。        |
+| `duration_ns`      | -      | -       | ✓      | 持有时长（纳秒）。     |
+| `ts_opened`        | -      | ✓       | ✓      | 持仓开立时的时间戳。    |
+| `ts_closed`        | -      | -       | ✓      | 持仓平掉时的时间戳。    |
+| `event_id`         | ✓      | ✓       | ✓      | 唯一的事件标识符。     |
+| `ts_event`         | ✓      | ✓       | ✓      | 触发事件的成交的时间戳。  |
+| `ts_init`          | ✓      | ✓       | ✓      | 事件创建时的时间戳。    |
 
 ### 追踪订单到持仓
 
@@ -185,10 +185,10 @@ opening_order_id = position.opening_order_id
 
 除了策略处理器之外，actor 还可以订阅其并不交易的金融工具的特定事件流。这些订阅直接使用 `MessageBus`，不涉及 `DataEngine`。
 
-| 方法                         | 处理器                | 接收内容                       |
-|------------------------------|-----------------------|--------------------------------|
-| `subscribe_order_fills()`    | `on_order_filled()`   | 某个金融工具的所有成交。       |
-| `subscribe_order_cancels()`  | `on_order_canceled()` | 某个金融工具的所有撤单。       |
+| 方法                          | 处理器                   | 接收内容         |
+| --------------------------- | --------------------- | ------------ |
+| `subscribe_order_fills()`   | `on_order_filled()`   | 某个金融工具的所有成交。 |
+| `subscribe_order_cancels()` | `on_order_canceled()` | 某个金融工具的所有撤单。 |
 
 对于那些跟踪跨策略执行质量或成交率、但不参与订单管理的监控型 actor 来说，这些订阅非常有用。
 

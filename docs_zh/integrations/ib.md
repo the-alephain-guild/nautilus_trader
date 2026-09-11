@@ -51,9 +51,9 @@ uv sync --all-extras
 
 Interactive Brokers 根据应用和交易模式使用不同的默认端口：
 
-| 应用 | 模拟交易 | 实盘交易 |
-|------|---------|---------|
-| TWS  | 7497    | 7496    |
+| 应用         | 模拟交易 | 实盘交易 |
+| ---------- | ---- | ---- |
+| TWS        | 7497 | 7496 |
 | IB Gateway | 4002 | 4001 |
 
 ### 建立与已有网关或 TWS 的连接
@@ -90,9 +90,9 @@ from nautilus_trader.adapters.interactive_brokers.gateway import DockerizedIBGat
 gateway_config = DockerizedIBGatewayConfig(
     username="your_username",  # 或设置 TWS_USERNAME 环境变量
     password="your_password",  # 或设置 TWS_PASSWORD 环境变量
-    trading_mode="paper",      # "paper" 或 "live"
-    read_only_api=True,        # 设置为 False 以允许订单执行
-    timeout=300,               # 启动超时时间（秒）
+    trading_mode="paper",  # "paper" 或 "live"
+    read_only_api=True,  # 设置为 False 以允许订单执行
+    timeout=300,  # 启动超时时间（秒）
 )
 
 # 首次启动可能需要一些时间
@@ -302,7 +302,7 @@ instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
     symbol_to_mic_venue={
         "SPX": "XCBO",  # 交易所为 SMART 的 OPT -> XCBO
-        "ES": "XCME",   # 所有 ES 期货/期权使用 CME MIC
+        "ES": "XCME",  # 所有 ES 期货/期权使用 CME MIC
         "SPY": "ARCX",  # SPY 特定使用 ARCA
     },
 )
@@ -391,18 +391,22 @@ Interactive Brokers 不支持使用 `load_all=True` 加载完整的 IB 金融工
 对于外汇金融工具，请使用斜杠分隔的标的代码，例如 `EUR/USD.IDEALPRO`。带点的本地标的代码形式属于原始符号体系，例如 `EUR.USD=CASH.IDEALPRO`。
 
 ```python
-from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
+from nautilus_trader.adapters.interactive_brokers.config import (
+    InteractiveBrokersInstrumentProviderConfig,
+)
 from nautilus_trader.adapters.interactive_brokers.config import SymbologyMethod
 
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
     symbology_method=SymbologyMethod.IB_SIMPLIFIED,
-    load_ids=frozenset([
-        "EUR/USD.IDEALPRO",    # 外汇
-        "SPY.ARCA",            # 股票
-        "ESM24.CME",           # 期货
-        "BTC/USD.PAXOS",       # 加密货币
-        "^SPX.CBOE",           # 指数
-    ]),
+    load_ids=frozenset(
+        [
+            "EUR/USD.IDEALPRO",  # 外汇
+            "SPY.ARCA",  # 股票
+            "ESM24.CME",  # 期货
+            "BTC/USD.PAXOS",  # 加密货币
+            "^SPX.CBOE",  # 指数
+        ]
+    ),
 )
 ```
 
@@ -419,7 +423,7 @@ options_chain_expiry = IBContract(
     symbol="SPX",
     exchange="CBOE",
     build_options_chain=True,
-    lastTradeDateOrContractMonth='20240718',
+    lastTradeDateOrContractMonth="20240718",
 )
 
 # 加载日期范围内的期权链
@@ -441,11 +445,13 @@ futures_chain = IBContract(
 )
 
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
-    load_contracts=frozenset([
-        options_chain_expiry,
-        options_chain_range,
-        futures_chain,
-    ]),
+    load_contracts=frozenset(
+        [
+            options_chain_expiry,
+            options_chain_range,
+            futures_chain,
+        ]
+    ),
 )
 ```
 
@@ -455,54 +461,78 @@ instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
 from nautilus_trader.adapters.interactive_brokers.common import IBContract
 
 # 股票
-IBContract(secType='STK', exchange='SMART', primaryExchange='ARCA', symbol='SPY')
-IBContract(secType='STK', exchange='SMART', primaryExchange='NASDAQ', symbol='AAPL')
+IBContract(secType="STK", exchange="SMART", primaryExchange="ARCA", symbol="SPY")
+IBContract(secType="STK", exchange="SMART", primaryExchange="NASDAQ", symbol="AAPL")
 
 # 债券
-IBContract(secType='BOND', secIdType='ISIN', secId='US03076KAA60')
-IBContract(secType='BOND', secIdType='CUSIP', secId='912828XE8')
+IBContract(secType="BOND", secIdType="ISIN", secId="US03076KAA60")
+IBContract(secType="BOND", secIdType="CUSIP", secId="912828XE8")
 
 # 单个期权
-IBContract(secType='OPT', exchange='SMART', symbol='SPY',
-           lastTradeDateOrContractMonth='20251219', strike=500, right='C')
+IBContract(
+    secType="OPT",
+    exchange="SMART",
+    symbol="SPY",
+    lastTradeDateOrContractMonth="20251219",
+    strike=500,
+    right="C",
+)
 
 # 期权链（加载所有行权价/到期日）
-IBContract(secType='STK', exchange='SMART', primaryExchange='ARCA', symbol='SPY',
-           build_options_chain=True, min_expiry_days=10, max_expiry_days=60)
+IBContract(
+    secType="STK",
+    exchange="SMART",
+    primaryExchange="ARCA",
+    symbol="SPY",
+    build_options_chain=True,
+    min_expiry_days=10,
+    max_expiry_days=60,
+)
 
 # 差价合约
-IBContract(secType='CFD', symbol='IBUS30')
-IBContract(secType='CFD', symbol='DE40EUR', exchange='SMART')
+IBContract(secType="CFD", symbol="IBUS30")
+IBContract(secType="CFD", symbol="DE40EUR", exchange="SMART")
 
 # 单个期货
-IBContract(secType='FUT', exchange='CME', symbol='ES',
-           lastTradeDateOrContractMonth='20240315')
+IBContract(secType="FUT", exchange="CME", symbol="ES", lastTradeDateOrContractMonth="20240315")
 
 # 期货链（加载所有到期日）
-IBContract(secType='CONTFUT', exchange='CME', symbol='ES', build_futures_chain=True)
+IBContract(secType="CONTFUT", exchange="CME", symbol="ES", build_futures_chain=True)
 
 # 期货期权（FOP）- 单个
-IBContract(secType='FOP', exchange='CME', symbol='ES',
-           lastTradeDateOrContractMonth='20240315', strike=4200, right='C')
+IBContract(
+    secType="FOP",
+    exchange="CME",
+    symbol="ES",
+    lastTradeDateOrContractMonth="20240315",
+    strike=4200,
+    right="C",
+)
 
 # 期货期权链（加载所有行权价/到期日）
-IBContract(secType='CONTFUT', exchange='CME', symbol='ES',
-           build_options_chain=True, min_expiry_days=7, max_expiry_days=60)
+IBContract(
+    secType="CONTFUT",
+    exchange="CME",
+    symbol="ES",
+    build_options_chain=True,
+    min_expiry_days=7,
+    max_expiry_days=60,
+)
 
 # 外汇
-IBContract(secType='CASH', exchange='IDEALPRO', symbol='EUR', currency='USD')
-IBContract(secType='CASH', exchange='IDEALPRO', symbol='GBP', currency='JPY')
+IBContract(secType="CASH", exchange="IDEALPRO", symbol="EUR", currency="USD")
+IBContract(secType="CASH", exchange="IDEALPRO", symbol="GBP", currency="JPY")
 
 # 加密货币
-IBContract(secType='CRYPTO', symbol='BTC', exchange='PAXOS', currency='USD')
-IBContract(secType='CRYPTO', symbol='ETH', exchange='PAXOS', currency='USD')
+IBContract(secType="CRYPTO", symbol="BTC", exchange="PAXOS", currency="USD")
+IBContract(secType="CRYPTO", symbol="ETH", exchange="PAXOS", currency="USD")
 
 # 指数
-IBContract(secType='IND', symbol='SPX', exchange='CBOE')
-IBContract(secType='IND', symbol='NDX', exchange='NASDAQ')
+IBContract(secType="IND", symbol="SPX", exchange="CBOE")
+IBContract(secType="IND", symbol="NDX", exchange="NASDAQ")
 
 # 大宗商品
-IBContract(secType='CMDTY', symbol='XAUUSD', exchange='SMART')
+IBContract(secType="CMDTY", symbol="XAUUSD", exchange="SMART")
 ```
 
 ### 高级配置选项
@@ -537,8 +567,8 @@ IBContract(
 
 ```python
 # 连续期货示例
-IBContract(secType='CONTFUT', exchange='CME', symbol='ES')  # -> ES.CME
-IBContract(secType='CONTFUT', exchange='NYMEX', symbol='CL') # -> CL.NYMEX
+IBContract(secType="CONTFUT", exchange="CME", symbol="ES")  # -> ES.CME
+IBContract(secType="CONTFUT", exchange="NYMEX", symbol="CL")  # -> CL.NYMEX
 
 # 启用 MIC 交易场所转换
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
@@ -574,16 +604,20 @@ call_leg = InstrumentId.from_str("SPY C400.SMART")
 put_leg = InstrumentId.from_str("SPY P390.SMART")
 
 # 创建 1:1 看涨价差（买入看涨，卖出看涨）
-call_spread_id = new_generic_spread_id([
-    (call_leg, 1),   # 买入 1 张合约
-    (put_leg, -1),   # 卖出 1 张合约
-])
+call_spread_id = new_generic_spread_id(
+    [
+        (call_leg, 1),  # 买入 1 张合约
+        (put_leg, -1),  # 卖出 1 张合约
+    ]
+)
 
 # 创建 1:2 比率价差
-ratio_spread_id = new_generic_spread_id([
-    (call_leg, 1),   # 买入 1 张合约
-    (put_leg, 2),    # 买入 2 张合约
-])
+ratio_spread_id = new_generic_spread_id(
+    [
+        (call_leg, 1),  # 买入 1 张合约
+        (put_leg, 2),  # 买入 2 张合约
+    ]
+)
 ```
 
 ### 动态价差加载
@@ -595,6 +629,7 @@ ratio_spread_id = new_generic_spread_id([
 def on_start(self):
     # 请求价差金融工具
     self.request_instrument(spread_id)
+
 
 def on_instrument(self, instrument):
     # 处理已加载的价差金融工具
@@ -633,7 +668,9 @@ def on_instrument(self, instrument):
 ### 历史数据客户端
 
 ```python
-from nautilus_trader.adapters.interactive_brokers.historical.client import HistoricInteractiveBrokersClient
+from nautilus_trader.adapters.interactive_brokers.historical.client import (
+    HistoricInteractiveBrokersClient,
+)
 from ibapi.common import MarketDataTypeEnum
 
 # 初始化客户端
@@ -642,7 +679,7 @@ client = HistoricInteractiveBrokersClient(
     port=7497,
     client_id=1,
     market_data_type=MarketDataTypeEnum.DELAYED_FROZEN,  # 无订阅时使用延迟数据
-    log_level="INFO"
+    log_level="INFO",
 )
 
 # 连接到 TWS/Gateway
@@ -749,17 +786,17 @@ import datetime
 # 请求历史 K 线
 bars = await client.request_bars(
     bar_specifications=[
-        "1-MINUTE-LAST",    # 1 分钟 K 线，使用最新价
-        "5-MINUTE-MID",     # 5 分钟 K 线，使用中间价
-        "1-HOUR-LAST",      # 1 小时 K 线，使用最新价
-        "1-DAY-LAST",       # 日 K 线，使用最新价
+        "1-MINUTE-LAST",  # 1 分钟 K 线，使用最新价
+        "5-MINUTE-MID",  # 5 分钟 K 线，使用中间价
+        "1-HOUR-LAST",  # 1 小时 K 线，使用最新价
+        "1-DAY-LAST",  # 日 K 线，使用最新价
     ],
     start_date_time=datetime.datetime(2023, 11, 1, 9, 30),
     end_date_time=datetime.datetime(2023, 11, 6, 16, 30),
     tz_name="America/New_York",
     contracts=contracts,
     use_rth=True,  # 仅限常规交易时段
-    timeout=120,   # 请求超时时间（秒）
+    timeout=120,  # 请求超时时间（秒）
 )
 ```
 
@@ -802,7 +839,9 @@ ticks = await client.request_ticks(
 import asyncio
 import datetime
 from nautilus_trader.adapters.interactive_brokers.common import IBContract
-from nautilus_trader.adapters.interactive_brokers.historical.client import HistoricInteractiveBrokersClient
+from nautilus_trader.adapters.interactive_brokers.historical.client import (
+    HistoricInteractiveBrokersClient,
+)
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
 
@@ -859,6 +898,7 @@ async def download_historical_data():
     # 断开连接
     await client.disconnect()
 
+
 # 运行示例
 if __name__ == "__main__":
     asyncio.run(download_historical_data())
@@ -904,7 +944,9 @@ Interactive Brokers 强制执行节奏限制；过多的历史数据或订单请
 #### 基本配置
 
 ```python
-from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
+from nautilus_trader.adapters.interactive_brokers.config import (
+    InteractiveBrokersInstrumentProviderConfig,
+)
 from nautilus_trader.adapters.interactive_brokers.config import SymbologyMethod
 from nautilus_trader.adapters.interactive_brokers.common import IBContract
 
@@ -912,24 +954,28 @@ instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
     symbology_method=SymbologyMethod.IB_SIMPLIFIED,
     build_futures_chain=False,  # 设置为 True 以获取期货链
     build_options_chain=False,  # 设置为 True 以获取期权链
-    min_expiry_days=10,         # 衍生品最小到期天数
-    max_expiry_days=60,         # 衍生品最大到期天数
+    min_expiry_days=10,  # 衍生品最小到期天数
+    max_expiry_days=60,  # 衍生品最大到期天数
     convert_exchange_to_mic_venue=False,  # 使用 MIC 代码进行交易场所映射
-    cache_validity_days=1,      # 缓存金融工具数据 1 天
-    load_ids=frozenset([
-        # 使用简化符号体系的单个金融工具
-        "EUR/USD.IDEALPRO",     # 外汇
-        "BTC/USD.PAXOS",        # 加密货币
-        "SPY.ARCA",             # 股票 ETF
-        "V.NYSE",               # 个股
-        "ESM4.CME",             # 期货合约（一位数年份）
-        "^SPX.CBOE",            # 指数
-    ]),
-    load_contracts=frozenset([
-        # 使用 IBContract 的复杂金融工具
-        IBContract(secType='STK', symbol='AAPL', exchange='SMART', primaryExchange='NASDAQ'),
-        IBContract(secType='CASH', symbol='GBP', currency='USD', exchange='IDEALPRO'),
-    ]),
+    cache_validity_days=1,  # 缓存金融工具数据 1 天
+    load_ids=frozenset(
+        [
+            # 使用简化符号体系的单个金融工具
+            "EUR/USD.IDEALPRO",  # 外汇
+            "BTC/USD.PAXOS",  # 加密货币
+            "SPY.ARCA",  # 股票 ETF
+            "V.NYSE",  # 个股
+            "ESM4.CME",  # 期货合约（一位数年份）
+            "^SPX.CBOE",  # 指数
+        ]
+    ),
+    load_contracts=frozenset(
+        [
+            # 使用 IBContract 的复杂金融工具
+            IBContract(secType="STK", symbol="AAPL", exchange="SMART", primaryExchange="NASDAQ"),
+            IBContract(secType="CASH", symbol="GBP", currency="USD", exchange="IDEALPRO"),
+        ]
+    ),
 )
 ```
 
@@ -939,27 +985,29 @@ instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
 # 期权和期货链的配置
 advanced_config = InteractiveBrokersInstrumentProviderConfig(
     symbology_method=SymbologyMethod.IB_SIMPLIFIED,
-    build_futures_chain=True,   # 启用期货链加载
-    build_options_chain=True,   # 启用期权链加载
-    min_expiry_days=7,          # 加载 7 天以上到期的合约
-    max_expiry_days=90,         # 加载 90 天内到期的合约
-    load_contracts=frozenset([
-        # 加载 SPY 期权链
-        IBContract(
-            secType='STK',
-            symbol='SPY',
-            exchange='SMART',
-            primaryExchange='ARCA',
-            build_options_chain=True,
-        ),
-        # 加载 ES 期货链
-        IBContract(
-            secType='CONTFUT',
-            exchange='CME',
-            symbol='ES',
-            build_futures_chain=True,
-        ),
-    ]),
+    build_futures_chain=True,  # 启用期货链加载
+    build_options_chain=True,  # 启用期权链加载
+    min_expiry_days=7,  # 加载 7 天以上到期的合约
+    max_expiry_days=90,  # 加载 90 天内到期的合约
+    load_contracts=frozenset(
+        [
+            # 加载 SPY 期权链
+            IBContract(
+                secType="STK",
+                symbol="SPY",
+                exchange="SMART",
+                primaryExchange="ARCA",
+                build_options_chain=True,
+            ),
+            # 加载 ES 期货链
+            IBContract(
+                secType="CONTFUT",
+                exchange="CME",
+                symbol="ES",
+                build_futures_chain=True,
+            ),
+        ]
+    ),
 )
 ```
 
@@ -1017,7 +1065,7 @@ data_client_config = InteractiveBrokersDataClientConfig(
     ignore_quote_tick_size_updates=False,  # 包含仅数量变化的更新
     instrument_provider=instrument_provider_config,
     connection_timeout=300,  # 5 分钟
-    request_timeout_secs=60,      # 1 分钟
+    request_timeout_secs=60,  # 1 分钟
 )
 ```
 
@@ -1042,19 +1090,19 @@ production_data_config = InteractiveBrokersDataClientConfig(
 
 ### 数据客户端配置选项
 
-| 选项                            | 默认值                                          | 描述 |
-|---------------------------------|-------------------------------------------------|------|
-| `instrument_provider`           | `InteractiveBrokersInstrumentProviderConfig()`  | 金融工具提供者设置，控制启动时加载哪些合约。 |
-| `ibg_host`                      | `127.0.0.1`                                     | TWS/IB Gateway 的主机名或 IP。 |
-| `ibg_port`                      | `None`                                          | TWS/IB Gateway 的端口（`7497`/`7496` 用于 TWS，`4002`/`4001` 用于 IBG）。 |
-| `ibg_client_id`                 | `1`                                             | 连接到 TWS/IB Gateway 时使用的唯一客户端标识符。 |
-| `use_regular_trading_hours`     | `True`                                          | 为 `True` 时，请求限于常规交易时段的 K 线。 |
-| `market_data_type`              | `REALTIME`                                      | 市场数据类型（`REALTIME`、`DELAYED`、`DELAYED_FROZEN` 等）。 |
-| `ignore_quote_tick_size_updates`| `False`                                         | 为 `True` 时，过滤仅数量变化的报价 tick。 |
-| `handle_revised_bars`           | `False`                                         | 为 `True` 时，处理来自 IB 的 K 线修订（K 线在初次发布后可能会更新）。 |
-| `dockerized_gateway`            | `None`                                          | 可选的 `DockerizedIBGatewayConfig`，用于容器化设置。 |
-| `connection_timeout`            | `300`                                           | 等待初始 API 连接的秒数。 |
-| `request_timeout_secs`          | `60`                                            | 历史数据请求超时前等待的秒数。 |
+| 选项                               | 默认值                                            | 描述                                                             |
+| -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `instrument_provider`            | `InteractiveBrokersInstrumentProviderConfig()` | 金融工具提供者设置，控制启动时加载哪些合约。                                         |
+| `ibg_host`                       | `127.0.0.1`                                    | TWS/IB Gateway 的主机名或 IP。                                       |
+| `ibg_port`                       | `None`                                         | TWS/IB Gateway 的端口（`7497`/`7496` 用于 TWS，`4002`/`4001` 用于 IBG）。 |
+| `ibg_client_id`                  | `1`                                            | 连接到 TWS/IB Gateway 时使用的唯一客户端标识符。                               |
+| `use_regular_trading_hours`      | `True`                                         | 为 `True` 时，请求限于常规交易时段的 K 线。                                    |
+| `market_data_type`               | `REALTIME`                                     | 市场数据类型（`REALTIME`、`DELAYED`、`DELAYED_FROZEN` 等）。               |
+| `ignore_quote_tick_size_updates` | `False`                                        | 为 `True` 时，过滤仅数量变化的报价 tick。                                    |
+| `handle_revised_bars`            | `False`                                        | 为 `True` 时，处理来自 IB 的 K 线修订（K 线在初次发布后可能会更新）。                    |
+| `dockerized_gateway`             | `None`                                         | 可选的 `DockerizedIBGatewayConfig`，用于容器化设置。                       |
+| `connection_timeout`             | `300`                                          | 等待初始 API 连接的秒数。                                                |
+| `request_timeout_secs`           | `60`                                           | 历史数据请求超时前等待的秒数。                                                |
 
 #### 说明
 
@@ -1066,18 +1114,18 @@ production_data_config = InteractiveBrokersDataClientConfig(
 
 ### 执行客户端配置选项
 
-| 选项                                    | 默认值                                          | 描述 |
-|-----------------------------------------|-------------------------------------------------|------|
-| `instrument_provider`                   | `InteractiveBrokersInstrumentProviderConfig()`  | 金融工具提供者设置，控制启动时加载哪些合约。 |
-| `ibg_host`                              | `127.0.0.1`                                     | TWS/IB Gateway 的主机名或 IP。 |
-| `ibg_port`                              | `None`                                          | TWS/IB Gateway 的端口（`7497`/`7496` 用于 TWS，`4002`/`4001` 用于 IBG）。 |
-| `ibg_client_id`                         | `1`                                             | 连接到 TWS/IB Gateway 时使用的唯一客户端标识符。 |
-| `account_id`                            | `None`                                          | Interactive Brokers 账户标识符（回退到 `TWS_ACCOUNT` 环境变量）。 |
-| `dockerized_gateway`                    | `None`                                          | 可选的 `DockerizedIBGatewayConfig`，用于容器化设置。 |
-| `connection_timeout`                    | `300`                                           | 等待初始 API 连接的秒数。 |
-| `request_timeout_secs`                  | `60`                                            | 等待请求响应（合约详情等）的秒数。 |
-| `fetch_all_open_orders`                 | `False`                                         | 为 `True` 时，拉取所有 API 客户端 ID 的未完成订单（不仅是当前会话）。 |
-| `track_option_exercise_from_position_update` | `False`                                    | 为 `True` 时，订阅实时持仓更新以检测期权行权。 |
+| 选项                                           | 默认值                                            | 描述                                                             |
+| -------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `instrument_provider`                        | `InteractiveBrokersInstrumentProviderConfig()` | 金融工具提供者设置，控制启动时加载哪些合约。                                         |
+| `ibg_host`                                   | `127.0.0.1`                                    | TWS/IB Gateway 的主机名或 IP。                                       |
+| `ibg_port`                                   | `None`                                         | TWS/IB Gateway 的端口（`7497`/`7496` 用于 TWS，`4002`/`4001` 用于 IBG）。 |
+| `ibg_client_id`                              | `1`                                            | 连接到 TWS/IB Gateway 时使用的唯一客户端标识符。                               |
+| `account_id`                                 | `None`                                         | Interactive Brokers 账户标识符（回退到 `TWS_ACCOUNT` 环境变量）。             |
+| `dockerized_gateway`                         | `None`                                         | 可选的 `DockerizedIBGatewayConfig`，用于容器化设置。                       |
+| `connection_timeout`                         | `300`                                          | 等待初始 API 连接的秒数。                                                |
+| `request_timeout_secs`                       | `60`                                           | 等待请求响应（合约详情等）的秒数。                                              |
+| `fetch_all_open_orders`                      | `False`                                        | 为 `True` 时，拉取所有 API 客户端 ID 的未完成订单（不仅是当前会话）。                    |
+| `track_option_exercise_from_position_update` | `False`                                        | 为 `True` 时，订阅实时持仓更新以检测期权行权。                                    |
 
 ### 执行客户端配置
 
@@ -1119,38 +1167,38 @@ production_data_config = InteractiveBrokersDataClientConfig(
 
 #### 批量操作
 
-| 操作           | 支持 | 说明                                        |
-|---------------|------|---------------------------------------------|
-| 批量提交       | ✓    | 在单次请求中提交多个订单。                    |
-| 批量修改       | ✓    | 在单次请求中修改多个订单。                    |
-| 批量撤销       | ✓    | 在单次请求中撤销多个订单。                    |
+| 操作   | 支持  | 说明            |
+| ---- | --- | ------------- |
+| 批量提交 | ✓   | 在单次请求中提交多个订单。 |
+| 批量修改 | ✓   | 在单次请求中修改多个订单。 |
+| 批量撤销 | ✓   | 在单次请求中撤销多个订单。 |
 
 #### 持仓管理
 
-| 功能           | 支持 | 说明                                        |
-|---------------|------|---------------------------------------------|
-| 查询持仓       | ✓    | 实时持仓更新。                               |
-| 持仓模式       | ✓    | 净持仓与分别多空持仓。                        |
-| 杠杆控制       | ✓    | 账户级别保证金要求。                          |
-| 保证金模式     | ✓    | 组合保证金与单独保证金。                      |
+| 功能    | 支持  | 说明           |
+| ----- | --- | ------------ |
+| 查询持仓  | ✓   | 实时持仓更新。      |
+| 持仓模式  | ✓   | 净持仓与分别多空持仓。  |
+| 杠杆控制  | ✓   | 账户级别保证金要求。   |
+| 保证金模式 | ✓   | 组合保证金与单独保证金。 |
 
 #### 订单查询
 
-| 功能           | 支持 | 说明                                        |
-|---------------|------|---------------------------------------------|
-| 查询未完成订单  | ✓    | 列出所有活跃订单。                           |
-| 查询订单历史   | ✓    | 历史订单数据。                               |
-| 订单状态更新   | ✓    | 实时订单状态变化。                           |
-| 交易历史       | ✓    | 执行和成交报告。                             |
+| 功能      | 支持  | 说明        |
+| ------- | --- | --------- |
+| 查询未完成订单 | ✓   | 列出所有活跃订单。 |
+| 查询订单历史  | ✓   | 历史订单数据。   |
+| 订单状态更新  | ✓   | 实时订单状态变化。 |
+| 交易历史    | ✓   | 执行和成交报告。  |
 
 #### 条件订单
 
-| 功能           | 支持 | 说明                                        |
-|---------------|------|---------------------------------------------|
-| 订单列表       | ✓    | 原子化多订单提交。                           |
-| OCO 订单       | ✓    | 可自定义 OCA 类型（1、2、3）的二择一订单。     |
-| 括号订单       | ✓    | 父子订单关系。                               |
-| 条件订单       | ✓    | 高级订单条件和触发器。                        |
+| 功能     | 支持  | 说明                        |
+| ------ | --- | ------------------------- |
+| 订单列表   | ✓   | 原子化多订单提交。                 |
+| OCO 订单 | ✓   | 可自定义 OCA 类型（1、2、3）的二择一订单。 |
+| 括号订单   | ✓   | 父子订单关系。                   |
+| 条件订单   | ✓   | 高级订单条件和触发器。               |
 
 #### 基本执行客户端配置
 
@@ -1198,6 +1246,7 @@ exec_config = InteractiveBrokersExecClientConfig(
 
 # 选项 2：使用环境变量
 import os
+
 os.environ["TWS_ACCOUNT"] = "DU123456"
 exec_config = InteractiveBrokersExecClientConfig(
     account_id=None,  # 将使用 TWS_ACCOUNT 环境变量
@@ -1224,12 +1273,12 @@ from nautilus_trader.adapters.interactive_brokers.common import IBOrderTags
 
 # 使用 IB 特定参数创建订单
 order_tags = IBOrderTags(
-    allOrNone=True,           # 全部成交或全部不成交
-    ocaGroup="MyGroup1",      # 全部撤销组
-    ocaType=1,                # 带阻塞的全部撤销
+    allOrNone=True,  # 全部成交或全部不成交
+    ocaGroup="MyGroup1",  # 全部撤销组
+    ocaType=1,  # 带阻塞的全部撤销
     activeStartTime="20240315 09:30:00 EST",  # GTC 激活时间
-    activeStopTime="20240315 16:00:00 EST",   # GTC 停用时间
-    goodAfterTime="20240315 09:35:00 EST",    # 指定时间后有效
+    activeStopTime="20240315 16:00:00 EST",  # GTC 停用时间
+    goodAfterTime="20240315 09:35:00 EST",  # 指定时间后有效
 )
 
 # 将标签应用于订单
@@ -1298,11 +1347,11 @@ order = order_factory.limit(
 
 Interactive Brokers 支持三种 OCA 类型：
 
-| 类型 | 名称 | 行为 | 用例 |
-|------|------|------|------|
-| **1** | 带阻塞的全部撤销 | 带阻塞保护撤销所有剩余订单 | **默认** - 最安全的选项，防止超额成交 |
-| **2** | 带阻塞的按比例缩减 | 带阻塞保护按比例缩减剩余订单 | 部分成交并提供超额成交保护 |
-| **3** | 不带阻塞的按比例缩减 | 不带阻塞保护按比例缩减剩余订单 | 最快执行，超额成交风险较高 |
+| 类型    | 名称         | 行为              | 用例                     |
+| ----- | ---------- | --------------- | ---------------------- |
+| **1** | 带阻塞的全部撤销   | 带阻塞保护撤销所有剩余订单   | **默认** - 最安全的选项，防止超额成交 |
+| **2** | 带阻塞的按比例缩减  | 带阻塞保护按比例缩减剩余订单  | 部分成交并提供超额成交保护          |
+| **3** | 不带阻塞的按比例缩减 | 不带阻塞保护按比例缩减剩余订单 | 最快执行，超额成交风险较高          |
 
 #### 同一 OCA 组中的多个订单
 
@@ -1554,11 +1603,17 @@ from nautilus_trader.adapters.interactive_brokers.common import IB
 from nautilus_trader.adapters.interactive_brokers.common import IB_VENUE
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersDataClientConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersExecClientConfig
-from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
+from nautilus_trader.adapters.interactive_brokers.config import (
+    InteractiveBrokersInstrumentProviderConfig,
+)
 from nautilus_trader.adapters.interactive_brokers.config import IBMarketDataTypeEnum
 from nautilus_trader.adapters.interactive_brokers.config import SymbologyMethod
-from nautilus_trader.adapters.interactive_brokers.factories import InteractiveBrokersLiveDataClientFactory
-from nautilus_trader.adapters.interactive_brokers.factories import InteractiveBrokersLiveExecClientFactory
+from nautilus_trader.adapters.interactive_brokers.factories import (
+    InteractiveBrokersLiveDataClientFactory,
+)
+from nautilus_trader.adapters.interactive_brokers.factories import (
+    InteractiveBrokersLiveExecClientFactory,
+)
 from nautilus_trader.config import LiveDataEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import RoutingConfig
@@ -1568,14 +1623,16 @@ from nautilus_trader.live.node import TradingNode
 # 金融工具提供者配置
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
     symbology_method=SymbologyMethod.IB_SIMPLIFIED,
-    load_ids=frozenset([
-        "EUR/USD.IDEALPRO",
-        "GBP/USD.IDEALPRO",
-        "SPY.ARCA",
-        "QQQ.NASDAQ",
-        "AAPL.NASDAQ",
-        "MSFT.NASDAQ",
-    ]),
+    load_ids=frozenset(
+        [
+            "EUR/USD.IDEALPRO",
+            "GBP/USD.IDEALPRO",
+            "SPY.ARCA",
+            "QQQ.NASDAQ",
+            "AAPL.NASDAQ",
+            "MSFT.NASDAQ",
+        ]
+    ),
 )
 
 # 数据客户端配置
@@ -1606,7 +1663,7 @@ config_node = TradingNodeConfig(
     exec_clients={IB: exec_client_config},
     data_engine=LiveDataEngineConfig(
         time_bars_timestamp_on_close=False,  # IB 标准：使用 K 线开盘时间
-        validate_data_sequence=True,         # 丢弃乱序 K 线
+        validate_data_sequence=True,  # 丢弃乱序 K 线
     ),
     timeout_connection=90.0,
     timeout_reconciliation=5.0,
@@ -1736,12 +1793,10 @@ data_client_config = InteractiveBrokersDataClientConfig(
 config_node = TradingNodeConfig(
     trader_id="MULTI-ACCOUNT-001",
     logging=LoggingConfig(log_level="INFO"),
-
     # 所有账户共享单个数据客户端
     data_clients={
         "IB": data_client_config,
     },
-
     # 多个执行客户端，每个账户一个
     exec_clients={
         # 第一个账户：模拟交易账户
@@ -1753,7 +1808,6 @@ config_node = TradingNodeConfig(
             instrument_provider=instrument_provider_config,
             routing=RoutingConfig(default=False),  # 非默认
         ),
-
         # 第二个账户：实盘交易账户
         "IB-LIVE": InteractiveBrokersExecClientConfig(
             ibg_host="127.0.0.1",
@@ -1763,7 +1817,6 @@ config_node = TradingNodeConfig(
             instrument_provider=instrument_provider_config,
             routing=RoutingConfig(default=True),  # 设为默认
         ),
-
         # 第三个账户：另一个受管账户
         "IB-ACCOUNT3": InteractiveBrokersExecClientConfig(
             ibg_host="127.0.0.1",
@@ -1805,6 +1858,7 @@ config_node = TradingNodeConfig(
 from nautilus_trader.model.identifiers import AccountId, ClientId
 from nautilus_trader.trading.strategy import Strategy
 
+
 class MultiAccountStrategy(Strategy):
     """使用多个 IB 账户的示例策略。"""
 
@@ -1834,17 +1888,13 @@ class MultiAccountStrategy(Strategy):
     def check_paper_pnl(self, instrument_id):
         """检查模拟账户的已实现盈亏。"""
         pnl = self.portfolio.realized_pnl(
-            instrument_id=instrument_id,
-            account_id=self.paper_account
+            instrument_id=instrument_id, account_id=self.paper_account
         )
         return pnl
 
     def check_live_pnl(self, instrument_id):
         """检查实盘账户的已实现盈亏。"""
-        pnl = self.portfolio.realized_pnl(
-            instrument_id=instrument_id,
-            account_id=self.live_account
-        )
+        pnl = self.portfolio.realized_pnl(instrument_id=instrument_id, account_id=self.live_account)
         return pnl
 ```
 
@@ -1861,14 +1911,11 @@ live_account = cache.account(AccountId("IB-LIVE-U987654"))
 paper_account_by_id = cache.account(AccountId("IB-PAPER-DU123456"))
 
 # 备选方案：使用 account_id 参数查询账户（同样有效）
-paper_account_via_account_id = cache.account_for_venue(
-    account_id=AccountId("IB-PAPER-DU123456")
-)
+paper_account_via_account_id = cache.account_for_venue(account_id=AccountId("IB-PAPER-DU123456"))
 
 # 按账户查询投资组合属性
 paper_realized_pnl = portfolio.realized_pnl(
-    instrument_id=instrument_id,
-    account_id=AccountId("IB-PAPER-DU123456")
+    instrument_id=instrument_id, account_id=AccountId("IB-PAPER-DU123456")
 )
 
 # 查询跨所有 IB 账户聚合的投资组合属性
@@ -1902,6 +1949,7 @@ def run_trading_node():
     finally:
         if node:
             node.dispose()
+
 
 if __name__ == "__main__":
     run_trading_node()
@@ -1993,7 +2041,7 @@ data_config = InteractiveBrokersDataClientConfig(
 # 设置合理的超时时间
 config = InteractiveBrokersDataClientConfig(
     connection_timeout=300,  # 5 分钟
-    request_timeout_secs=60,      # 1 分钟
+    request_timeout_secs=60,  # 1 分钟
     # ... 其他配置
 )
 ```
