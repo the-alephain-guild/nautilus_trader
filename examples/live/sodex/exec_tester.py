@@ -27,6 +27,11 @@ Reconciliation is **on**. The adapter reads the account's balances, open orders 
 history, and Nautilus infers fills from those reports - so positions, average prices and fees do
 get reconciled, including orders this client did not place.
 
+Either engine, selected by ``MARKET``. The two are separate venues on this adapter, so the
+instrument id, the client id and the order size all move with that one constant. Perps differs in
+two ways that matter here: orders carry a one-way position side, and ``reduce_only`` is honoured
+(spot refuses it), so ``close_positions_on_stop`` flattens rather than placing an opposing trade.
+
 One limit remains, and it is granularity rather than capability: the venue's per-fill endpoint
 answers ``[]`` on an account that has never traded, so its wire shape is unobserved and this
 adapter does not parse it. Fills therefore arrive at reconciliation cadence rather than per
@@ -36,6 +41,7 @@ trade, each carrying a synthetic trade id instead of the venue's own.
 
 from __future__ import annotations
 
+from nautilus_trader.adapters.sodex import SODEX_PERPS
 from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import Market
 from nautilus_trader.adapters.sodex import Network
@@ -57,11 +63,27 @@ from nautilus_trader.testkit import ExecTesterConfig
 # WARNING: With DRY_RUN = False this submits orders to the configured network.
 DRY_RUN = True
 NETWORK = Network.TESTNET
+
+# Switching engines is this one line - everything venue-specific derives from it below. Spot and
+# perps are two separate venues here, so the parts have to move together: a perps market paired
+# with a spot instrument id is rejected rather than routed to the wrong engine, which is the
+# behaviour to want but an annoying way to find out you edited only half the configuration.
 MARKET = Market.SPOT
+
+if MARKET == Market.SPOT:
+    VENUE_NAME = SODEX_SPOT
+    INSTRUMENT_ID = InstrumentId.from_str(f"vBTC_vUSDC.{SODEX_SPOT}")
+    ORDER_QTY = "0.001"
+else:
+    VENUE_NAME = SODEX_PERPS
+    # `BTC-USD` takes a 0.00001 step but also enforces a 10 vUSDC minimum notional, so near
+    # 77,000 the smallest accepted size is 0.00013. This clears it with room to spare, and at
+    # the default 20x leverage it posts well under a dollar of margin.
+    INSTRUMENT_ID = InstrumentId.from_str(f"BTC-USD.{SODEX_PERPS}")
+    ORDER_QTY = "0.0002"
+
 TRADER_ID = TraderId.from_str("TESTER-001")
 STRATEGY_ID = StrategyId.from_str("EXEC_TESTER-001")
-INSTRUMENT_ID = InstrumentId.from_str(f"vBTC_vUSDC.{SODEX_SPOT}")
-ORDER_QTY = "0.001"
 
 
 def main() -> None:
@@ -74,12 +96,12 @@ def main() -> None:
         .with_reconciliation(reconciliation=True)
         .with_risk_engine_config(LiveRiskEngineConfig(bypass=True))
         .add_data_client(
-            SODEX_SPOT,
+            VENUE_NAME,
             SodexDataClientFactory(),
             SodexDataClientConfig(network=NETWORK, market=MARKET),
         )
         .add_exec_client(
-            SODEX_SPOT,
+            VENUE_NAME,
             SodexExecutionClientFactory(),
             # Every credential resolves from the environment when left unset.
             SodexExecClientConfig(network=NETWORK, market=MARKET),
@@ -91,7 +113,7 @@ def main() -> None:
         ExecTesterConfig(
             strategy_id=STRATEGY_ID,
             instrument_id=INSTRUMENT_ID,
-            client_id=ClientId.from_str(SODEX_SPOT),
+            client_id=ClientId.from_str(VENUE_NAME),
             order_qty=Quantity.from_str(ORDER_QTY),
             subscribe_quotes=True,
             subscribe_trades=True,
