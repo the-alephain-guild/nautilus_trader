@@ -204,7 +204,7 @@ async fn held_base(
     };
 
     let total: Decimal = balance.total.parse()?;
-    let locked: Decimal = balance.locked.parse()?;
+    let locked: Decimal = balance.withheld()?.parse()?;
     let step: Decimal = step_size.parse()?;
     let free = total - locked;
 

@@ -83,7 +83,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     parse::OrderSpec,
-    reports::{fill_report, order_status_report},
+    reports::{fill_report, order_status_report, position_status_report},
 };
 use crate::{
     common::Market,
@@ -656,23 +656,44 @@ impl ExecutionClient for SodexExecutionClient {
             .await
             .map_err(|e| anyhow::anyhow!("failed to read positions: {e}"))?;
 
-        if positions.positions.is_empty() {
-            // An empty list is not a guess. The venue says the account holds nothing, and
-            // reporting that is exactly right - it is a *non-empty* payload this cannot yet map.
-            return Ok(Vec::new());
+        let ts_init = self.clock.get_time_ns();
+        let mut reports = Vec::with_capacity(positions.positions.len());
+
+        for record in &positions.positions {
+            // Skip what the venue no longer counts as open. A closed position left the list
+            // entirely on the observed runs rather than appearing with `active: false`, but the
+            // field exists, and reporting such an entry would claim the account still holds it.
+            if !record.active {
+                log::debug!(
+                    "sodex_position_inactive_skipped id={} symbol={}",
+                    record.id,
+                    record.symbol
+                );
+                continue;
+            }
+
+            let instrument_id = instrument_id_for(&record.symbol, self.core.venue);
+            let Some(instrument) = self.catalog.find(&instrument_id) else {
+                // Failing rather than skipping: a position whose instrument is unknown cannot be
+                // sized, and omitting it would report the account as flatter than it is, which is
+                // the direction that makes reconciliation close something real.
+                anyhow::bail!(
+                    "position {} names unloaded instrument {instrument_id}",
+                    record.id
+                );
+            };
+
+            let report = position_status_report(
+                record,
+                self.core.account_id,
+                instrument_id,
+                instrument.size_precision(),
+                ts_init,
+            )?;
+            reports.push(report);
         }
 
-        // Failing here rather than returning an empty list is the whole point: an empty list would
-        // assert the account is flat while the venue just said it is not, and reconciliation would
-        // close positions that exist. The payload is included because it is the one thing needed
-        // to finish this - reading it requires a real perps position, which the testnet account
-        // could not open for lack of a perps balance.
-        anyhow::bail!(
-            "SoDEX perps reports {} open position(s) but this adapter cannot map the payload yet. \
-             Raw: {}",
-            positions.positions.len(),
-            serde_json::to_string(&positions.positions).unwrap_or_else(|e| format!("<{e}>"))
-        )
+        Ok(reports)
     }
 
     fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
@@ -1036,9 +1057,12 @@ impl AccountReader {
 
 /// Converts one coin balance, deriving the free amount.
 ///
-/// The venue reports `total` and `locked`; Nautilus wants total, locked and free, and free is the
-/// difference. Computing it rather than assuming `total` is free is the point: the locked part is
-/// reserved against open orders and cannot be spent twice.
+/// Nautilus wants total, locked and free, and free is the difference. Computing it rather than
+/// assuming `total` is free is the point: the withheld part cannot be spent twice.
+///
+/// Which field carries the withheld amount depends on the engine - `locked` on spot, `collateral`
+/// on perps - so it is resolved through [`CoinBalance::withheld`] rather than read directly. Both
+/// land in Nautilus's `locked` slot, which is the only one it has for "held back".
 fn account_balance(
     balance: &crate::http::account_reads::CoinBalance,
 ) -> anyhow::Result<AccountBalance> {
@@ -1046,7 +1070,7 @@ fn account_balance(
         .ok_or_else(|| anyhow::anyhow!("unknown currency {}", balance.coin))?;
 
     let total = money(&balance.total, currency)?;
-    let locked = money(&balance.locked, currency)?;
+    let locked = money(balance.withheld()?, currency)?;
     let free = Money::new(
         (total.as_decimal() - locked.as_decimal()).try_into()?,
         currency,

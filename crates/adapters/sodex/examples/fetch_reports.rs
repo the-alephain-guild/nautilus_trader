@@ -49,8 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for balance in &balances.balances {
         // Free is derived: the locked part is reserved against open orders and is not spendable.
         println!(
-            "  {:<8} total={:<16} locked={:<12}",
-            balance.coin, balance.total, balance.locked
+            "  {:<8} total={:<16} withheld={:<12}",
+            balance.coin,
+            balance.total,
+            balance.withheld()?
         );
     }
     println!();

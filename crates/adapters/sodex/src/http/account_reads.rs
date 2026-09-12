@@ -41,10 +41,42 @@ pub struct CoinBalance {
     /// The venue's numeric coin id.
     pub id: u64,
     pub coin: String,
-    /// Everything held, including what is locked behind open orders.
+    /// Everything held, including whatever is withheld from trading.
     pub total: String,
-    /// Reserved against open orders, and therefore not available to trade.
-    pub locked: String,
+    /// Spot only: reserved against open orders.
+    ///
+    /// Optional because the two engines do not share a balance shape. Spot answers
+    /// `{id, coin, total, locked}`; perps answers `{id, coin, total, collateral, marginRatio,
+    /// price}` with no `locked` field at all, which made a required field here fail the whole
+    /// perps read with `missing field 'locked'` - and that read is the first thing the execution
+    /// client does, so the perps engine could not connect.
+    ///
+    /// The two names are kept apart rather than folded into one "withheld" field: the venue
+    /// distinguishes them because they are different mechanisms, and collapsing them would assert
+    /// an equivalence this crate has not established.
+    pub locked: Option<String>,
+    /// Perps only: posted as margin against open positions.
+    pub collateral: Option<String>,
+}
+
+impl CoinBalance {
+    /// The portion not available to trade, whichever engine reported it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when neither field is present. Treating that as zero would report the
+    /// whole balance as free and overstate buying power, which is the wrong way to fail.
+    pub fn withheld(&self) -> anyhow::Result<&str> {
+        self.locked
+            .as_deref()
+            .or(self.collateral.as_deref())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "balance for {} carries neither `locked` nor `collateral`",
+                    self.coin
+                )
+            })
+    }
 }
 
 /// The balances response, with the chain position it was read at.
@@ -102,24 +134,81 @@ pub struct OpenOrders {
     pub orders: Vec<OrderRecord>,
 }
 
+/// One open position, as the perps engine reports it.
+///
+/// # Direction lives in the sign of `size`, not in `position_side`
+///
+/// `position_side` read `BOTH` on both a long and a short, which is what one-way mode reports and
+/// says nothing about direction. What differed was the sign: a long answered `"0.0002"` and a short
+/// `"-0.0002"`. Both were observed on testnet rather than inferred from each other, because
+/// Nautilus needs a signed quantity and getting the sign backwards would report every short as a
+/// long.
+///
+/// # This response is not a superset of `/accounts/{wallet}/state`
+///
+/// The same positions appear in `state` under `P` with abbreviated keys, and the two carry
+/// different fields rather than the same data twice. `state` adds unrealized P&L (`ur`) and the
+/// liquidation price (`lp`, non-zero only where liquidation is reachable - it read `0` on the long
+/// and `570018.06` on the short). This response adds `active`, `is_taken_over` and
+/// `take_over_price`. Neither route alone carries everything.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PositionRecord {
+    /// The venue's own position id.
+    pub id: u64,
+    pub symbol: String,
+    /// Signed: positive is long, negative is short.
+    pub size: String,
+    #[serde(rename = "avgEntryPrice")]
+    pub avg_entry_price: String,
+    #[serde(rename = "avgClosePrice")]
+    pub avg_close_price: String,
+    /// Always `BOTH` on the observed runs; direction is carried by the sign of `size`.
+    #[serde(rename = "positionSide")]
+    pub position_side: String,
+    pub leverage: u32,
+    #[serde(rename = "marginMode")]
+    pub margin_mode: String,
+    #[serde(rename = "initialMargin")]
+    pub initial_margin: String,
+    #[serde(rename = "maxSize")]
+    pub max_size: String,
+    #[serde(rename = "cumOpenCost")]
+    pub cum_open_cost: String,
+    #[serde(rename = "cumClosedSize")]
+    pub cum_closed_size: String,
+    #[serde(rename = "cumTradingFee")]
+    pub cum_trading_fee: String,
+    #[serde(rename = "realizedPnL")]
+    pub realized_pnl: String,
+    /// Whether the venue still considers the position open.
+    ///
+    /// Observed `true` on every entry the list returned; a closed position disappeared from the
+    /// list entirely rather than appearing with `false`. Read rather than assumed, so an inactive
+    /// entry can be skipped instead of reported as something the account still holds.
+    pub active: bool,
+    #[serde(rename = "isTakenOver")]
+    pub is_taken_over: bool,
+    #[serde(rename = "takeOverPrice")]
+    pub take_over_price: String,
+    #[serde(rename = "createdAt")]
+    pub created_at_ms: u64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at_ms: u64,
+}
+
 /// The positions response, perps only.
 ///
 /// Spot does not serve this path at all, which is correct rather than a gap: spot holds
 /// balances and has no positions to report.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Positions {
     #[serde(rename = "blockTime")]
     pub block_time_ms: u64,
     #[serde(rename = "blockHeight")]
     pub block_height: u64,
-    /// Left untyped on purpose.
-    ///
-    /// The shape has not been observed: reading it requires an open perps position, and the
-    /// testnet account holds no perps balance to open one with. Typing it from the spot order
-    /// shape by analogy is exactly the move that has already cost this integration a day - see
-    /// the adapter's record of contract details that only a live link revealed. Callers get the
-    /// raw value and the knowledge that it is unverified.
-    pub positions: Vec<serde_json::Value>,
+    /// Empty as `[]` here. Note that `state` reports the same emptiness as `"P": null`, so a
+    /// consumer reading that route instead has to treat null as empty rather than as absent.
+    pub positions: Vec<PositionRecord>,
 }
 
 /// One fill, as the venue reports it.
