@@ -2,7 +2,7 @@
 
 NautilusTrader 暴露了若干 **C 兼容** 类型，以便 Cython 生成的 C 扩展或其他原生语言能够调用已编译的 Rust 代码。其中最重要的是 `CVec` —— 一个围绕 Rust `Vec<T>` 的*轻量*封装 (wrapper)，它通过 FFI (外部函数接口) 边界**按值传递**。
 
-以下规则是*严格的*；违反这些规则会导致未定义行为 (undefined behaviour)（通常是双重释放或内存泄漏 (memory leak)）。
+以下规则是*严格的*；违反这些规则会导致未定义行为 (undefined behavior)（通常是双重释放或内存泄漏 (memory leak)）。
 
 ## FFI 边界的快速失败 panic
 

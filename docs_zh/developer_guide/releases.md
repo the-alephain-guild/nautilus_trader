@@ -252,7 +252,7 @@ CI 发布不要使用 `cargo publish --workspace`。发布作业运行 `scripts/
 **格式**：
 
 ```markdown
-- Deprecated `some_config_option`; disable (`False`) to maintain consistent behaviour. Will be removed in future version
+- Deprecated `some_config_option`; disable (`False`) to maintain consistent behavior. Will be removed in future version
 ```
 
 **指南**：

@@ -92,7 +92,7 @@
 使用 `scripts/curate-dataset.sh`：
 
 ```bash
-scripts/curate-dataset.sh <slug> <filename> <download-url> <licence>
+scripts/curate-dataset.sh <slug> <filename> <download-url> <license>
 ```
 
 这会创建一个带版本号的目录（`v1/<slug>/`），其中包含该文件、`LICENSE.txt` 以及包含上述必需字段的 `metadata.json`。

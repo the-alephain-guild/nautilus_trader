@@ -454,7 +454,7 @@ user 频道的 WebSocket 可能在重连时重放事件。执行客户端维护�
 非常长的断连之后（超出内存去重窗口），重放的成交可能发出重复的 `OrderFilled` 事件；在这种情况下
 策略应依赖 REST 对账来恢复规范状态。
 
-## 执行客户端行为 (Execution client behaviour)
+## 执行客户端行为 (Execution client behavior)
 
 本节记录 `CoinbaseExecutionClient` 如何将 Nautilus 订单命令和 Coinbase 交易场所事件转换为
 Nautilus 执行事件。
