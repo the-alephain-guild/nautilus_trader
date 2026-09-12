@@ -29,7 +29,7 @@ get reconciled, including orders this client did not place.
 
 Either engine, selected by ``MARKET``. The two are separate venues on this adapter, so the
 instrument id, the client id and the order size all move with that one constant. Perps differs in
-two ways that matter here: orders carry a one-way position side, and ``reduce_only`` is honoured
+two ways that matter here: orders carry a one-way position side, and ``reduce_only`` is honored
 (spot refuses it), so ``close_positions_on_stop`` flattens rather than placing an opposing trade.
 
 One limit remains, and it is granularity rather than capability: the venue's per-fill endpoint
@@ -67,7 +67,7 @@ NETWORK = Network.TESTNET
 # Switching engines is this one line - everything venue-specific derives from it below. Spot and
 # perps are two separate venues here, so the parts have to move together: a perps market paired
 # with a spot instrument id is rejected rather than routed to the wrong engine, which is the
-# behaviour to want but an annoying way to find out you edited only half the configuration.
+# behavior to want but an annoying way to find out you edited only half the configuration.
 MARKET = Market.SPOT
 
 if MARKET == Market.SPOT:
