@@ -34,10 +34,10 @@ use nautilus_core::UnixNanos;
 use nautilus_model::{
     enums::{
         LiquiditySide, OrderSide as NautilusSide, OrderStatus as NautilusStatus,
-        OrderType as NautilusType, TimeInForce as NautilusTif,
+        OrderType as NautilusType, PositionSide, TimeInForce as NautilusTif,
     },
-    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
-    reports::{fill::FillReport, order::OrderStatusReport},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, TradeId, VenueOrderId},
+    reports::{fill::FillReport, order::OrderStatusReport, position::PositionStatusReport},
     types::{Currency, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
@@ -47,7 +47,7 @@ use crate::{
         decimal::normalize_to,
         enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
     },
-    http::account_reads::{OrderRecord, TradeRecord},
+    http::account_reads::{OrderRecord, PositionRecord, TradeRecord},
 };
 
 /// Why a venue order record cannot become a report.
@@ -64,6 +64,76 @@ pub enum ReportError {
         value: String,
         reason: String,
     },
+    #[error("position {position_id} has an unparsable {field}: {value:?} ({reason})")]
+    InvalidPositionValue {
+        position_id: u64,
+        field: &'static str,
+        value: String,
+        reason: String,
+    },
+}
+
+/// Builds a position status report from one venue position.
+///
+/// # Direction comes from the sign of `size`
+///
+/// `position_side` is `BOTH` on this venue whichever way the position runs - that is what one-way
+/// mode reports, and it carries no direction. Both directions were observed on testnet instead: a
+/// long read `"0.0002"` and a short `"-0.0002"`. Reading the side from `position_side` would report
+/// every short as a long, so the sign is the only source used here.
+///
+/// Nautilus derives the signed quantity from the side plus an unsigned quantity, so the magnitude
+/// is what gets passed.
+///
+/// # Errors
+///
+/// Returns [`ReportError::InvalidPositionValue`] if the size or entry price cannot be parsed.
+pub fn position_status_report(
+    record: &PositionRecord,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    size_precision: u8,
+    ts_init: UnixNanos,
+) -> Result<PositionStatusReport, ReportError> {
+    let invalid =
+        |field: &'static str, value: &str, reason: String| ReportError::InvalidPositionValue {
+            position_id: record.id,
+            field,
+            value: value.to_string(),
+            reason,
+        };
+
+    let signed = Decimal::from_str(&record.size)
+        .map_err(|e| invalid("size", &record.size, e.to_string()))?;
+
+    let side = if signed.is_zero() {
+        PositionSide::Flat
+    } else if signed.is_sign_positive() {
+        PositionSide::Long
+    } else {
+        PositionSide::Short
+    };
+
+    let quantity = quantity_at(record.size.trim_start_matches('-'), size_precision)
+        .map_err(|e| invalid("size", &record.size, e))?;
+
+    // Zero on a position the venue has not closed into: reporting it as `None` rather than as an
+    // average of zero keeps a caller from treating "no entry yet" as "entered at zero".
+    let avg_px_open = Decimal::from_str(&record.avg_entry_price)
+        .map_err(|e| invalid("avgEntryPrice", &record.avg_entry_price, e.to_string()))?;
+    let avg_px_open = (!avg_px_open.is_zero()).then_some(avg_px_open);
+
+    Ok(PositionStatusReport::new(
+        account_id,
+        instrument_id,
+        side,
+        quantity,
+        UnixNanos::from(record.updated_at_ms * 1_000_000),
+        ts_init,
+        None,
+        Some(PositionId::new(record.id.to_string())),
+        avg_px_open,
+    ))
 }
 
 /// Maps the venue's side onto Nautilus's.
@@ -673,5 +743,159 @@ mod fill_tests {
         .expect_err("an unknown fee currency must not become a report");
 
         assert!(matches!(error, ReportError::UnknownFeeCurrency { .. }));
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use nautilus_model::identifiers::{Symbol, Venue};
+    use rstest::rstest;
+
+    use super::*;
+    use crate::config::SODEX_PERPS;
+
+    /// The venue's own response for a real testnet long, verbatim from
+    /// `/accounts/{wallet}/positions`.
+    fn long() -> PositionRecord {
+        PositionRecord {
+            id: 2_586_243,
+            symbol: "BTC-USD".to_string(),
+            size: "0.0002".to_string(),
+            avg_entry_price: "77280".to_string(),
+            avg_close_price: "0".to_string(),
+            position_side: "BOTH".to_string(),
+            leverage: 20,
+            margin_mode: "CROSS".to_string(),
+            initial_margin: "0.7728".to_string(),
+            max_size: "0.0002".to_string(),
+            cum_open_cost: "15.456".to_string(),
+            cum_closed_size: "0".to_string(),
+            cum_trading_fee: "0.0061824".to_string(),
+            realized_pnl: "-0.0061824".to_string(),
+            active: true,
+            is_taken_over: false,
+            take_over_price: "0".to_string(),
+            created_at_ms: 1_789_171_771_461,
+            updated_at_ms: 1_789_171_771_461,
+        }
+    }
+
+    /// The same account's short, which differs from the long only in the sign of `size`.
+    fn short() -> PositionRecord {
+        PositionRecord {
+            id: 2_586_244,
+            size: "-0.0002".to_string(),
+            avg_entry_price: "77260".to_string(),
+            initial_margin: "0.7726".to_string(),
+            cum_open_cost: "15.452".to_string(),
+            cum_trading_fee: "0.0061808".to_string(),
+            realized_pnl: "-0.0061808".to_string(),
+            created_at_ms: 1_789_175_122_512,
+            updated_at_ms: 1_789_175_122_512,
+            ..long()
+        }
+    }
+
+    fn instrument() -> InstrumentId {
+        InstrumentId::new(Symbol::from("BTC-USD"), Venue::from(SODEX_PERPS))
+    }
+
+    fn account() -> AccountId {
+        AccountId::from("SODEX_PERPS-60366")
+    }
+
+    #[rstest]
+    fn a_positive_size_reports_a_long() {
+        let report =
+            position_status_report(&long(), account(), instrument(), 5, UnixNanos::default())
+                .unwrap();
+
+        assert_eq!(report.position_side, PositionSide::Long);
+        assert_eq!(report.quantity.to_string(), "0.00020");
+        assert_eq!(
+            report.signed_decimal_qty,
+            Decimal::from_str("0.00020").unwrap()
+        );
+    }
+
+    #[rstest]
+    fn a_negative_size_reports_a_short_of_the_same_magnitude() {
+        // The only field distinguishing the two on this venue. `position_side` reads `BOTH` on
+        // both, so reading the side from it would report this short as a long.
+        let report =
+            position_status_report(&short(), account(), instrument(), 5, UnixNanos::default())
+                .unwrap();
+
+        assert_eq!(report.position_side, PositionSide::Short);
+        assert_eq!(report.quantity.to_string(), "0.00020");
+        assert_eq!(
+            report.signed_decimal_qty,
+            Decimal::from_str("-0.00020").unwrap()
+        );
+    }
+
+    #[rstest]
+    fn both_directions_report_the_venue_side_field_as_uninformative() {
+        // Guards the reason the sign is used: if the venue ever starts distinguishing here, these
+        // fixtures stop matching what is deployed and this test is the place that says so.
+        assert_eq!(long().position_side, "BOTH");
+        assert_eq!(short().position_side, "BOTH");
+    }
+
+    #[rstest]
+    fn the_entry_price_and_venue_id_carry_through() {
+        let report =
+            position_status_report(&long(), account(), instrument(), 5, UnixNanos::default())
+                .unwrap();
+
+        assert_eq!(report.avg_px_open, Some(Decimal::from(77_280)));
+        assert_eq!(
+            report.venue_position_id.map(|id| id.to_string()),
+            Some("2586243".to_string())
+        );
+    }
+
+    #[rstest]
+    fn the_report_timestamp_is_the_update_time_in_nanoseconds() {
+        let record = long();
+        let report =
+            position_status_report(&record, account(), instrument(), 5, UnixNanos::default())
+                .unwrap();
+
+        assert_eq!(report.ts_last.as_u64(), record.updated_at_ms * 1_000_000);
+    }
+
+    #[rstest]
+    fn a_zero_entry_price_reports_no_average_rather_than_zero() {
+        // Zero would read as "entered at a price of nothing"; absence reads as "not known".
+        let record = PositionRecord {
+            avg_entry_price: "0".to_string(),
+            ..long()
+        };
+        let report =
+            position_status_report(&record, account(), instrument(), 5, UnixNanos::default())
+                .unwrap();
+
+        assert_eq!(report.avg_px_open, None);
+    }
+
+    #[rstest]
+    fn an_unparsable_size_names_the_position_rather_than_an_order() {
+        let record = PositionRecord {
+            size: "not-a-number".to_string(),
+            ..long()
+        };
+        let error =
+            position_status_report(&record, account(), instrument(), 5, UnixNanos::default())
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ReportError::InvalidPositionValue {
+                position_id: 2_586_243,
+                field: "size",
+                ..
+            }
+        ));
     }
 }
