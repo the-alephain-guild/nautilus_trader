@@ -3,7 +3,7 @@
 NautilusTrader 提供了一个用 Rust 实现的高性能订单簿，能够基于 L1 到 L3 数据维护完整的订单簿状态。`OrderBook` 是追踪公开市场深度的核心组件，而 `OwnOrderBook` 则单独追踪你自己的订单，从而可以生成过滤后的视图，展示真实可用的流动性。
 
 :::note
-本指南记录的是 Rust API。这些类型也可以通过 PyO3 绑定在 Python 中使用（`nautilus_pyo3.OrderBook`、`nautilus_pyo3.OwnOrderBook`）。由 `cache.order_book()` 返回的 v1 旧版 Cython `OrderBook`（`nautilus_trader.model.book.OrderBook`）具有相似但不完全相同的接口。两者的差异请参阅 API 参考文档。
+本指南记录的是 Rust 模型 API，订阅与处理器示例用的是 Python 策略与 actor API。Python 侧以 `nautilus_trader.model.OrderBook` 与 `nautilus_trader.model.OwnOrderBook` 暴露这两个类型；其 Python 接口见 model API 参考。
 :::
 
 ## 订单簿类型

@@ -319,7 +319,7 @@ config = KrakenDataClientConfig(
 
 ## 订单路由（现货）
 
-Rust 现货执行客户端默认通过 Kraken 已认证的 WebSocket v2 trade 频道路由 `submit_order`、`modify_order`、`cancel_order` 和 `submit_order_list`，并以 REST 作为回退。Python 实时 `KrakenExecutionClient` 目前无论下方旋钮如何设置都通过 REST 路由所有订单；只有在使用 Rust 执行客户端（`KrakenSpotExecutionClient`）时——通过 Rust 工厂或直接构造 pyo3 暴露的 `nautilus_trader.core.nautilus_pyo3.kraken.KrakenExecClientConfig`——WebSocket trade 路由才会生效。
+Rust 现货执行客户端默认通过 Kraken 已认证的 WebSocket v2 trade 频道路由 `submit_order`、`modify_order`、`cancel_order` 和 `submit_order_list`，并以 REST 作为回退。Python 实时 `KrakenExecutionClient` 目前无论下方旋钮如何设置都通过 REST 路由所有订单；只有在使用 Rust 执行客户端（`KrakenSpotExecutionClient`）时——通过 Rust 工厂或直接构造 pyo3 暴露的 `nautilus_trader.adapters.kraken` 暴露的 `KrakenExecClientConfig`——WebSocket trade 路由才会生效。
 
 ### 通过 REST 路由的订单形态
 

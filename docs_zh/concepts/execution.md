@@ -191,7 +191,7 @@ engine.add_exec_algorithm(exec_algorithm)
 ```python
 from decimal import Decimal
 from nautilus_trader.model.data import BarType
-from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.testkit.providers import TestInstrumentProvider
 from nautilus_trader.examples.strategies.ema_cross_twap import EMACrossTWAP, EMACrossTWAPConfig
 
 # 配置你的策略

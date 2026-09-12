@@ -480,8 +480,8 @@ USDH 现货余额与永续清算所（perp clearinghouse）视图合并，因此
 
 ```python
 from decimal import Decimal
-from nautilus_trader.core.nautilus_pyo3 import HyperliquidEnvironment
-from nautilus_trader.core.nautilus_pyo3 import HyperliquidHttpClient
+from nautilus_trader.adapters.hyperliquid import HyperliquidEnvironment
+from nautilus_trader.adapters.hyperliquid import HyperliquidHttpClient
 
 client = HyperliquidHttpClient.from_env(HyperliquidEnvironment.MAINNET)
 

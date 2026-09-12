@@ -73,12 +73,13 @@ self.unsubscribe_option_greeks(instrument_id, client_id=client_id)
 传入的数据、运行快照定时器，以及处理待落地的线缆 (wire) 订阅变更。
 
 ```python
-from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.model import OptionSeriesId
+from nautilus_trader.model import StrikeRange
 
-series_id = nautilus_pyo3.OptionSeriesId(...)  # 标识系列（场所、标的、到期日）
+series_id = OptionSeriesId(...)  # 标识系列（场所、标的、到期日）
 
 # 订阅 ATM 上下各 5 个行权价，每 1000ms 生成一次快照
-strike_range = nautilus_pyo3.StrikeRange.atm_relative(strikes_above=5, strikes_below=5)
+strike_range = StrikeRange.atm_relative(strikes_above=5, strikes_below=5)
 self.subscribe_option_chain(
     series_id,
     strike_range=strike_range,
@@ -101,12 +102,12 @@ def on_option_chain(self, chain) -> None:
 
 `StrikeRange` 控制链订阅中哪些行权价处于活跃状态：
 
-| 变体            | 描述                           | 示例                                             |
-| ------------- | ---------------------------- | ---------------------------------------------- |
-| `Fixed`       | 订阅一组明确指定的行权价。                | `nautilus_pyo3.StrikeRange.fixed([...])`       |
-| `AtmRelative` | 当前 ATM 行权价上下各 N 个行权价。        | `nautilus_pyo3.StrikeRange.atm_relative(5, 5)` |
-| `AtmPercent`  | ATM 周围某个百分比区间内的所有行权价。        | `nautilus_pyo3.StrikeRange.atm_percent(0.10)`  |
-| `Delta`       | call 或 put delta 接近某目标值的行权价。 | `nautilus_pyo3.StrikeRange.delta(0.25, 0.05)`  |
+| 变体            | 描述                           | 示例                               |
+| ------------- | ---------------------------- | -------------------------------- |
+| `Fixed`       | 订阅一组明确指定的行权价。                | `StrikeRange.fixed([...])`       |
+| `AtmRelative` | 当前 ATM 行权价上下各 N 个行权价。        | `StrikeRange.atm_relative(5, 5)` |
+| `AtmPercent`  | ATM 周围某个百分比区间内的所有行权价。        | `StrikeRange.atm_percent(0.10)`  |
+| `Delta`       | call 或 put delta 接近某目标值的行权价。 | `StrikeRange.delta(0.25, 0.05)`  |
 
 对于基于 ATM 的变体，订阅会延迟到 ATM 价格确定之后才进行。
 ATM 由场所提供的 `OptionGreeks` 更新中嵌入的远期价格（`underlying_price`

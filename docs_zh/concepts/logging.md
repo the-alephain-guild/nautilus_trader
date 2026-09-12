@@ -447,9 +447,9 @@ config_node = TradingNodeConfig(
 或者，直接调用 `init_tracing()`：
 
 ```python
-from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.common import init_tracing
 
-nautilus_pyo3.init_tracing()
+init_tracing()
 ```
 
 ### 使用 RUST_LOG 过滤

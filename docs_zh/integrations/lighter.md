@@ -119,8 +119,8 @@ cargo run -p nautilus-lighter --bin lighter-integrator-revoke testnet   # testne
 
 ```python
 # Python (PyO3 绑定) - 读取与 Rust bin 相同的环境变量
-from nautilus_trader.core.nautilus_pyo3 import revoke_lighter_integrator
-from nautilus_trader.core.nautilus_pyo3 import LighterEnvironment
+from nautilus_trader.adapters.lighter import revoke_lighter_integrator
+from nautilus_trader.adapters.lighter import LighterEnvironment
 
 await revoke_lighter_integrator()  # mainnet (默认)
 await revoke_lighter_integrator(LighterEnvironment.TESTNET)  # testnet

@@ -655,7 +655,7 @@ Deribit 提供一个测试网（testnet）环境，可在不使用真实资金�
 要使用测试网，请在客户端配置中设置 `environment=DeribitEnvironment.TESTNET`：
 
 ```python
-from nautilus_trader.core.nautilus_pyo3 import DeribitEnvironment
+from nautilus_trader.adapters.deribit import DeribitEnvironment
 
 config = TradingNodeConfig(
     data_clients={
@@ -744,8 +744,8 @@ from nautilus_trader.adapters.deribit import DeribitLiveDataClientFactory
 from nautilus_trader.adapters.deribit import DeribitLiveExecClientFactory
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import TradingNodeConfig
-from nautilus_trader.core.nautilus_pyo3 import DeribitEnvironment
-from nautilus_trader.core.nautilus_pyo3 import DeribitProductType
+from nautilus_trader.adapters.deribit import DeribitEnvironment
+from nautilus_trader.adapters.deribit import DeribitProductType
 from nautilus_trader.live.node import TradingNode
 
 config = TradingNodeConfig(
@@ -809,7 +809,7 @@ Deribit 测试网客户端：
 加载多种产品类型的示例：
 
 ```python
-from nautilus_trader.core.nautilus_pyo3 import DeribitProductType
+from nautilus_trader.adapters.deribit import DeribitProductType
 
 config = DeribitDataClientConfig(
     product_types=(

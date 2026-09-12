@@ -25,7 +25,7 @@ Coinbase 适配器由 Rust 实现，由 v2 系统消费。适配器不提供旧�
 - `CoinbaseExecutionClient`：执行客户端（现货或 CFM 衍生品；REST 下单 + WS 数据流）。
 - `CoinbaseExecutionClientFactory`：执行客户端工厂；现货还是 CFM 衍生品由配置中的 `account_type` 选择。
 
-可从 `nautilus_trader.core.nautilus_pyo3.coinbase` 访问的 PyO3 接口：
+可从 `nautilus_trader.adapters.coinbase` 访问的接口：
 
 - `CoinbaseDataClientConfig`、`CoinbaseExecClientConfig`
 - `CoinbaseEnvironment`、`CoinbaseMarginType`
@@ -618,9 +618,9 @@ WebSocket 握手完成后立即发送排队的订阅。
 配置通过 PyO3 导出的类型从 Python 构造：
 
 ```python
-from nautilus_trader.core.nautilus_pyo3 import CoinbaseDataClientConfig
-from nautilus_trader.core.nautilus_pyo3 import CoinbaseExecClientConfig
-from nautilus_trader.core.nautilus_pyo3 import CoinbaseEnvironment
+from nautilus_trader.adapters.coinbase import CoinbaseDataClientConfig
+from nautilus_trader.adapters.coinbase import CoinbaseExecutionClientConfig
+from nautilus_trader.adapters.coinbase import CoinbaseEnvironment
 
 data_config = CoinbaseDataClientConfig(
     api_key="YOUR_COINBASE_API_KEY",

@@ -633,7 +633,7 @@ flowchart LR
 from nautilus_trader import TEST_DATA_DIR
 from nautilus_trader.adapters.binance.loaders import BinanceOrderBookDeltaDataLoader
 from nautilus_trader.persistence.wranglers import OrderBookDeltaDataWrangler
-from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.testkit.providers import TestInstrumentProvider
 
 
 # 加载原始数据

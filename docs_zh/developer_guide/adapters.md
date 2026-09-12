@@ -1886,7 +1886,7 @@ tests/integration_tests/adapters/your_adapter/
 **指导原则：**
 
 - 在 `tests/integration_tests/adapters/<adapter>/` 中测试适配器的 Python 表面（工具提供者、数据/执行客户端、工厂）。
-- Mock PyO3 边界（`nautilus_pyo3` 垫片、桩 Rust 客户端），使测试保持快速，同时验证配置、工厂接线和错误处理匹配导出的 Rust API。
+- Mock Rust 边界（桩 Rust 客户端，桩元数据指向公开的 `nautilus_trader.adapters.<adapter>` 包），使测试保持快速，同时验证配置、工厂接线和错误处理匹配导出的 Rust API。
 - 镜像 Rust 集成覆盖：当 Rust 套件添加新行为（例如重连重放、错误传播）时，断言 Python 层执行相同的序列（连接/断开、提交/修改/撤销转换、场所 ID 传递、故障处理）。BitMEX 的 Python 测试提供了目标详细级别。
 
 ---

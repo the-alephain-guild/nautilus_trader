@@ -420,9 +420,10 @@ Binance USD-M 标记价格负载可能包含一个 `ap` 移动平均字段。Rus
 订阅特定期货金融工具的 24 小时行情统计：
 
 ```python
-from nautilus_trader.core import nautilus_pyo3 as pyo3
+from nautilus_trader.model import ClientId
+from nautilus_trader.model import DataType
 
-client_id = pyo3.ClientId.from_str("BINANCE")
+client_id = ClientId.from_str("BINANCE")
 
 self.subscribe_data(
     data_type=pyo3.DataType(
@@ -472,9 +473,10 @@ def on_data(self, data: Data):
 - 所有交易代码（`!forceOrder@arr`），通过省略 `instrument_id` 实现。
 
 ```python
-from nautilus_trader.core import nautilus_pyo3 as pyo3
+from nautilus_trader.model import ClientId
+from nautilus_trader.model import DataType
 
-client_id = pyo3.ClientId.from_str("BINANCE")
+client_id = ClientId.from_str("BINANCE")
 
 # 特定金融工具
 self.subscribe_data(
@@ -737,7 +739,7 @@ node.build()
 `Sbe`（默认）使用 Binance 的 Simple Binary Encoding 流，并需要 Ed25519 密钥（参见[密钥类型](#密钥类型)）；如果没有这些密钥，客户端将拒绝连接。`Json` 使用公开流，无需凭证。完整的现货 `BookDeltas` 订阅在 `Sbe` 模式下使用 25ms 的 SBE 增量深度流，或在 `Json` 模式下使用 100ms 的公开 JSON 增量深度流，并配合 REST 快照同步。显式深度订阅使用部分订单簿快照（参见[订单簿](#订单簿)）。
 
 :::note
-在 `nautilus_trader.core.nautilus_pyo3.binance` 上以 `BinanceSpotMarketDataMode` 形式暴露给 Python；不在旧版 Python 适配器配置中。
+在 `nautilus_trader.adapters.binance` 上以 `BinanceSpotMarketDataMode` 形式暴露给 Python；不在旧版 Python 适配器配置中。
 :::
 
 ### 密钥类型

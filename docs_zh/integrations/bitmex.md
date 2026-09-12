@@ -813,7 +813,7 @@ BitMEX 实时交易的典型配置包括测试网和主网选项：
 ```python
 from nautilus_trader.adapters.bitmex.config import BitmexDataClientConfig
 from nautilus_trader.adapters.bitmex.config import BitmexExecClientConfig
-from nautilus_trader.core.nautilus_pyo3 import BitmexEnvironment
+from nautilus_trader.adapters.bitmex import BitmexEnvironment
 
 # 使用环境变量（推荐）
 testnet_data_config = BitmexDataClientConfig(

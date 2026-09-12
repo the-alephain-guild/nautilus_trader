@@ -220,21 +220,17 @@ margin = adjusted_notional * instrument.margin_init
 
 ### 默认行为 (Default behavior)
 
-`MarginAccount` 默认使用 `LeveragedMarginModel`。可通过代码覆盖：
+`MarginAccount` 默认使用 `LeveragedMarginModel`。回测要改用 `StandardMarginModel`，把它直接传给
+`BacktestVenueConfig.margin_model`：
 
 ```python
 from nautilus_trader.backtest.models import LeveragedMarginModel
 from nautilus_trader.backtest.models import StandardMarginModel
-from nautilus_trader.test_kit.stubs.execution import TestExecStubs
-
-account = TestExecStubs.margin_account()
-
-# Traditional broker behavior
-account.set_margin_model(StandardMarginModel())
-
-# Or the leveraged model (default)
-account.set_margin_model(LeveragedMarginModel())
 ```
+
+当前的 Python 绑定只接受 `StandardMarginModel()` 或 `LeveragedMarginModel()` 实例本身，既不接受
+自定义的保证金模型子类，也不接受 `MarginModelConfig` 包装器。回测层面的配置见
+[回测](../../docs/concepts/backtesting/accounts-and-margin.md#margin-models)。
 
 ### 实操示例：EUR/USD
 

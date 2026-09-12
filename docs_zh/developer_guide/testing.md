@@ -186,7 +186,7 @@ make cargo-test-crate-nautilus-serialization FEATURES="capnp"
 - 将每个测试编写为独立的 `def test_*()` 函数。
 - 使用 `@pytest.fixture` 进行共享设置（金融工具、引擎实例、数据）。当需要清理时优先使用 `yield` 形式的 fixture（如 `engine.dispose()`）。
 - 使用 `@pytest.mark.parametrize` 来覆盖多个输入，而无需重复测试主体。
-- 从 `nautilus_trader.model` 导入模型类型，而不是从 `nautilus_trader.core.nautilus_pyo3`。
+- 从 `nautilus_trader.model` 导入模型类型，而不是从 `nautilus_trader._libnautilus`。
 - 测试 provider 位于 `python/tests/providers.py`。使用 `TestInstrumentProvider` 和 `TestDataProvider` 获取常用金融工具和数据。
 - 对依赖未完成特性的测试，使用 `@pytest.mark.skip(reason="WIP: <description>")` 标记，而不是删除它们。
 
@@ -200,7 +200,7 @@ v1 旧版测试套件混用测试类和自由函数。新加入此套件的测�
 
 ## 等待异步效果
 
-等待后台工作完成时，优先使用 `nautilus_trader.test_kit.functions` 中的轮询辅助函数 `await eventually(...)` 和 `nautilus_common::testing` 中的 `wait_until_async(...)`，而不是任意的 sleep。它们能更快地暴露失败，并减少 CI 中的不稳定性，因为它们会在条件满足时立即停止，或在超时时给出有用的错误。
+在 Rust 测试中，优先使用由测试自己持有的通知通道或其他事件，而不是反复求值某个条件。先订阅，再读取权威状态，并在每次收到通知后重新检查一次——否则读取与等待之间发生的状态跃迁会被漏掉。确实没有合适信号时，用 `nautilus_common::testing` 的 `wait_until_async(...)`：它在条件满足时立即停止，并带有上限超时。只有当时间窗口本身就是被测对象时，才使用固定时长的 sleep。
 
 ## Mock
 
@@ -240,59 +240,21 @@ v1 旧版测试套件混用测试类和自由函数。新加入此套件的测�
 
 在 VS Code 中，你可以直接选择特定的测试用例进行调试。
 
-## Python + Rust 混合调试
+## Python 与 Rust 联合调试
 
-此工作流允许你在 VS Code 的 Jupyter notebook 中同时调试 Python 和 Rust 代码。
+当原生调试器需要 Rust 符号时，用 workspace 的 `debug-pyo3` Cargo profile 构建 PyO3 扩展：
 
-### 设置
-
-安装以下 VS Code 扩展：Rust Analyzer、CodeLLDB、Python、Jupyter。
-
-### 步骤 0：以调试符号编译 `nautilus_trader`
-
-   ```bash
-   cd nautilus_trader && make build-debug-pyo3
-   ```
-
-### 步骤 1：设置调试配置
-
-```python
-from nautilus_trader.test_kit.debug_helpers import setup_debugging
-
-setup_debugging()
+```bash
+make sync
+(
+  cd python
+  CARGO_TARGET_DIR=../target \
+    uv run --no-sync maturin develop --profile debug-pyo3
+)
 ```
 
-此命令会创建所需的 VS Code 调试配置，并为 Python 调试器启动 `debugpy` 服务器。
-
-默认情况下，`setup_debugging()` 期望 `.vscode` 文件夹位于 `nautilus_trader` 根目录的上一级。
-如果你的工作区布局不同，请调整目标位置。
-
-### 步骤 2：设置断点
-
-- **Python 断点：** 在 VS Code 中的 Python 源文件中设置。
-- **Rust 断点：** 在 VS Code 中的 Rust 源文件中设置。
-
-### 步骤 3：启动混合调试
-
-1. 在 VS Code 中选择 **"Debug Jupyter + Rust (Mixed)"** 配置。
-2. 启动调试（F5）或点击绿色运行箭头。
-3. Python 和 Rust 调试器都会附加到你的 Jupyter 会话。
-
-### 步骤 4：执行代码
-
-运行调用 Rust 函数的 Jupyter notebook 单元格。调试器会在 Python 和 Rust 代码的断点处停下。
-
-### 可用配置
-
-`setup_debugging()` 创建以下 VS Code 配置：
-
-- **`Debug Jupyter + Rust (Mixed)`** - Jupyter notebook 的混合调试。
-- **`Jupyter Mixed Debugging (Python)`** - notebook 的纯 Python 调试。
-- **`Rust Debugger (for Jupyter debugging)`** - notebook 的纯 Rust 调试。
-
-### 示例
-
-打开并运行示例 notebook：`debug_mixed_jupyter.ipynb`。
+先用 Python 调试器启动 Python 程序或 notebook，再把 LLDB 或 GDB 附加到该 Python 进程上，以便在
+Rust 侧下断点。本仓库不生成编辑器的启动配置，两个调试会话都需要在你所用的编辑器中自行配置。
 
 ### 参考
 

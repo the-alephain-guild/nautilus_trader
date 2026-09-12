@@ -1,9 +1,9 @@
 # 数据测试规范 (Data Testing Spec)
 
-本节定义了一套严格的测试矩阵，用于通过 `DataTester` actor 验证适配器的数据功能。Python
-（`nautilus_trader.test_kit.strategies.tester_data`）和 Rust
-（`nautilus_testkit::testers`）都提供了 `DataTester`。每个测试用例都由一个带前缀的 ID
-（例如 TC-D01）标识，并按功能分组。
+本节定义了一套严格的测试矩阵，用于通过 Rust 的 `DataTester` actor 验证适配器的数据功能。Python
+侧把它作为内置 actor 暴露，经 `nautilus_trader.testkit.DataTesterConfig` 配置；Rust 侧从
+`nautilus_testkit::testers` 导入。每个测试用例都由一个带前缀的 ID（例如 TC-D01）标识，并按功能
+分组。
 
 **每个适配器都必须通过与其所支持数据类型相匹配的那部分测试。**
 

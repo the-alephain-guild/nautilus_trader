@@ -1,9 +1,9 @@
 # 执行测试规范 (Execution Testing Spec)
 
-本节定义了一套严格的测试矩阵，用于借助 `ExecTester` 策略验证适配器的执行
-功能。Python（`nautilus_trader.test_kit.strategies.tester_exec`）和 Rust
-（`nautilus_testkit::testers`）都提供了 `ExecTester`。每个测试用例都用带前缀
-的 ID（例如 TC-E01）标识，并按功能分组。
+本节定义了一套严格的测试矩阵，用于借助 Rust 的 `ExecTester` 策略验证适配器的执行
+功能。Python 侧把它作为内置策略暴露，经 `nautilus_trader.testkit.ExecTesterConfig`
+配置；Rust 侧从 `nautilus_testkit::testers` 导入。每个测试用例都用带前缀的 ID
+（例如 TC-E01）标识，并按功能分组。
 
 **每个适配器都必须通过与其所支持能力相匹配的那一部分测试。**
 

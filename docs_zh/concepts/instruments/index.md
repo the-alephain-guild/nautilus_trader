@@ -144,7 +144,7 @@ from nautilus_trader.model.instruments import CurrencyPair
 通用测试工具可以通过 `TestInstrumentProvider` 实例化：
 
 ```python
-from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.testkit.providers import TestInstrumentProvider
 
 audusd = TestInstrumentProvider.default_fx_ccy("AUD/USD")
 ```

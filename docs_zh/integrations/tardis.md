@@ -331,12 +331,12 @@ docker run -p 8000:8000 -p 8001:8001 -e "TM_API_KEY=YOUR_API_KEY" -d tardisdev/t
 import asyncio
 from pathlib import Path
 
-from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.adapters.tardis import run_tardis_machine_replay
 
 
 async def run():
     config_filepath = Path("YOUR_CONFIG_FILEPATH")
-    await nautilus_pyo3.run_tardis_machine_replay(str(config_filepath.resolve()))
+    await run_tardis_machine_replay(str(config_filepath.resolve()))
 
 
 if __name__ == "__main__":
@@ -669,11 +669,11 @@ async fn main() {
 ```python
 import asyncio
 
-from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.adapters.tardis import TardisHttpClient
 
 
 async def run():
-    http_client = nautilus_pyo3.TardisHttpClient()
+    http_client = TardisHttpClient()
 
     instrument = await http_client.instrument("bitmex", "xbtusd")
     print(f"Received: {instrument}")

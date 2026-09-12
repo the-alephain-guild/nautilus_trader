@@ -789,7 +789,7 @@ export OKX_API_PASSPHRASE="your_demo_passphrase"
 在客户端配置中设置 `environment=OKXEnvironment.DEMO`：
 
 ```python
-from nautilus_trader.core.nautilus_pyo3 import OKXEnvironment
+from nautilus_trader.adapters.okx import OKXEnvironment
 
 config = TradingNodeConfig(
     data_clients={
@@ -1012,10 +1012,10 @@ from nautilus_trader.adapters.okx.factories import (
     OKXLiveExecClientFactory,
 )
 from nautilus_trader.config import InstrumentProviderConfig, TradingNodeConfig
-from nautilus_trader.core.nautilus_pyo3 import OKXContractType
-from nautilus_trader.core.nautilus_pyo3 import OKXEnvironment
-from nautilus_trader.core.nautilus_pyo3 import OKXInstrumentType
-from nautilus_trader.core.nautilus_pyo3 import OKXMarginMode
+from nautilus_trader.adapters.okx import OKXContractType
+from nautilus_trader.adapters.okx import OKXEnvironment
+from nautilus_trader.adapters.okx import OKXInstrumentType
+from nautilus_trader.adapters.okx import OKXMarginMode
 from nautilus_trader.live.node import TradingNode
 
 config = TradingNodeConfig(
