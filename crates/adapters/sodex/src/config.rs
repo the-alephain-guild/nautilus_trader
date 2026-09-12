@@ -46,6 +46,12 @@ pub const ENV_API_KEY_NAME: &str = "SODEX_API_KEY_NAME";
 pub const ENV_API_PRIVATE_KEY: &str = "SODEX_API_PRIVATE_KEY";
 
 /// Environment variable holding the numeric account id.
+///
+/// One value serves both engines. `/accounts/{address}/state` answered the same `aid` on spot and
+/// on perps for the same wallet, so there is no second id to hunt for - unlike the API keys, which
+/// really are registered per engine. Worth stating because the key being per-engine invites the
+/// assumption that the id is too, and that assumption sends you looking for something that does
+/// not exist.
 pub const ENV_ACCOUNT_ID: &str = "SODEX_ACCOUNT_ID";
 
 /// Environment variable holding the account's wallet address.
