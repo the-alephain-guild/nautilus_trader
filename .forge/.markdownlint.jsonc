@@ -1,0 +1,10 @@
+// markdownlint configuration for `.forge/`, the fork's Guild planning and review documents.
+//
+// Same single exception as `docs_zh/.markdownlint.jsonc`, for the same reason: these documents are
+// written in Chinese, and MD060's "aligned" style cannot hold on a CJK table at the same time as
+// the repository's own `check-markdown-tables` hook, which pads by display width where a CJK
+// character occupies two columns. Every other rule still applies.
+{
+  "extends": "../.markdownlint.jsonc",
+  "MD060": false
+}
