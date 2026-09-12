@@ -94,6 +94,9 @@ def main() -> None:
         LiveNode.builder("SODEX-EXEC-TESTER-001", TRADER_ID, Environment.LIVE)
         # On: the account reads give the engine order status, and it infers fills from them.
         .with_reconciliation(reconciliation=True)
+        # Bypassed deliberately: this program exists to observe what the adapter does with an
+        # order, and a pre-trade rejection would answer a different question. The strategy runs
+        # (`paper_trading.py`, and anything headed for production) leave it on.
         .with_risk_engine_config(LiveRiskEngineConfig(bypass=True))
         .add_data_client(
             VENUE_NAME,

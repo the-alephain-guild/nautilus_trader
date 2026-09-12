@@ -48,6 +48,11 @@ Two limits worth holding in view when reading the results:
 - **Fills are still optimistic.** The matching engine prices against bars and trades without
   modeling the book, so queue position and depth cost nothing here. Treat fills as proof the
   plumbing works, not as evidence the size is tradable.
+- **The risk engine caps one order, not total exposure.** It is on here, but 2.0's risk engine
+  carries a per-order notional cap, a free-balance check and a submit rate limit - there is no
+  cumulative or per-day notional ceiling. The pyramid's total is bounded by the strategy's own
+  ``max_total_notional``, which is strategy state rather than an engine guarantee. Anything that
+  has to hold across restarts or across strategies needs a separate mechanism.
 - **Simulated fees are the engine's, not the venue's.** The sandbox applies its own fee model. The
   live execution client charges the venue's own maker/taker rates taken from the instrument, and
   the venue deducts a spot buy's fee from the base asset received rather than the quote. Paper
@@ -104,6 +109,11 @@ BASE_NOTIONAL = Decimal(80)
 MAX_TOTAL_NOTIONAL = Decimal(250)
 STARTING_BALANCE = 5_000.0
 
+# The largest order the strategy can legitimately place is one base notional: the pyramid factors
+# are (1.0, 0.7, 0.5, 0.35), so every layer after the first is smaller. A cap at 1.5x that never
+# fires in normal operation and stops a sizing bug from reaching the venue as one enormous order.
+MAX_ORDER_NOTIONAL = BASE_NOTIONAL * Decimal("1.5")
+
 # The venue's quote coin is in no standard currency table, and the data client only registers it at
 # connect - after the sandbox configuration below needs it to denominate a starting balance.
 # Registering it here, at the engine's full fixed-point width, is what keeps the two definitions
@@ -122,7 +132,16 @@ def main() -> None:
         LiveNode.builder("SODEX-ADAPTIVE-MARTINGALE-PAPER", TRADER_ID, Environment.SANDBOX)
         # Nothing to reconcile against: the account exists only inside the matching engine.
         .with_reconciliation(reconciliation=False)
-        .with_risk_engine_config(LiveRiskEngineConfig(bypass=True))
+        # Not bypassed. Bypassing skips the per-order notional cap, the free-balance check and the
+        # submit rate limit at once, and a paper run whose risk path differs from production's is
+        # not rehearsing production. It costs nothing here: market orders price off the LAST bars
+        # this strategy already subscribes to, so the engine can value them.
+        .with_risk_engine_config(
+            LiveRiskEngineConfig(
+                bypass=False,
+                max_notional_per_order={str(INSTRUMENT_ID): MAX_ORDER_NOTIONAL},
+            ),
+        )
         .add_data_client(
             SODEX_SPOT,
             SodexDataClientFactory(),
