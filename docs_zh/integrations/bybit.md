@@ -376,7 +376,7 @@ Bybit 还会在持仓更新时通过 `adlRankIndicator` 字段发布 ADL 排名�
 | `tp_trigger_price` | `str` 或 `float` | 自定义 TP 触发价格（覆盖 `take_profit`）。                        |
 | `sl_trigger_price` | `str` 或 `float` | 自定义 SL 触发价格（覆盖 `stop_loss`）。                          |
 | `close_on_trigger` | `bool`          | 当 TP/SL 触发时关闭持仓。默认值：`False`。                          |
-| `position_idx`     | `int`           | 对冲模式持仓索引。参见[对冲模式](#对冲模式bothsides)。             |
+| `position_idx`     | `int`           | 对冲模式持仓索引。参见[对冲模式](#对冲模式bothsides)。                    |
 | `bbo_side_type`    | `str`           | 正向/反向 BBO 方向：`"Queue"` 或 `"Counterparty"`。            |
 | `bbo_level`        | `str` 或 `int`   | 正向/反向 BBO 盘口档位：`"1"` 到 `"5"`。                         |
 
@@ -826,7 +826,7 @@ WebSocket 流接收资金费率数据。Bybit 在 ticker 更新中提供 `fundin
 | `ws_trade_timeout_secs`                 | `5.0`     | 等待交易 WebSocket 确认的超时时间（秒）。                                                                     |
 | `ws_auth_timeout_secs`                  | `5.0`     | 等待认证 WebSocket 确认的超时时间（秒）。                                                                     |
 | `futures_leverages`                     | `None`    | `BybitSymbol` 到杠杆设置的映射。                                                                        |
-| `position_mode`                         | `None`    | `BybitSymbol` 到持仓模式的映射。参见[对冲模式](#对冲模式bothsides)。                                        |
+| `position_mode`                         | `None`    | `BybitSymbol` 到持仓模式的映射。参见[对冲模式](#对冲模式bothsides)。                                               |
 | `margin_mode`                           | `None`    | 账户的保证金模式设置。                                                                                    |
 | `transport_backend`                     | `Sockudo` | WebSocket 传输后端。                                                                                |
 

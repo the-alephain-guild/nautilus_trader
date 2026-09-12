@@ -688,22 +688,22 @@ config = TradingNodeConfig(
 
 ### 数据客户端配置选项 (Data client configuration options)
 
-| 选项                                 | 默认值       | 说明                                                      |
-| ---------------------------------- | --------- | ------------------------------------------------------- |
-| `api_key`                          | `None`    | Deribit API key；省略时从环境变量加载。                             |
-| `api_secret`                       | `None`    | Deribit API secret；省略时从环境变量加载。                          |
-| `product_types`                    | `None`    | 要加载的产品类型（Future、Option、Spot 等）。若为 `None`，默认为 Future。    |
-| `environment`                      | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。                            |
-| `base_url_http`                    | `None`    | 覆盖 HTTP REST 基础 URL。                                    |
-| `base_url_ws`                      | `None`    | 覆盖 WebSocket 基础 URL。                                    |
-| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                           |
-| `http_timeout_secs`                | `60`      | REST 调用的请求超时（秒）。                                        |
-| `max_retries`                      | `3`       | 可恢复错误的最大重试次数。                                           |
-| `retry_delay_initial_ms`           | `1,000`   | 重试前的初始延迟（毫秒）。                                           |
-| `retry_delay_max_ms`               | `10,000`  | 重试之间的最大延迟（毫秒）。                                          |
-| `update_instruments_interval_mins` | `60`      | 金融工具刷新之间的间隔（分钟）。                                        |
+| 选项                                 | 默认值       | 说明                                                              |
+| ---------------------------------- | --------- | --------------------------------------------------------------- |
+| `api_key`                          | `None`    | Deribit API key；省略时从环境变量加载。                                     |
+| `api_secret`                       | `None`    | Deribit API secret；省略时从环境变量加载。                                  |
+| `product_types`                    | `None`    | 要加载的产品类型（Future、Option、Spot 等）。若为 `None`，默认为 Future。            |
+| `environment`                      | `None`    | 环境枚举（`MAINNET` 或 `TESTNET`）。                                    |
+| `base_url_http`                    | `None`    | 覆盖 HTTP REST 基础 URL。                                            |
+| `base_url_ws`                      | `None`    | 覆盖 WebSocket 基础 URL。                                            |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                   |
+| `http_timeout_secs`                | `60`      | REST 调用的请求超时（秒）。                                                |
+| `max_retries`                      | `3`       | 可恢复错误的最大重试次数。                                                   |
+| `retry_delay_initial_ms`           | `1,000`   | 重试前的初始延迟（毫秒）。                                                   |
+| `retry_delay_max_ms`               | `10,000`  | 重试之间的最大延迟（毫秒）。                                                  |
+| `update_instruments_interval_mins` | `60`      | 金融工具刷新之间的间隔（分钟）。                                                |
 | `auto_load_missing_instruments`    | `False`   | 在订阅时惰性加载未缓存的金融工具；参见 [订阅时惰性加载](#订阅时惰性加载-lazy-load-on-subscribe)。 |
-| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                         |
+| `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                                 |
 
 #### 订阅时惰性加载 (Lazy-load on subscribe)
 

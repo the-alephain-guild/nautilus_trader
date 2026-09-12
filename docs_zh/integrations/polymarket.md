@@ -817,7 +817,7 @@ Rust 适配器中为 `ws_max_subscriptions`），默认为 200；Polymarket
 - 不支持 reduce-only 订单。
 - 批量提交（`POST /orders`）每次请求最多接受 15 个订单；适配器会将更大的 `SubmitOrderList` 命令拆分为连续的 15 个一组的分块。
 
-## 配置
+## 客户端配置
 
 Python 适配器和 Rust 原生适配器暴露了不同的配置项。下面的表格
 完整记录了两套适配器。

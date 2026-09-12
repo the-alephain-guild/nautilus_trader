@@ -76,6 +76,7 @@ Python 适配器不会添加保证金支持。完整的保证金交易支持计�
 | 保证金 / 结算货币        | 借入的代币     | USDT      | BTC / ETH 等 |
 | 持仓成本              | 借款利息（按小时） | 资金费率      | 资金费率        |
 | NautilusTrader 支持 | ❌ 未实现     | ✅         | ✅           |
+
 :::
 
 ## 数据类型
@@ -625,23 +626,23 @@ WebSocket API（用于用户数据流）与 REST API 共享相同的权重配额
 
 ### 数据客户端配置选项
 
-| 选项                                 | 默认值       | 描述                                                                          |
-| ---------------------------------- | --------- | --------------------------------------------------------------------------- |
-| `venue`                            | `BINANCE` | 注册客户端时使用的交易场所标识符。                                                           |
-| `api_key`                          | `None`    | Binance API 密钥（API key）；省略时从环境变量加载。                                         |
-| `api_secret`                       | `None`    | Binance API secret；省略时从环境变量加载。                                              |
-| `key_type`                         | `HMAC`    | **已弃用**：密钥类型现在会从 API secret 格式中自动检测。仅在需要强制 `RSA` 时使用。                       |
-| `account_type`                     | `SPOT`    | 数据端点的账户类型（现货、保证金、USDT 期货、币本位期货）。                                            |
-| `base_url_http`                    | `None`    | HTTP REST 基础 URL 覆盖。                                                        |
-| `base_url_ws`                      | `None`    | WebSocket 基础 URL 覆盖。                                                        |
-| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                               |
-| `us`                               | `False`   | 为 `True` 时将请求路由到 Binance US 端点。                                             |
-| `environment`                      | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。                  |
-| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。                                                             |
-| `use_agg_trade_ticks`              | `False`   | 为 `True` 时订阅聚合交易 tick 而非原始交易。期货 WebSocket 订阅始终使用 `@aggTrade`，无论此标志如何。       |
-| `spot_market_data_mode`            | `Sbe`     | *仅限 Rust。* 现货市场数据传输方式（`Sbe` 或 `Json`）。参见[现货市场数据模式](#现货市场数据模式)。 |
-| `instrument_status_poll_secs`      | `3600`    | *仅限 Rust。* 轮询 exchange info 以检测金融工具状态变更的间隔（秒）。设为 `0` 可禁用。                   |
-| `transport_backend`                | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。                                                  |
+| 选项                                 | 默认值       | 描述                                                                    |
+| ---------------------------------- | --------- | --------------------------------------------------------------------- |
+| `venue`                            | `BINANCE` | 注册客户端时使用的交易场所标识符。                                                     |
+| `api_key`                          | `None`    | Binance API 密钥（API key）；省略时从环境变量加载。                                   |
+| `api_secret`                       | `None`    | Binance API secret；省略时从环境变量加载。                                        |
+| `key_type`                         | `HMAC`    | **已弃用**：密钥类型现在会从 API secret 格式中自动检测。仅在需要强制 `RSA` 时使用。                 |
+| `account_type`                     | `SPOT`    | 数据端点的账户类型（现货、保证金、USDT 期货、币本位期货）。                                      |
+| `base_url_http`                    | `None`    | HTTP REST 基础 URL 覆盖。                                                  |
+| `base_url_ws`                      | `None`    | WebSocket 基础 URL 覆盖。                                                  |
+| `proxy_url`                        | `None`    | HTTP 和 WebSocket 传输的可选代理 URL。                                         |
+| `us`                               | `False`   | 为 `True` 时将请求路由到 Binance US 端点。                                       |
+| `environment`                      | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。            |
+| `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。                                                       |
+| `use_agg_trade_ticks`              | `False`   | 为 `True` 时订阅聚合交易 tick 而非原始交易。期货 WebSocket 订阅始终使用 `@aggTrade`，无论此标志如何。 |
+| `spot_market_data_mode`            | `Sbe`     | *仅限 Rust。* 现货市场数据传输方式（`Sbe` 或 `Json`）。参见[现货市场数据模式](#现货市场数据模式)。        |
+| `instrument_status_poll_secs`      | `3600`    | *仅限 Rust。* 轮询 exchange info 以检测金融工具状态变更的间隔（秒）。设为 `0` 可禁用。             |
+| `transport_backend`                | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。                                            |
 
 ### 执行客户端配置选项
 
