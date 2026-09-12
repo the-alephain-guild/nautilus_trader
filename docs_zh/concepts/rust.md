@@ -233,7 +233,7 @@ node.run().await?;
 执行都发生在 Rust 中。
 
 ```python
-from nautilus_trader.core.nautilus_pyo3.trading import GridMarketMakerConfig
+from nautilus_trader.trading import GridMarketMakerConfig
 
 config = GridMarketMakerConfig(
     instrument_id=InstrumentId.from_str("BTC-USDT-SWAP.OKX"),

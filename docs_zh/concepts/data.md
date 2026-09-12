@@ -1747,69 +1747,13 @@ catalog = ParquetDataCatalog(".")
 catalog.write_data([GreeksData()])
 ```
 
-### 自动创建自定义数据类
+### 自定义数据的注册与持久化
 
-`@customdataclass` 装饰器可以创建一个自定义数据类，并为上述所有功能提供默认实现。
+自定义载荷用 `DataType` 标识与路由，用 `CustomData` 作统一包装。纯 Python 载荷在进程内路由时
+可以直接用回退包装器、无需注册；但在从 JSON 还原，或使用 Arrow、Parquet、Feather 持久化之前，
+必须先注册类型。
 
-每个方法也可以根据需要进行覆盖。以下是其使用示例：
-
-```python
-from nautilus_trader.model.custom import customdataclass
-
-
-@customdataclass
-class GreeksTestData(Data):
-    instrument_id: InstrumentId = InstrumentId.from_str("ES.GLBX")
-    delta: float = 0.0
-
-
-GreeksTestData(
-    instrument_id=InstrumentId.from_str("CL.GLBX"),
-    delta=1000.0,
-    ts_event=1,
-    ts_init=2,
-)
-```
-
-#### 配合 PyO3 目录的纯 Python 自定义数据
-
-要将自定义数据用于 Rust 支持的目录（来自 `nautilus_pyo3` 的 `ParquetDataCatalog`），
-请使用 `@customdataclass_pyo3()` 装饰器而非 `@customdataclass`。它会添加 Rust 目录所需的方法
-（JSON 和 Arrow IPC 序列化）。定义类之后，需要将其注册一次。可以传入**类型**（推荐）
-或一个**样本实例**：
-
-```python
-from nautilus_trader.core.nautilus_pyo3 import ParquetDataCatalog
-from nautilus_trader.core.nautilus_pyo3.model import CustomData
-from nautilus_trader.core.nautilus_pyo3.model import DataType
-from nautilus_trader.core.nautilus_pyo3.model import register_custom_data_class
-from nautilus_trader.model.custom import customdataclass_pyo3
-
-
-@customdataclass_pyo3()
-class MarketTickPython:
-    symbol: str = ""
-    price: float = 0.0
-    volume: int = 0
-
-
-# Register by type (no instance needed; call once, e.g. at startup)
-register_custom_data_class(MarketTickPython)
-
-catalog = ParquetDataCatalog("/path/to/catalog")
-data_type = DataType("MarketTickPython", metadata={"exchange": "NASDAQ"})
-wrapped = [
-    CustomData(
-        data_type,
-        MarketTickPython(ts_event=1, ts_init=1, symbol="AAPL", price=150.5, volume=1000),
-    ),
-]
-catalog.write_custom_data(wrapped)
-result = catalog.query("MarketTickPython")
-ticks = [item.data for item in result]
-```
-
-详情请参见 `nautilus_trader.model.custom.customdataclass_pyo3`。
+注册表、包装器与持久化架构见[自定义数据 (Custom Data)](custom_data.md)。
 
 #### 自定义数据类型存根
 
