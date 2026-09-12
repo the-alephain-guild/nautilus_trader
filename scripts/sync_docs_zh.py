@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
-# ruff: noqa: RUF001, RUF002, RUF003
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#  https://nautechsystems.io
+#
+#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+#  You may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# -------------------------------------------------------------------------------------------------
+# ruff: noqa: RUF001, RUF002, RUF003, T201, D400, D415
 # 说明：本工具面向中文用户，docstring/help/输出含有意的中文全角标点，
-# 故在文件级忽略 RUF001/002/003（ambiguous-unicode）。不修改 upstream 的 pyproject.toml。
+# 故在文件级忽略 RUF001/002/003（ambiguous-unicode）。同理忽略三条与中文命令行工具
+# 冲突的规则：T201（print 正是本工具向人与 slash command 输出结果的手段，不是调试残留）、
+# D400/D415（要求 docstring 以 ASCII 句点收尾，而中文 docstring 以「。」收尾）。
+# 仓库惯例是在 python/pyproject.toml 的 per-file-ignores 里登记单个脚本，但本 fork 不改
+# upstream 拥有的那份配置，故就近声明在本文件内。
 """
 docs_zh 增量同步工具。
 
@@ -235,7 +253,7 @@ def _docs_md_set(base_dir: str) -> set[str]:
     return out
 
 
-def cmd_structure_check(args: argparse.Namespace) -> int:
+def cmd_structure_check(_args: argparse.Namespace) -> int:
     """
     对照 docs/docs_zh 三目录文件集，报缺译/多余。
     """
@@ -283,6 +301,9 @@ def cmd_bump(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    """
+    解析命令行参数并分发到子命令，返回进程退出码。
+    """
     parser = argparse.ArgumentParser(description="docs_zh 增量同步工具")
     sub = parser.add_subparsers(dest="command", required=True)
 
