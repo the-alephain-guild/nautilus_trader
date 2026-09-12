@@ -19,7 +19,7 @@
 
 如何使用 `Strategy` 组件实现交易策略。
 
-## [金融工具](instruments.md)
+## [金融工具](instruments/index.md)
 
 可交易资产和合约的金融工具 (Instruments) 定义。
 
@@ -76,7 +76,7 @@
 跨多个策略和交易场所 (venue) 同时进行的交易执行和订单管理（每个实例），
 包括所涉及的组件以及执行消息（命令和事件）的流转方式。
 
-## [订单](orders.md)
+## [订单](orders/index.md)
 
 可用的订单类型、支持的执行指令、高级订单类型，以及模拟订单。
 
@@ -152,5 +152,5 @@
 强制执行该契约的预提交钩子 (pre-commit hook)，以及已知的作用域边界。
 
 :::note
-如果这些指南与 [API 参考](../api_reference/index.md) 之间存在差异，则以 API 参考为准。
+如果这些指南与 [API 参考](../../docs/api_reference/index.md) 之间存在差异，则以 API 参考为准。
 :::

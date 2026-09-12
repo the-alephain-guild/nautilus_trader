@@ -193,7 +193,7 @@ str(p2)  # "1.230"
 :::
 
 关于金融工具级别的精度如何约束有效的价格和数量，请参阅
-金融工具指南的 [精度 (Precision)](instruments/index.md#precision) 部分。
+金融工具指南的 [精度 (Precision)](instruments/index.md#精度-precision) 部分。
 
 ### 算术精度
 

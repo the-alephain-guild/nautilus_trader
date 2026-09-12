@@ -71,6 +71,6 @@ order: StopLimitOrder = self.order_factory.stop_limit(
 
 ## 相关指南
 
-- [订单 (Orders)](index.md#trigger-type) - 触发类型及其他执行指令。
+- [订单 (Orders)](index.md#触发类型-trigger-type) - 触发类型及其他执行指令。
 - [模拟订单 (Emulated orders)](emulated.md) - 在不原生支持条件订单的交易场所上模拟此类订单。
 - [执行 (Execution)](../execution.md) - 订单如何送达交易场所以及成交如何处理。

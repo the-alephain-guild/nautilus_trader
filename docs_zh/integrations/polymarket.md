@@ -712,7 +712,7 @@ accepted、emulated、released 或 inflight）或非平仓持仓的金融工具�
 `purge_closed_positions` 和 `purge_account_events`，用于修剪已关闭的执行状态。
 对于长时间运行的 Polymarket 节点，可从 `LiveExecEngineConfig`
 调度批量清除（15 分钟间隔、60 分钟缓冲是一个合理的默认值）。完整集合参见
-[缓存：清除缓存数据](../concepts/cache.md#purging-cached-data)。
+[缓存：清除缓存数据](../concepts/cache.md#清除缓存数据)。
 
 :::warning
 由调用方决定何时不再需要某个金融工具。清除另一个

@@ -288,7 +288,7 @@ stats_general = portfolio.analyzer.get_performance_stats_general()
 ```
 
 :::info
-有关可用统计数据和创建自定义指标的详细信息，请参阅[投资组合指南](portfolio.md#portfolio-statistics)。该指南涵盖：
+有关可用统计数据和创建自定义指标的详细信息，请参阅[投资组合指南](portfolio.md#投资组合统计)。该指南涵盖：
 
 - 内置统计类别（基于盈亏、收益率、持仓、订单）。
 - 使用 `PortfolioStatistic` 创建自定义统计。

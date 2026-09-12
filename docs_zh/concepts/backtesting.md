@@ -1291,7 +1291,7 @@ engine.add_venue(
 
 ## 保证金模型
 
-保证金模型决定模拟交易所在回测运行中如何为订单和持仓预留抵押品。模型类型（`StandardMarginModel` 与 `LeveragedMarginModel`）、它们的公式、默认行为以及自定义模型编写，都在专门的[会计](accounting.md#margin-models)指南中介绍。
+保证金模型决定模拟交易所在回测运行中如何为订单和持仓预留抵押品。模型类型（`StandardMarginModel` 与 `LeveragedMarginModel`）、它们的公式、默认行为以及自定义模型编写，都在专门的[会计](accounting.md#保证金模型-margin-models)指南中介绍。
 
 本节仅涵盖回测特定的配置。
 

@@ -14,7 +14,7 @@ NautilusTrader 可以将经过回测 (backtest) 的策略部署到实时市场�
 请参阅 [配置](configuration.md) 概念指南。
 
 关于 `TradingNodeConfig`、执行引擎选项、策略配置以及多交易场所连接的分步设置，
-请参阅 [配置实盘交易节点](../how_to/configure_live_trading.md) how-to 指南。
+请参阅 [配置实盘交易节点](../../docs/how_to/configure_live_trading.md) how-to 指南。
 
 ## 实盘执行策略
 
@@ -180,7 +180,7 @@ flowchart TD
     - 当当前生命周期匹配交易场所持仓时过滤掉已关闭的生命周期。
     - 用反映交易场所持仓的合成成交替换不匹配的当前生命周期。
   - 合成成交使用计算的对账价格以正确的平均持仓为目标。
-  - 详见[部分窗口调整场景](#partial-window-adjustment-scenarios)。
+  - 详见[部分窗口调整场景](#部分窗口调整场景)。
 - **异常处理**：
   - 单个适配器的失败不会中止整个对账过程。
   - 在订单状态报告之前到达的成交报告会被推迟，直到订单状态可用。
@@ -370,7 +370,7 @@ config = LiveNodeConfig(shutdown_on_error=True)
 
 ## 相关指南
 
-- [配置实盘交易节点](../how_to/configure_live_trading.md) - 节点和引擎配置。
+- [配置实盘交易节点](../../docs/how_to/configure_live_trading.md) - 节点和引擎配置。
 - [适配器](adapters.md) - 交易场所连接。
 - [执行](execution.md) - 实盘环境中的订单执行。
 - [回测](backtesting.md) - 部署前测试策略。

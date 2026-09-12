@@ -65,6 +65,6 @@ order: MarketIfTouchedOrder = self.order_factory.market_if_touched(
 
 ## 相关指南
 
-- [订单 (Orders)](index.md#trigger-type) - 触发类型及其他执行指令。
+- [订单 (Orders)](index.md#触发类型-trigger-type) - 触发类型及其他执行指令。
 - [模拟订单 (Emulated orders)](emulated.md) - 在不原生支持条件单的交易所上模拟条件单。
 - [执行 (Execution)](../execution.md) - 订单如何到达交易所以及成交如何处理。

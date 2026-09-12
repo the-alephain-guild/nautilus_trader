@@ -22,7 +22,7 @@ NautilusTrader 主要设计用于处理细粒度的订单簿数据，为执行�
 当数据通过消息总线 (message bus) 流动时，可按主题寻址的数据都位于 `data`
 根之下。实时数据流使用 `data.<kind>...`；数据管道路径使用
 `data.pipeline.<kind>...`。主题层级 (topic hierarchy) 详见
-[消息总线](message_bus.md#topic-hierarchy)。
+[消息总线](message_bus.md#主题层级-topic-hierarchy)。
 
 ## 订单簿
 
@@ -513,15 +513,15 @@ config = DataEngineConfig(
 ## 数据流
 
 从 `DataEngine` 开始，无论
-[环境上下文](architecture.md#environment-contexts)（回测、沙盒、实盘）如何，
+[环境上下文](architecture.md#环境上下文)（回测、沙盒、实盘）如何，
 数据都遵循相同的路径。在实盘和沙盒模式下，交易场所适配器创建一个归一化的数据
 对象并通过通道发送；在回测中，引擎直接馈送数据。无论哪种方式，`DataEngine`
 都会将其存储到 `Cache`（针对可缓存类型）中，并在 `MessageBus` 上发布给已订阅的处理器。
 逐步追踪及时序图请参见
-[数据流：一个报价 Tick 的一生](architecture.md#data-flow-life-of-a-quote-tick)。
+[数据流：一个报价 Tick 的一生](architecture.md#数据流一个-quote-tick-的一生)。
 
 对于需要更多灵活性的用户，平台还支持创建自定义数据类型。
-有关如何实现用户自定义数据类型的详情，请参见下方的[自定义数据](#custom-data)部分。
+有关如何实现用户自定义数据类型的详情，请参见下方的[自定义数据](#自定义数据)部分。
 
 ## 加载数据
 
@@ -1375,7 +1375,7 @@ NautilusTrader 在 `nautilus_model` crate 中定义了内部数据格式。
 这些模型被序列化为 Arrow 记录批次并写入 Parquet 文件。
 Nautilus 回测在使用这些 Nautilus 格式的 Parquet 文件时效率最高。
 
-然而，在[精度模式](../getting_started/installation.md#precision-mode)之间迁移数据模型以及处理模式变更可能具有挑战性。
+然而，在[精度模式](../../docs/getting_started/installation.md#precision-mode)之间迁移数据模型以及处理模式变更可能具有挑战性。
 本指南介绍如何使用我们的实用工具处理数据迁移。
 
 ### 迁移工具

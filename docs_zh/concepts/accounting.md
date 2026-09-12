@@ -20,7 +20,7 @@
 
 ### 保证金账户 (Margin accounts)
 
-保证金账户支持需要抵押品的金融工具，例如期货或带杠杆的加密货币永续合约。它们追踪账户余额，为未平仓订单和持仓预留保证金，并对每个金融工具应用可配置的杠杆。保证金按两种作用域（scope）追踪，详见下文的 [保证金作用域](#margin-scopes)。
+保证金账户支持需要抵押品的金融工具，例如期货或带杠杆的加密货币永续合约。它们追踪账户余额，为未平仓订单和持仓预留保证金，并对每个金融工具应用可配置的杠杆。保证金按两种作用域（scope）追踪，详见下文的 [保证金作用域](#保证金作用域-margin-scopes)。
 
 **关键术语**：
 
@@ -148,7 +148,7 @@ Python 的 `AccountBalance(total, locked, free)` 构造函数要求一次性提�
 - `portfolio.equity(venue=..., account_id=...) -> dict[Currency, Money]`
 - `portfolio.missing_price_instruments(venue) -> list[InstrumentId]`
 
-关于净值公式、价格回退链、基准币种换算行为，以及只告警一次的缺失价格追踪器，请参阅 [组合指南](portfolio.md#equity-and-mark-to-market)。
+关于净值公式、价格回退链、基准币种换算行为，以及只告警一次的缺失价格追踪器，请参阅 [组合指南](portfolio.md#权益与盯市估值-equity-and-mark-to-market)。
 
 ### 实操示例 (Worked examples)
 
@@ -177,7 +177,7 @@ NautilusTrader 为计算路径（回测，以及为对账而以 `calculate_accou
 - **传统券商**（Interactive Brokers、TD Ameritrade）：保证金百分比固定，与杠杆无关。
 - **加密货币交易所**（Binance 等）：杠杆可能会降低保证金要求。
 
-两个内置模型都使用金融工具的 `margin_init` 和 `margin_maint` 字段，按名义价值的百分比来计算保证金。它们的唯一区别在于杠杆是否会降低预留额。对于具有真正逐合约固定保证金的交易场所（CME / ICE），请设置 `instrument.margin_init` 和 `margin_maint`，使百分比能还原出期望的美元金额，或者实现一个 [自定义模型](#custom-models)。
+两个内置模型都使用金融工具的 `margin_init` 和 `margin_maint` 字段，按名义价值的百分比来计算保证金。它们的唯一区别在于杠杆是否会降低预留额。对于具有真正逐合约固定保证金的交易场所（CME / ICE），请设置 `instrument.margin_init` 和 `margin_maint`，使百分比能还原出期望的美元金额，或者实现一个 [自定义模型](#自定义模型-custom-models)。
 
 ### HEDGING 模式下的净额计算
 
@@ -290,7 +290,7 @@ class RiskAdjustedMarginModel(MarginModel):
         )
 ```
 
-关于通过 `BacktestVenueConfig` 和 `MarginModelConfig` 对保证金模型进行回测级配置，请参阅 [回测](backtesting.md#margin-models) 的保证金模型一节。
+关于通过 `BacktestVenueConfig` 和 `MarginModelConfig` 对保证金模型进行回测级配置，请参阅 [回测](../../docs/concepts/backtesting/accounts-and-margin.md#margin-models) 的保证金模型一节。
 
 ## 适配器约定 (Adapter convention)
 

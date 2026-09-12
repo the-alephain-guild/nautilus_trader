@@ -59,7 +59,7 @@ Python 绑定通过 [PyO3](https://pyo3.rs) 提供，并正在持续从 Cython �
 
 ## 公共核心
 
-公共系统核心被所有节点 (node) [环境上下文](architecture.md#environment-contexts)（`backtest`、`sandbox` 和 `live`）所使用。
+公共系统核心被所有节点 (node) [环境上下文](architecture.md#环境上下文)（`backtest`、`sandbox` 和 `live`）所使用。
 用户定义的 `Actor`、`Strategy` 和 `ExecAlgorithm` 组件在这些环境上下文中被一致地管理。
 
 ## 回测
@@ -199,7 +199,7 @@ NautilusTrader 支持的聚合方法可按触发维度分为四类：
 
 ## 值类型
 
-以下值类型由 128 位或 64 位原始整数值支持，具体取决于编译时使用的[精度模式](../getting_started/installation.md#precision-mode)。
+以下值类型由 128 位或 64 位原始整数值支持，具体取决于编译时使用的[精度模式](../../docs/getting_started/installation.md#precision-mode)。
 
 - `Price`
 - `Quantity`

@@ -14,7 +14,7 @@
 我们建议在深入策略开发之前，先阅读 [Actors](actors.md) 指南。
 :::
 
-策略可以在任何[环境上下文](architecture.md#environment-contexts)中添加到 Nautilus 系统，系统一旦启动，就会立即根据其逻辑开始发送命令和接收事件。
+策略可以在任何[环境上下文](architecture.md#环境上下文)中添加到 Nautilus 系统，系统一旦启动，就会立即根据其逻辑开始发送命令和接收事件。
 
 利用数据 (data) 摄取、事件处理和订单管理这些基本构建模块（我们将在下文讨论），可以构建任何类型的策略，包括方向性、动量、再平衡、配对交易、做市等。
 
@@ -356,7 +356,7 @@ def is_completely_flat(self) -> bool
 
 `Portfolio` 还提供了一个 `PortfolioAnalyzer`，可以接受灵活数量的数据（以适应不同的回溯窗口）。该分析器会跟踪并生成绩效指标和统计数据。
 
-请参阅 [`PortfolioAnalyzer` API 参考](/docs/python-api-latest/analysis.html)和[投资组合统计](portfolio.md#portfolio-statistics)指南。
+请参阅 [`PortfolioAnalyzer` API 参考](/docs/python-api-latest/analysis.html)和[投资组合统计](portfolio.md#投资组合统计)指南。
 
 ### 交易命令
 

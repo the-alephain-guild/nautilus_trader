@@ -67,7 +67,7 @@ NautilusTrader 的 DST 支持有两个组成部分：
 - `task`（异步任务的派生与 join）。
 - `runtime`（运行时构建器和句柄）。
 - `signal`（进程信号，例如 `ctrl_c`；re-export 可用，但调用点的采用
-  是部分的，详见 [范围边界](#signal-handling) 中的说明）。
+  是部分的，详见 [范围边界](#信号处理) 中的说明）。
 
 这些 re-export 位于 `nautilus_common::live::dst`。`time`、`task`
 和 `runtime` 的 DST 路径调用点从这个模块导入，而不是直接从 `tokio` 导入，

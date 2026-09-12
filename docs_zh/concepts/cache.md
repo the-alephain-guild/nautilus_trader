@@ -37,7 +37,7 @@ flowchart LR
 ```
 
 完整的逐步追踪请参见
-[数据流：一个报价 Tick 的生命周期](architecture.md#data-flow-life-of-a-quote-tick)。
+[数据流：一个报价 Tick 的生命周期](architecture.md#数据流一个-quote-tick-的一生)。
 
 ### 基本示例
 
@@ -70,7 +70,7 @@ def on_bar(self, bar: Bar) -> None:
 ## 配置
 
 使用 `CacheConfig` 类来配置 `Cache` 的行为和容量。
-你可以将此配置提供给 `BacktestEngine` 或 `TradingNode`，具体取决于你的[环境上下文](architecture.md#environment-contexts)。
+你可以将此配置提供给 `BacktestEngine` 或 `TradingNode`，具体取决于你的[环境上下文](architecture.md#环境上下文)。
 
 以下是配置 `Cache` 的基本示例：
 
@@ -517,7 +517,7 @@ exec_engine = LiveExecEngineConfig(
 60 分钟的缓冲窗口在保留近期活动以供对账 (reconciliation) 的同时，仍能修剪长尾增长。
 对于高频交易 (HFT) 会话可调小这些值，如果你需要更长的历史回溯用于分析则可调大。
 完整的参数参考请参见
-[配置实盘交易：内存管理](../how_to/configure_live_trading.md)。
+[配置实盘交易：内存管理](../../docs/how_to/configure_live_trading.md)。
 
 :::note
 金融工具清除没有自动循环，因为何时删除某个金融工具的正确时机取决于策略状态而非时间长短。

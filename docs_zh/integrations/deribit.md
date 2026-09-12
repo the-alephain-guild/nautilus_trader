@@ -199,7 +199,7 @@ Deribit 会将每笔组合成交发布两次：
 
 Deribit 本身就会按腿发布大宗交易（block trade）和大宗询价（Block RFQ），因此适配器会将它们
 通过标准的 1:1 成交路径转发。关于源自大宗交易和 RFQ 的成交如何在最终的 `TradeTick` 上被标记，
-请参见 [成交 ID 溯源](#trade-id-provenance)。
+请参见 [成交 ID 溯源](#成交-id-溯源-trade-id-provenance)。
 
 ### 历史组合成交 (Historical combo trades)
 
@@ -702,7 +702,7 @@ config = TradingNodeConfig(
 | `retry_delay_initial_ms`           | `1,000`   | 重试前的初始延迟（毫秒）。                                           |
 | `retry_delay_max_ms`               | `10,000`  | 重试之间的最大延迟（毫秒）。                                          |
 | `update_instruments_interval_mins` | `60`      | 金融工具刷新之间的间隔（分钟）。                                        |
-| `auto_load_missing_instruments`    | `False`   | 在订阅时惰性加载未缓存的金融工具；参见 [订阅时惰性加载](#lazy-load-on-subscribe)。 |
+| `auto_load_missing_instruments`    | `False`   | 在订阅时惰性加载未缓存的金融工具；参见 [订阅时惰性加载](#订阅时惰性加载-lazy-load-on-subscribe)。 |
 | `transport_backend`                | `Sockudo` | WebSocket 传输后端。                                         |
 
 #### 订阅时惰性加载 (Lazy-load on subscribe)

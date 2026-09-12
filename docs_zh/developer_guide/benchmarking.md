@@ -193,9 +193,9 @@ sudo cargo flamegraph --bench matching -p nautilus-common --profile bench
 
 ## 模板
 
-可直接复制的起始文件位于 [`docs/dev_templates/`](../dev_templates/)：
+可直接复制的起始文件位于 [`docs/dev_templates/`](../../docs/dev_templates/)：
 
-- **Criterion**：[`criterion_template.rs`](../dev_templates/criterion_template.rs)
-- **iai**：[`iai_template.rs`](../dev_templates/iai_template.rs)
+- **Criterion**：[`criterion_template.rs`](../../docs/dev_templates/criterion_template.rs)
+- **iai**：[`iai_template.rs`](../../docs/dev_templates/iai_template.rs)
 
 将模板复制到目标 crate 的 `benches/`，调整导入和分组名称，在 `Cargo.toml` 中注册，即可开始测量。

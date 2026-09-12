@@ -162,7 +162,7 @@ export HYPERLIQUID_TESTNET_VAULT="vault_address_here"
 
 :::warning
 **代理 / API 钱包**：如果 `HYPERLIQUID_TESTNET_PK` 是一个在主账户下批准的
-[代理钱包（agent wallet）](#agent-wallets)（在 Hyperliquid UI 上创建 API 钱包时的
+[代理钱包（agent wallet）](#代理钱包agent-wallets)（在 Hyperliquid UI 上创建 API 钱包时的
 典型配置），则您还必须将 `HYPERLIQUID_ACCOUNT_ADDRESS` 设置为主账户地址。否则，
 即使订单在交易场所上是实时有效的，`OrderStatusReport` 请求和 WebSocket 用户源也会
 返回空结果。参见 [GH-4010](https://github.com/nautechsystems/nautilus_trader/issues/4010)。
@@ -183,8 +183,8 @@ Hyperliquid 提供线性永续期货、HIP-3 builder 部署的永续合约、原
 :::note
 标准 Hyperliquid 永续合约以 USDC 结算。HIP-3 dex 可能以其自身的抵押品代币结算，
 例如 USDH、USDE 或 USDT0，同时 Nautilus 的代码仍以 `USD` 报价。现货市场是标准
-货币对。配置和选择启用的细节参见 [HIP-3 builder 部署的永续合约](#hip-3-builder-deployed-perpetuals)
-和 [HIP-4 结果市场](#hip-4-outcome-markets)。Hyperliquid 当前的 API 文档将
+货币对。配置和选择启用的细节参见 [HIP-3 builder 部署的永续合约](#hip-3-builder-部署的永续合约)
+和 [HIP-4 结果市场](#hip-4-结果市场)。Hyperliquid 当前的 API 文档将
 `outcomeMeta` 标记为仅测试网可用，因此 HIP-4 的发现取决于所选环境是否能提供
 该 payload。
 :::
@@ -281,7 +281,7 @@ InstrumentId.from_str("25-YES-OUTCOME.HYPERLIQUID")
 `curl -s -X POST https://api.hyperliquid.xyz/info -d '{"type":"outcomeMeta"}'`。
 :::
 
-关于交易流程、结算和当前限制，参见 [HIP-4 结果市场](#hip-4-outcome-markets)。
+关于交易流程、结算和当前限制，参见 [HIP-4 结果市场](#hip-4-结果市场)。
 
 ## HIP-3 builder 部署的永续合约
 
@@ -471,7 +471,7 @@ USDH 现货余额与永续清算所（perp clearinghouse）视图合并，因此
 `Order` action 将其路由到交易场所的 `#{encoding}` 订单簿（其中
 `encoding = 10 * outcome_index + outcome_side`）。无需任何 HIP-4 专属调用。
 
-结算由交易场所驱动；参见[结算分发](#settlement-dispatch)。
+结算由交易场所驱动；参见[结算分发](#结算分发)。
 
 #### 高级工作流
 

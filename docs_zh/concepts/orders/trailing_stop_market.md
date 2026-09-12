@@ -75,6 +75,6 @@ order: TrailingStopMarketOrder = self.order_factory.trailing_stop_market(
 
 ## 相关指南
 
-- [订单 (Orders)](index.md#trigger-offset-type) - 触发与追踪偏移类型。
+- [订单 (Orders)](index.md#触发偏移类型) - 触发与追踪偏移类型。
 - [模拟订单 (Emulated orders)](emulated.md) - 在不支持原生追踪止损的交易所上模拟追踪止损。
 - [执行 (Execution)](../execution.md) - 订单如何到达交易所以及成交如何被处理。

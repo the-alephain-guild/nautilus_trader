@@ -80,6 +80,6 @@ order: TrailingStopLimitOrder = self.order_factory.trailing_stop_limit(
 
 ## 相关指南
 
-- [订单 (Orders)](index.md#trigger-offset-type) - 触发与跟踪偏移类型。
+- [订单 (Orders)](index.md#触发偏移类型) - 触发与跟踪偏移类型。
 - [模拟订单 (Emulated orders)](emulated.md) - 在不原生支持的交易场所上模拟跟踪止损。
 - [执行 (Execution)](../execution.md) - 订单如何到达交易场所以及成交如何处理。

@@ -33,7 +33,7 @@ Nautilus 是事件驱动的：系统中的每一次状态变化都由一个事�
 
 ## 订单事件
 
-每个订单事件都对应[订单状态机](orders/index.md#order-state-flow)中的一次状态转换。`ExecutionEngine` 将事件应用到订单上，更新 `Cache`，并将其发布到 `MessageBus`。下表展示了主要的状态转换；部分成交和已触发的订单还支持其他转换，详见完整的[订单状态流](orders/index.md#order-state-flow)。
+每个订单事件都对应[订单状态机](orders/index.md#订单状态流转)中的一次状态转换。`ExecutionEngine` 将事件应用到订单上，更新 `Cache`，并将其发布到 `MessageBus`。下表展示了主要的状态转换；部分成交和已触发的订单还支持其他转换，详见完整的[订单状态流](orders/index.md#订单状态流转)。
 
 | 事件                    | 主要转换                               | 处理器                        |
 | --------------------- | ---------------------------------- | -------------------------- |
@@ -192,7 +192,7 @@ opening_order_id = position.opening_order_id
 
 对于那些跟踪跨策略执行质量或成交率、但不参与订单管理的监控型 actor 来说，这些订阅非常有用。
 
-更多细节和示例，请参阅[订单成交订阅](actors.md#order-fill-subscriptions)和[订单撤单订阅](actors.md#order-cancel-subscriptions)。
+更多细节和示例，请参阅[订单成交订阅](actors.md#订单成交订阅)和[订单撤单订阅](actors.md#订单取消订阅)。
 
 ## 相关指南
 

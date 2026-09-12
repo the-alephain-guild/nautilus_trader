@@ -2,7 +2,7 @@
 
 ## 消息不可变性 (Message immutability)
 
-一条消息（请求、响应、事件或命令）一旦被创建，其字段就不得再被修改。关于由此衍生的所有权规则，参见 [Message Bus: message integrity](../concepts/message_bus.md#message-integrity)。
+一条消息（请求、响应、事件或命令）一旦被创建，其字段就不得再被修改。关于由此衍生的所有权规则，参见 [Message Bus: message integrity](../concepts/message_bus.md#消息完整性-message-integrity)。
 
 这条不变式保护了系统所依赖的若干属性：
 

@@ -397,7 +397,7 @@ original_futures = decode_binance_futures_client_order_id(encoded_futures)
 - 剩余增量发送到 `DataEngine`。
 
 :::note
-这一"快照加缓冲"序列适用于未指定显式深度的期货和现货 `BookDeltas` 订阅。现货的部分深度订阅会交付自包含的 top-N 快照。参见[现货市场数据模式](#spot-market-data-mode)。
+这一"快照加缓冲"序列适用于未指定显式深度的期货和现货 `BookDeltas` 订阅。现货的部分深度订阅会交付自包含的 top-N 快照。参见[现货市场数据模式](#现货市场数据模式)。
 :::
 
 ## Binance 数据差异
@@ -501,7 +501,7 @@ Rust 适配器通过 `subscribe_funding_rates` 将 `FundingRateUpdate` 作为一
 
 历史资金费率可通过 `request_funding_rates` 获取，它查询[获取资金费率历史（Get Funding Rate History）](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History) REST 端点（USD-M 为 `GET /fapi/v1/fundingRate`，COIN-M 为 `GET /dapi/v1/fundingRate`）。每一条历史记录都映射为一个 `FundingRateUpdate`，其 `ts_event` 设为资金时间。`next_funding_ns` 字段对于历史记录为 `None`，因为该端点不提供此信息。
 
-Python 适配器通过 `BinanceFuturesMarkPriceUpdate` 自定义数据订阅暴露资金费率数据（参见下方的 [Binance 特定数据](#binance-specific-data)）。
+Python 适配器通过 `BinanceFuturesMarkPriceUpdate` 自定义数据订阅暴露资金费率数据（参见下方的 [Binance 特定数据](#binance-特定数据)）。
 
 `FundingRateUpdate` 上的 `interval` 字段对 Binance 为 `None`，因为标记价格流和资金费率历史端点都不包含资金间隔字段。Binance 通过[获取资金费率信息（Get Funding Rate Info）](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-Info) REST 端点暴露 `fundingIntervalHours`，但适配器并不消费它。
 
@@ -639,7 +639,7 @@ WebSocket API（用于用户数据流）与 REST API 共享相同的权重配额
 | `environment`                      | `None`    | Binance 环境：`LIVE`、`TESTNET` 或 `DEMO`。为 `None` 时默认为 `LIVE`。                  |
 | `update_instruments_interval_mins` | `60`      | 金融工具目录刷新间隔（分钟）。                                                             |
 | `use_agg_trade_ticks`              | `False`   | 为 `True` 时订阅聚合交易 tick 而非原始交易。期货 WebSocket 订阅始终使用 `@aggTrade`，无论此标志如何。       |
-| `spot_market_data_mode`            | `Sbe`     | *仅限 Rust。* 现货市场数据传输方式（`Sbe` 或 `Json`）。参见[现货市场数据模式](#spot-market-data-mode)。 |
+| `spot_market_data_mode`            | `Sbe`     | *仅限 Rust。* 现货市场数据传输方式（`Sbe` 或 `Json`）。参见[现货市场数据模式](#现货市场数据模式)。 |
 | `instrument_status_poll_secs`      | `3600`    | *仅限 Rust。* 轮询 exchange info 以检测金融工具状态变更的间隔（秒）。设为 `0` 可禁用。                   |
 | `transport_backend`                | `Sockudo` | *仅限 Rust。* WebSocket 传输后端。                                                  |
 
@@ -733,7 +733,7 @@ node.build()
 | `Sbe`  | Ed25519（必需） | `bestBidAsk` |
 | `Json` | 无（公开）       | `bookTicker` |
 
-`Sbe`（默认）使用 Binance 的 Simple Binary Encoding 流，并需要 Ed25519 密钥（参见[密钥类型](#key-types)）；如果没有这些密钥，客户端将拒绝连接。`Json` 使用公开流，无需凭证。完整的现货 `BookDeltas` 订阅在 `Sbe` 模式下使用 25ms 的 SBE 增量深度流，或在 `Json` 模式下使用 100ms 的公开 JSON 增量深度流，并配合 REST 快照同步。显式深度订阅使用部分订单簿快照（参见[订单簿](#order-books)）。
+`Sbe`（默认）使用 Binance 的 Simple Binary Encoding 流，并需要 Ed25519 密钥（参见[密钥类型](#密钥类型)）；如果没有这些密钥，客户端将拒绝连接。`Json` 使用公开流，无需凭证。完整的现货 `BookDeltas` 订阅在 `Sbe` 模式下使用 25ms 的 SBE 增量深度流，或在 `Json` 模式下使用 100ms 的公开 JSON 增量深度流，并配合 REST 快照同步。显式深度订阅使用部分订单簿快照（参见[订单簿](#订单簿)）。
 
 :::note
 在 `nautilus_trader.core.nautilus_pyo3.binance` 上以 `BinanceSpotMarketDataMode` 形式暴露给 Python；不在旧版 Python 适配器配置中。
@@ -752,7 +752,7 @@ Binance 支持三种 API 密钥类型：**Ed25519**、**HMAC-SHA256** 和 **RSA*
 | RSA     | ✓     | -     | 已弃用，执行不支持。     |
 
 :::tip
-现在就切换到 Ed25519 密钥。生成一个 Ed25519 密钥对并在 Binance 注册。参见下方的[生成 Ed25519 密钥](#generating-ed25519-keys)。
+现在就切换到 Ed25519 密钥。生成一个 Ed25519 密钥对并在 Binance 注册。参见下方的[生成 Ed25519 密钥](#生成-ed25519-密钥)。
 :::
 
 :::note
@@ -799,10 +799,10 @@ export BINANCE_API_SECRET="$(cat binance_ed25519_private.pem)"
 
 ### API 凭证
 
-将凭证直接传递给配置对象，或设置相应的环境变量（按环境划分的变量参见[环境](#environments)）。
+将凭证直接传递给配置对象，或设置相应的环境变量（按环境划分的变量参见[环境](#环境)）。
 
 :::tip
-对所有客户端使用 Ed25519 密钥。HMAC 密钥仍可用于数据客户端和执行客户端，但 Ed25519 提供更好的性能，并将在未来版本中成为唯一支持的密钥类型。参见[密钥类型](#key-types)。
+对所有客户端使用 Ed25519 密钥。HMAC 密钥仍可用于数据客户端和执行客户端，但 Ed25519 提供更好的性能，并将在未来版本中成为唯一支持的密钥类型。参见[密钥类型](#密钥类型)。
 :::
 
 :::warning
@@ -820,7 +820,7 @@ export BINANCE_API_SECRET="$(cat binance_ed25519_private.pem)"
 - `COIN_FUTURES`（以其他加密货币作为抵押品）
 
 :::note
-枚举中存在 `MARGIN` 和 `ISOLATED_MARGIN` 账户类型，但保证金交易尚未实现。参见[产品支持](#product-support)。
+枚举中存在 `MARGIN` 和 `ISOLATED_MARGIN` 账户类型，但保证金交易尚未实现。参见[产品支持](#产品支持)。
 :::
 
 ### 基础 URL 覆盖

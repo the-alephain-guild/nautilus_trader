@@ -2222,7 +2222,7 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
 
 #### 订单簿增量标志要求
 
-在实现 `_subscribe_order_book_deltas` 或流式传输订单簿数据时，适配器**必须**在每个 `OrderBookDelta` 上正确设置 `RecordFlag` 标志。另请参阅[增量标志与事件边界](../concepts/data.md#delta-flags-and-event-boundaries)。
+在实现 `_subscribe_order_book_deltas` 或流式传输订单簿数据时，适配器**必须**在每个 `OrderBookDelta` 上正确设置 `RecordFlag` 标志。另请参阅[增量标志与事件边界](../concepts/data.md#增量标志与事件边界)。
 
 - **`F_LAST`**：在每个逻辑事件组的最后一个增量上设置。当启用 `buffer_deltas` 时，`DataEngine` 将此标志用作刷新信号。没有它，增量会无限累积，永远不会发布给订阅者。
 

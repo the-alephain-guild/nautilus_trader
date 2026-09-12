@@ -267,7 +267,7 @@ pub fn process_symbol(symbol: Symbol) -> anyhow::Result<()> {
 使用一致的 async/await 模式：
 
 1. **异步函数命名**：不需要特殊后缀；优先使用自然名称。
-2. **Tokio 用法**：完全限定 tokio 类型（例如 `tokio::time::timeout`）。spawn 规则参见 [适配器运行时模式](#adapter-runtime-patterns)。
+2. **Tokio 用法**：完全限定 tokio 类型（例如 `tokio::time::timeout`）。spawn 规则参见 [适配器运行时模式](#适配器运行时模式)。
 3. **错误处理**：从异步函数返回 `anyhow::Result` 以与同步约定保持一致。
 4. **取消安全性（cancellation safety）**：说明函数是否是取消安全的，以及取消时哪些不变量仍然成立。
 5. **流处理**：使用 `tokio_stream`（或 `futures::Stream`）处理异步迭代器，以明确反压（back-pressure）。
@@ -1281,7 +1281,7 @@ let callback = py_function;  // ✅
 `check_key_in_map`，……）返回一个带类型的 `CorrectnessResult<()>`，其
 `CorrectnessError` 变体命名了每种违规类型。将 `new_checked()`（可能失败，返回
 `CorrectnessResult`）与通过 `.expect_display(FAILED)` panic 的 `new()`
-包装器配对用于已验证类型；这是 [构造函数模式](#constructor-patterns)
+包装器配对用于已验证类型；这是 [构造函数模式](#构造函数模式)
 约定，并产生以 `Condition failed: ...` 为前缀的 panic 消息。
 
 对于正确性模块未建模的*内部*不变量，使用 `debug_assert!`（以及

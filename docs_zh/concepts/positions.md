@@ -129,7 +129,7 @@ signed_qty = 0  # 空仓（已关闭）
 
 ## OMS 类型与持仓管理
 
-NautilusTrader 支持两种主要的 OMS 类型，它们从根本上影响持仓的跟踪和管理方式。还有一个 `OmsType.UNSPECIFIED` 选项，默认使用组件的上下文。详细信息请参阅[执行指南](execution.md#order-management-system-oms)。
+NautilusTrader 支持两种主要的 OMS 类型，它们从根本上影响持仓的跟踪和管理方式。还有一个 `OmsType.UNSPECIFIED` 选项，默认使用组件的上下文。详细信息请参阅[执行指南](execution.md#订单管理系统-order-management-system-oms)。
 
 ### `NETTING`
 
@@ -381,7 +381,7 @@ Quanto 的结算货币（如 BTC）既不是报价货币（USD）也不是基础
 - `last_trade_id`：最近的交易 ID。
 
 :::info
-有关完整的类型信息和详细的属性文档，请参阅 Position [API 参考](../api_reference/model/position.md#class-position)。
+有关完整的类型信息和详细的属性文档，请参阅 Position [API 参考](../../docs/api_reference/model/position.md)。
 :::
 
 ## 事件与跟踪

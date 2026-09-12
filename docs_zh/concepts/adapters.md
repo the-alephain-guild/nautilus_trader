@@ -51,7 +51,7 @@ flowchart LR
 `InstrumentProvider` 服务于两种使用场景：
 
 - 独立发现可用的金融工具，用于研究或回测 (backtest)
-- 在 `sandbox` 或 `live` [环境上下文](architecture.md#environment-contexts)中为
+- 在 `sandbox` 或 `live` [环境上下文](architecture.md#环境上下文)中为
   Actor 和策略 (strategy) 进行运行时加载
 
 ### 研究和回测

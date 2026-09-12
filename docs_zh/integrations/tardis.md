@@ -102,9 +102,9 @@ Tardis 集成通过一致地标准化符号，确保与 NautilusTrader 的加密
 
 各交易所的详细符号体系文档：
 
-- [Binance 符号体系](./binance.md#symbology)
-- [Bybit 符号体系](./bybit.md#symbology)
-- [dYdX 符号体系](./dydx.md#symbology)
+- [Binance 符号体系](./binance.md#交易代码规则)
+- [Bybit 符号体系](./bybit.md#符号体系)
+- [dYdX 符号体系](./dydx.md#符号体系)
 
 ## 交易场所
 

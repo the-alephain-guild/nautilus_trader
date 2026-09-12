@@ -53,7 +53,7 @@ Nautilus 会在本地模拟这些订单类型（例如 `STOP_LIMIT` 或 `TRAILIN
 ## 技术细节
 
 无论某种订单类型是否在交易场所上受支持，平台都能在本地模拟绝大多数订单类型。
-订单模拟的逻辑和代码路径在所有[环境上下文 (environment contexts)](../architecture.md#environment-contexts)中
+订单模拟的逻辑和代码路径在所有[环境上下文 (environment contexts)](../architecture.md#环境上下文)中
 完全相同，并使用一个共用的 `OrderEmulator` 组件。
 
 :::note

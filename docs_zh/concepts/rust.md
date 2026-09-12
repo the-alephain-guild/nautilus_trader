@@ -169,7 +169,7 @@ actor 接收市场数据、自定义数据/信号以及系统事件，但不负�
 | `on_time_event`        | `TimeEvent`         |
 
 如需逐步操作的讲解，请参阅
-[编写一个 Actor (Rust)](../how_to/write_rust_actor.md) how-to 指南。
+[编写一个 Actor (Rust)](../../docs/how_to/write_rust_actor.md) how-to 指南。
 如需完整示例，请参阅
 [`BookImbalanceActor`](https://github.com/nautechsystems/nautilus_trader/tree/develop/crates/trading/src/examples/actors/imbalance)。
 
@@ -200,7 +200,7 @@ actor 接收市场数据、自定义数据/信号以及系统事件，但不负�
 `market_if_touched`、`limit_if_touched` 以及 `trailing_stop_market`。
 
 如需逐步操作的讲解，请参阅
-[编写一个 Strategy (Rust)](../how_to/write_rust_strategy.md) how-to 指南。
+[编写一个 Strategy (Rust)](../../docs/how_to/write_rust_strategy.md) how-to 指南。
 如需完整示例，请参阅
 [`EmaCross`](https://github.com/nautechsystems/nautilus_trader/tree/develop/crates/trading/src/examples/strategies/ema_cross)
 和
@@ -223,7 +223,7 @@ node.add_strategy(strategy)?;
 node.run().await?;
 ```
 
-完整讲解请参阅 [运行实盘交易 (Rust)](../how_to/run_rust_live_trading.md)。
+完整讲解请参阅 [运行实盘交易 (Rust)](../../docs/how_to/run_rust_live_trading.md)。
 
 #### 来自 Python 的原生配置 (Native config from Python)
 
@@ -278,7 +278,7 @@ node.add_native_strategy("GridMarketMaker", config)
 ## 回测 (Backtesting)
 
 如需两套 API 的带注解讲解，请参阅
-[运行一次回测 (Rust)](../how_to/run_rust_backtest.md) how-to 指南。
+[运行一次回测 (Rust)](../../docs/how_to/run_rust_backtest.md) how-to 指南。
 
 ### `BacktestEngine`（低层 API）
 
@@ -308,7 +308,7 @@ cargo run -p nautilus-backtest --features examples,streaming --example node-ema-
 ## 实盘交易 (Live trading)
 
 如需带注解的讲解，请参阅
-[运行实盘交易 (Rust)](../how_to/run_rust_live_trading.md) how-to 指南。
+[运行实盘交易 (Rust)](../../docs/how_to/run_rust_live_trading.md) how-to 指南。
 
 `LiveNode` 通过适配器客户端连接到真实的交易场所。构建器
 模式用于配置数据客户端和执行客户端，随后 `run()` 启动异步
@@ -337,10 +337,10 @@ cargo run -p nautilus-backtest --features examples,streaming --example node-ema-
 
 ## 相关指南 (Related guides)
 
-- [编写一个 Actor (Rust)](../how_to/write_rust_actor.md) - 逐步讲解的 actor 教程。
-- [编写一个 Strategy (Rust)](../how_to/write_rust_strategy.md) - 逐步讲解的策略教程。
-- [运行一次回测 (Rust)](../how_to/run_rust_backtest.md) - BacktestEngine 和 BacktestNode 的用法。
-- [运行实盘交易 (Rust)](../how_to/run_rust_live_trading.md) - LiveNode 的配置与交易场所连接。
+- [编写一个 Actor (Rust)](../../docs/how_to/write_rust_actor.md) - 逐步讲解的 actor 教程。
+- [编写一个 Strategy (Rust)](../../docs/how_to/write_rust_strategy.md) - 逐步讲解的策略教程。
+- [运行一次回测 (Rust)](../../docs/how_to/run_rust_backtest.md) - BacktestEngine 和 BacktestNode 的用法。
+- [运行实盘交易 (Rust)](../../docs/how_to/run_rust_live_trading.md) - LiveNode 的配置与交易场所连接。
 - [架构](architecture.md) - 系统设计以及数据/执行流。
 - [Actors](actors.md) - actor 概念（同时适用于 Python 和 Rust）。
 - [Strategies](strategies.md) - 策略概念与处理器参考。

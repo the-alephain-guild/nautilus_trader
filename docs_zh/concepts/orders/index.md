@@ -56,7 +56,7 @@ def on_order_denied(self, event: OrderDenied) -> None:
 
 在实盘交易中，在途订单（`SUBMITTED`、`PENDING_UPDATE`、`PENDING_CANCEL`）表示已发送至交易场所但尚未收到确认。系统**不会自动超时取消**在途订单，因为该请求可能已在交易场所执行但确认延迟。
 
-`LiveExecutionEngine` 通过定期对账检测并解决此类差异（参见[持续对账](../live.md#continuous-reconciliation)）。若需要在策略层主动处理超时，可使用定时器监控：
+`LiveExecutionEngine` 通过定期对账检测并解决此类差异（参见[持续对账](../live.md#运行时检查)）。若需要在策略层主动处理超时，可使用定时器监控：
 
 ```python
 from datetime import timedelta

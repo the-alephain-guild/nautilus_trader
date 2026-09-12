@@ -67,11 +67,11 @@ prek install
 make build-debug
 ```
 
-Windows 用户应先按照[安装指南](../getting_started/installation.md#from-source)中的源码安装步骤操作，然后再使用本指南中的相关命令。
+Windows 用户应先按照[安装指南](../../docs/getting_started/installation.md#from-source)中的源码安装步骤操作，然后再使用本指南中的相关命令。
 
 ### 1. 安装依赖
 
-按照[安装指南](../getting_started/installation.md)搭建项目，并将最后一条命令修改为安装开发和测试依赖：
+按照[安装指南](../../docs/getting_started/installation.md#from-source)搭建项目，并将最后一条命令修改为安装开发和测试依赖：
 
 ```bash tab="uv"
 uv sync --active --all-groups --all-extras
@@ -365,7 +365,7 @@ index 62b78cd8d0..beb0800211 100644
  opt-level = 3
 ```
 
-运行 `make build-debug` 等命令时传入 `RUSTUP_TOOLCHAIN=nightly`，并在所有 [rust analyzer 设置](#rust-analyzer-settings)中包含该变量，以加速构建和 IDE 检查。
+运行 `make build-debug` 等命令时传入 `RUSTUP_TOOLCHAIN=nightly`，并在所有 [rust analyzer 设置](#rust-analyzer-设置)中包含该变量，以加速构建和 IDE 检查。
 
 ## 服务 (Services)
 

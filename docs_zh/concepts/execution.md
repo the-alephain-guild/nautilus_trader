@@ -127,7 +127,7 @@ Nautilus 尚不支持交易场所侧的对冲模式，例如 Binance 的 `BOTH` 
 
 此规则仍然允许常见的平仓写法：`Strategy.close_position(position)` 会转发 `position.id`，在 `NETTING` 下它恰好就是那个确定性 ID，因此会被接受。若要用任意 ID 标记或划分持仓，请将策略配置为 `oms_type=HEDGING`。
 
-对于 `submit_order_list`，当提供了 `position_id` 时，无论 OMS 类型如何，引擎还会额外拒绝任何混合品种的订单列表。一个持仓只属于单一品种，因此该组合会被拒绝，并附带明确的 `OrderDenied` 原因。关于混合品种的更多注意事项，请参阅[订单列表](orders/advanced.md#order-lists)。
+对于 `submit_order_list`，当提供了 `position_id` 时，无论 OMS 类型如何，引擎还会额外拒绝任何混合品种的订单列表。一个持仓只属于单一品种，因此该组合会被拒绝，并附带明确的 `OrderDenied` 原因。关于混合品种的更多注意事项，请参阅[订单列表](orders/advanced.md#订单列表-order-lists)。
 
 ## 风险引擎 (Risk Engine)
 
@@ -400,7 +400,7 @@ def orders_for_exec_spawn(self, exec_spawn_id: ClientOrderId) -> list[Order]:
 - **对账频率增加**：将 `open_check_interval_secs` 或 `position_check_interval_secs` 设置为激进的值（例如 1-2 秒）会增加系统轮询交易场所的频率，从而增加与实时事件产生竞态条件的机会。
 - **启动延迟降低**：`reconciliation_startup_delay_secs` 设置（默认 10 秒）在持续对账开始前为 WebSocket 连接的稳定提供时间。降低此值会增加启动窗口期间重复成交的可能性。
 
-更多配置详情请参阅[持续对账](../how_to/configure_live_trading.md#continuous-reconciliation)。
+更多配置详情请参阅[持续对账](../../docs/how_to/configure_live_trading.md#continuous-reconciliation)。
 
 ### 系统行为
 
@@ -455,7 +455,7 @@ config = LiveExecEngineConfig(
 :::
 
 :::warning
-当 `allow_overfills=False`（默认值）时，被拒绝的成交可能导致系统与交易场所之间的持仓差异。请使用[对账](live.md#execution-reconciliation)功能来检测和解决此类差异。
+当 `allow_overfills=False`（默认值）时，被拒绝的成交可能导致系统与交易场所之间的持仓差异。请使用[对账](live.md#执行对账)功能来检测和解决此类差异。
 :::
 
 ## 对账报告
