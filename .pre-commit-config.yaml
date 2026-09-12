@@ -169,6 +169,16 @@ repos:
         entry: bash .pre-commit-hooks/check_unicode_typography.sh
         language: system
         types: [text]
+        # Fork-local exclusion. These two hooks exist to keep the repository English and ASCII, which
+        # is the right rule for its sources - and the wrong rule for `docs_zh/`, a Chinese
+        # documentation chain this fork maintains, plus the Guild tooling that produces it. The
+        # characters they reject there are correct Chinese punctuation: 133 of them are the Chinese
+        # em dash and 16 curly double quotes are the Chinese double quotation marks, per
+        # GB/T 15834. Rewriting them as ASCII would make the prose wrong, so the tree is scoped out
+        # instead. Defects the hooks legitimately found in that tree were fixed rather than excluded:
+        # 54 non-breaking hyphens inside English terms, 9 en dashes, and 11 emoji-style check marks.
+        # Keep this exclude identical in both hooks.
+        exclude: "^(docs_zh/|[.]forge/|[.]claude/|scripts/sync_docs_zh[.]py$)"
 
       - id: check-non-latin-text
         name: check non-Latin text
@@ -177,6 +187,7 @@ repos:
         language: system
         types: [text]
         files: "\\.(rs|py|md|toml|yaml|yml)$"
+        exclude: "^(docs_zh/|[.]forge/|[.]claude/|scripts/sync_docs_zh[.]py$)"
 
       - id: check-toml-codegen
         name: check toml-codegen

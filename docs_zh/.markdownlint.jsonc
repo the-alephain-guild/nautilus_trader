@@ -1,0 +1,14 @@
+// markdownlint configuration for `docs_zh/`, the fork's Chinese documentation chain.
+//
+// Identical to the repository's own configuration except that MD060 is off, because the two table
+// hooks measure width differently and cannot both be satisfied on CJK tables. `check-markdown-tables`
+// pads columns to their widest cell by display width, where a CJK character occupies two columns;
+// MD060's "aligned" style wants the pipes at identical character offsets. Measured: the normalizer's
+// own output fails MD060 on a three-line Chinese table, and `markdownlint --fix` does not repair it.
+//
+// Every other rule still applies here - MD024, MD055 and MD056 each caught a real rendering defect
+// in this tree, so scoping the whole directory out of markdownlint would cost more than it saves.
+{
+  "extends": "../.markdownlint.jsonc",
+  "MD060": false
+}
