@@ -1,0 +1,10 @@
+// markdownlint configuration for `.claude/`, the fork's Claude Code commands and rules.
+//
+// Same single exception as `docs_zh/` and `.forge/`: these documents are written in Chinese, and
+// MD060's "aligned" style cannot hold on a CJK table while the repository's own
+// `check-markdown-tables` hook pads by display width, where a CJK character occupies two columns.
+// Every other rule still applies.
+{
+  "extends": "../.markdownlint.jsonc",
+  "MD060": false
+}
