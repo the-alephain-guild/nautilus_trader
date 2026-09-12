@@ -8,7 +8,7 @@
 **每个适配器都必须通过与其所支持能力相匹配的那一部分测试。**
 
 测试从简单（单个市价单）逐步推进到复杂（括号单、修改链、拒单处理）。通过
-第 1–5 组的适配器即被视为达到基线合规。应首先使用
+第 1-5 组的适配器即被视为达到基线合规。应首先使用
 [数据测试规范](spec_data_testing.md) 验证数据连通性。
 
 请把适配器特有的行为（某个交易场所如何模拟市价单、如何处理 TIF 选项等）
@@ -479,7 +479,7 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 | 字段       | 值                                                                           |
 | -------- | --------------------------------------------------------------------------- |
 | **前提条件** | 适配器已连接，合约已加载，报价流通，盘口深度充足。                                                   |
-| **操作**   | 在激进价格上提交一个限价买入 FOK 单，数量在 top‑of‑book 深度之内。                                  |
+| **操作**   | 在激进价格上提交一个限价买入 FOK 单，数量在 top-of-book 深度之内。                                  |
 | **事件序列** | `OrderInitialized` -> `OrderSubmitted` -> `OrderAccepted` -> `OrderFilled`。 |
 | **通过标准** | 订单在单个成交事件中完全成交。                                                             |
 | **跳过条件** | 适配器不支持 FOK TIF。                                                             |
@@ -541,7 +541,7 @@ config.order_expire_time_delta_mins = Some(60);
 
 **注意事项：**
 
-- 使用较短的 `order_expire_time_delta_mins`（例如 1–2 分钟）以避免长时间等待。
+- 使用较短的 `order_expire_time_delta_mins`（例如 1-2 分钟）以避免长时间等待。
 - 一些交易场所可能将到期报告为取消；验证适配器将其映射为 `OrderExpired`。
 
 ### TC-E19: 限价 DAY - 提交并被接受
@@ -1180,7 +1180,7 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 | TC-E50 | 括号 BUY             | 入场限价买 + TP 限价卖 + SL 止损卖。 | 不支持括号单。    |
 | TC-E51 | 括号 SELL            | 入场限价卖 + TP 限价买 + SL 止损买。 | 不支持括号单。    |
 | TC-E52 | 括号入场成交后激活          | 验证入场成交后 TP/SL 变为激活。      | 不支持括号单。    |
-| TC-E53 | 带 post‑only 入场的括号单 | 入场单使用 post‑only 标志。      | 不支持括号或 PO。 |
+| TC-E53 | 带 post-only 入场的括号单 | 入场单使用 post-only 标志。      | 不支持括号或 PO。 |
 
 ### TC-E50: 括号 BUY
 
@@ -1242,15 +1242,15 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 - 这需要入场单确实成交，可能需要激进的定价。
 - TP/SL 的激活机制因交易场所而异（有些立即激活，有些是 OCA 组）。
 
-### TC-E53: 带 post‑only 入场的括号单
+### TC-E53: 带 post-only 入场的括号单
 
 | 字段       | 值                                                |
 | -------- | ------------------------------------------------ |
-| **前提条件** | 适配器支持括号单和 post‑only。                             |
+| **前提条件** | 适配器支持括号单和 post-only。                             |
 | **操作**   | 以 `use_post_only=True` 提交括号单（应用于入场和 TP）。         |
-| **事件序列** | 与 TC-E50 相同，入场带 post‑only 标志。                    |
-| **通过标准** | 入场和 TP 订单作为 post‑only（maker）被接受；SL 不是 post‑only。 |
-| **跳过条件** | 不支持括号单或不支持 post‑only。                            |
+| **事件序列** | 与 TC-E50 相同，入场带 post-only 标志。                    |
+| **通过标准** | 入场和 TP 订单作为 post-only（maker）被接受；SL 不是 post-only。 |
+| **跳过条件** | 不支持括号单或不支持 post-only。                            |
 
 ---
 
@@ -1260,8 +1260,8 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 
 | TC     | 名称             | 描述                           | 跳过条件             |
 | ------ | -------------- | ---------------------------- | ---------------- |
-| TC-E60 | PostOnly 被接受   | 下在远离 TOB 处的 post‑only 限价单。   | 不支持 post‑only。   |
-| TC-E61 | 平仓时 ReduceOnly | 用 reduce‑only 标志平仓。          | 不支持 reduce‑only。 |
+| TC-E60 | PostOnly 被接受   | 下在远离 TOB 处的 post-only 限价单。   | 不支持 post-only。   |
+| TC-E61 | 平仓时 ReduceOnly | 用 reduce-only 标志平仓。          | 不支持 reduce-only。 |
 | TC-E62 | 展示数量           | 可见数量 < 总量的冰山单。               | 不支持展示数量。         |
 | TC-E63 | 自定义订单参数        | 通过 `order_params` 传入适配器特有参数。 | 不适用。             |
 
@@ -1272,8 +1272,8 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 | **前提条件** | 适配器已连接，合约已加载，报价流通。                                         |
 | **操作**   | ExecTester 在被动价格下一个 `use_post_only=True` 的限价买单。            |
 | **事件序列** | `OrderInitialized` -> `OrderSubmitted` -> `OrderAccepted`。 |
-| **通过标准** | 订单作为 maker 单被接受；post‑only 标志被交易场所确认。                       |
-| **跳过条件** | 适配器不支持 post‑only 标志。                                       |
+| **通过标准** | 订单作为 maker 单被接受；post-only 标志被交易场所确认。                       |
+| **跳过条件** | 适配器不支持 post-only 标志。                                       |
 
 **Python 配置：**
 
@@ -1301,10 +1301,10 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 | 字段       | 值                                                                                          |
 | -------- | ------------------------------------------------------------------------------------------ |
 | **前提条件** | 未平仓位（来自 TC-E01）。                                                                           |
-| **操作**   | 以 `reduce_only_on_stop=True` 停止策略；平仓单使用 reduce‑only 标志。                                    |
-| **事件序列** | `OrderInitialized` -> `OrderSubmitted` -> `OrderAccepted` -> `OrderFilled`（带 reduce‑only）。 |
-| **通过标准** | 平仓单带有 reduce‑only 标志；仓位完全平掉。                                                               |
-| **跳过条件** | 适配器不支持 reduce‑only 标志。                                                                     |
+| **操作**   | 以 `reduce_only_on_stop=True` 停止策略；平仓单使用 reduce-only 标志。                                    |
+| **事件序列** | `OrderInitialized` -> `OrderSubmitted` -> `OrderAccepted` -> `OrderFilled`（带 reduce-only）。 |
+| **通过标准** | 平仓单带有 reduce-only 标志；仓位完全平掉。                                                               |
+| **跳过条件** | 适配器不支持 reduce-only 标志。                                                                     |
 
 **Python 配置：**
 
@@ -1385,8 +1385,8 @@ config.order_display_qty = Some(Quantity::from("0.1"));
 
 | TC     | 名称            | 描述                         | 跳过条件             |
 | ------ | ------------- | -------------------------- | ---------------- |
-| TC-E70 | PostOnly 拒绝   | 会穿越价差的 post‑only 订单。       | 不支持 post‑only。   |
-| TC-E71 | ReduceOnly 拒绝 | 没有可减仓位的 reduce‑only 订单。    | 不支持 reduce‑only。 |
+| TC-E70 | PostOnly 拒绝   | 会穿越价差的 post-only 订单。       | 不支持 post-only。   |
+| TC-E71 | ReduceOnly 拒绝 | 没有可减仓位的 reduce-only 订单。    | 不支持 reduce-only。 |
 | TC-E72 | 不支持的订单类型      | 提交适配器不支持的订单类型。             | 从不跳过。            |
 | TC-E73 | 不支持的 TIF      | 提交带不支持的 time in force 的订单。 | 从不跳过。            |
 | TC-E74 | 提交模糊失败        | 提交时的传输、超时或发送失败。            | 无 mock 路径。       |
@@ -1427,10 +1427,10 @@ WebSocket 边界，而非真实的交易场所。
 | 字段       | 值                                                                        |
 | -------- | ------------------------------------------------------------------------ |
 | **前提条件** | 适配器已连接，合约已加载，报价流通。                                                       |
-| **操作**   | ExecTester 将 post‑only 订单下在盘口错误的一侧（`test_reject_post_only=True`），使其穿越价差。 |
+| **操作**   | ExecTester 将 post-only 订单下在盘口错误的一侧（`test_reject_post_only=True`），使其穿越价差。 |
 | **事件序列** | `OrderInitialized` -> `OrderSubmitted` -> `OrderRejected`。               |
-| **通过标准** | 交易场所拒绝订单；`OrderRejected.due_post_only=true`；原因点明 post‑only 违规。           |
-| **跳过条件** | 适配器不支持 post‑only 标志。                                                     |
+| **通过标准** | 交易场所拒绝订单；`OrderRejected.due_post_only=true`；原因点明 post-only 违规。           |
+| **跳过条件** | 适配器不支持 post-only 标志。                                                     |
 
 **注意事项：**
 
@@ -1469,8 +1469,8 @@ ExecTesterConfig::new(strategy_id, instrument_id, client_id, Quantity::from("0.0
 | **前提条件** | 适配器已连接，该合约无未平仓位。                                                                                                    |
 | **操作**   | 当不存在可减仓位时，ExecTester 通过 `test_reject_reduce_only=True` 和 `open_position_on_start_qty`，以 `reduce_only=True` 开一个市价仓位。 |
 | **事件序列** | `OrderInitialized` -> `OrderSubmitted` -> `OrderRejected`。                                                          |
-| **通过标准** | 订单被拒绝；`OrderRejected` 事件的原因表明 reduce‑only 违规。                                                                       |
-| **跳过条件** | 适配器不支持 reduce‑only 标志。                                                                                              |
+| **通过标准** | 订单被拒绝；`OrderRejected` 事件的原因表明 reduce-only 违规。                                                                       |
+| **跳过条件** | 适配器不支持 reduce-only 标志。                                                                                              |
 
 **注意事项：**
 

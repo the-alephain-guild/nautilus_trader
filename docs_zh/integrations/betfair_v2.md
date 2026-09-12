@@ -89,9 +89,9 @@ Betfair 会话每 12-24 小时过期一次。Rust adapter 通过三种机制自�
 
 | 机制             | 触发条件                         | 动作                                              |
 | -------------- | ---------------------------- | ----------------------------------------------- |
-| 周期性 keep‑alive | 每 10 小时。                     | 续期会话令牌，推送到所有流的 watch 通道。                        |
-| keep‑alive 回退  | keep‑alive 返回 `LoginFailed`。 | 通过 `reconnect()` 完整重新登录，向流推送新令牌。                |
-| 流重连            | 断线后收到 `Connection` 消息。       | 先尝试 keep‑alive，在 `LoginFailed` 时回退到重新登录，更新认证信息。 |
+| 周期性 keep-alive | 每 10 小时。                     | 续期会话令牌，推送到所有流的 watch 通道。                        |
+| keep-alive 回退  | keep-alive 返回 `LoginFailed`。 | 通过 `reconnect()` 完整重新登录，向流推送新令牌。                |
+| 流重连            | 断线后收到 `Connection` 消息。       | 先尝试 keep-alive，在 `LoginFailed` 时回退到重新登录，更新认证信息。 |
 
 keep-alive 期间出现的瞬时错误（网络超时、5xx 响应）会被记录并跳过。现有的会话令牌
 会被保留，下一个 keep-alive 间隔会重试。只有 `LoginFailed` 错误（会话过期）才会触发
@@ -121,7 +121,7 @@ TCP 重连时从该通道读取，因此由 keep-alive 任务或重连处理器�
 | 2   | 重连任务收到信号。                 | 重新置起 `is_reconciling`，使排队中的第二次重连在其自身迭代期间也会暂停。                   |
 | 3   | 重连任务主体。                   | 刷新会话，更新流认证，获取 `getAccountFunds`，并调用 `listCurrentOrders` 取订单和成交。 |
 | 4   | 批量状态构建完成。                 | 作为 `ExecutionReport::MassStatus` 派发，使引擎对账进缓存。                   |
-| 5   | 迭代结束。                     | 清除 `is_reconciling`。失败的迭代也会清除它（fail‑open，与 Nautilus 其余部分一致）。    |
+| 5   | 迭代结束。                     | 清除 `is_reconciling`。失败的迭代也会清除它（fail-open，与 Nautilus 其余部分一致）。    |
 
 当 `is_reconciling` 被置起时：
 
@@ -196,7 +196,7 @@ adapter 使用独立的限速桶 (rate limit bucket)，使账户状态轮询和�
 
 | 桶       | 默认值  | 端点                                            |
 | ------- | ---- | --------------------------------------------- |
-| General | 5/s  | 账户状态、对账、keep‑alive。                           |
+| General | 5/s  | 账户状态、对账、keep-alive。                           |
 | Orders  | 20/s | `placeOrders`、`replaceOrders`、`cancelOrders`。 |
 
 订单状态和成交报告查询在遇到会话错误时，会在刷新会话后重试一次。`TOO_MANY_REQUESTS`

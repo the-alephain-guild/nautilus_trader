@@ -77,7 +77,7 @@ Polymarket 集成适配器包含多个组件，可以根据使用场景一起使
 | ------------ | ----------------------------------------------------------------- | -------------------------------------------- | --------------------------------------- |
 | 公开包路径        | `nautilus_trader.adapters.polymarket`                             | `nautilus_trader.adapters.polymarket`        | Rust 是收敛目标。                             |
 | 订单签名         | 使用 `py-clob-client-v2`                                            | 原生 Rust 签名                                   | Python 签名较慢。                            |
-| Post‑only 订单 | 仅支持 `GTC` 和 `GTD`                                                 | 仅支持 `GTC` 和 `GTD`                            | 两者均拒绝带市价 TIF（`IOC` 或 `FOK`）的 post‑only。 |
+| Post-only 订单 | 仅支持 `GTC` 和 `GTD`                                                 | 仅支持 `GTC` 和 `GTD`                            | 两者均拒绝带市价 TIF（`IOC` 或 `FOK`）的 post-only。 |
 | 批量提交         | 对可批处理的 `SubmitOrderList` 请求使用 `POST /orders`                      | 对可批处理的 `SubmitOrderList` 请求使用 `POST /orders` | 两者均仅批处理独立的限价单，每次请求上限 15 个。              |
 | 批量取消         | 使用 `DELETE /orders`                                               | 使用 `DELETE /orders`                          | 两者均与 Polymarket 官方文档保持一致。               |
 | 市场取消订阅       | 发送动态 WebSocket `unsubscribe` 消息                                   | 发送动态 WebSocket `unsubscribe` 消息              | 两者均支持订阅和取消订阅。                           |
@@ -281,8 +281,8 @@ Polymarket 将 `POST /order` 字段称为 `orderType`。在 NautilusTrader 中�
 
 | Nautilus TIF | Polymarket `orderType` | Nautilus 订单适用范围    | 备注                                   |
 | ------------ | ---------------------- | ------------------ | ------------------------------------ |
-| `GTC`        | `GTC`                  | 仅 `LIMIT`          | 撤销前有效（Good‑Til‑Cancelled）；挂在订单簿上。    |
-| `GTD`        | `GTD`                  | 仅 `LIMIT`          | 指定日期前有效（Good‑Til‑Date）；挂单直到到期、成交或取消。 |
+| `GTC`        | `GTC`                  | 仅 `LIMIT`          | 撤销前有效（Good-Til-Cancelled）；挂在订单簿上。    |
+| `GTD`        | `GTD`                  | 仅 `LIMIT`          | 指定日期前有效（Good-Til-Date）；挂单直到到期、成交或取消。 |
 | `FOK`        | `FOK`                  | `LIMIT` 或 `MARKET` | 立即全部成交否则取消整个订单。                      |
 | `IOC`        | `FAK`                  | `LIMIT` 或 `MARKET` | 立即成交可用部分并取消剩余部分。                     |
 

@@ -18,7 +18,7 @@
 | 类型               | 用途          | 章节               |
 | ---------------- | ----------- | ---------------- |
 | **Tutorial**     | 通过完成一项任务来教学 | `tutorials/`     |
-| **How‑to guide** | 解决某个具体问题    | `how_to/`        |
+| **How-to guide** | 解决某个具体问题    | `how_to/`        |
 | **Explanation**  | 阐明设计和架构     | `concepts/`      |
 | **Reference**    | 描述具体的机制     | `api_reference/` |
 

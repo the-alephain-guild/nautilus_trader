@@ -274,8 +274,8 @@ CI 发布不要使用 `cargo publish --workspace`。发布作业运行 `scripts/
 **要具体**：
 
 ```markdown
-❌ Improved Binance adapter
-✅ Improved Binance fill handling when instrument not cached
+✗ Improved Binance adapter
+✓ Improved Binance fill handling when instrument not cached
 ```
 
 ## 安全分类

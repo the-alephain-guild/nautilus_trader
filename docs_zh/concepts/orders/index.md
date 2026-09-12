@@ -282,13 +282,13 @@ NautilusTrader 支持以下订单类型。每种类型都链接到一份带有�
 | -------------------- | ------------------------------------ |
 | Market               | `1` (Market)                         |
 | Limit                | `2` (Limit)                          |
-| Stop‑Market          | `3` (Stop)                           |
-| Stop‑Limit           | `4` (Stop Limit)                     |
-| Market‑To‑Limit      | `K` (Market With Left Over as Limit) |
-| Market‑If‑Touched    | `J` (Market If Touched)              |
-| Limit‑If‑Touched     | 无专用值 †                               |
-| Trailing‑Stop‑Market | `3` (Stop) + 追踪 peg                  |
-| Trailing‑Stop‑Limit  | `4` (Stop Limit) + 追踪 peg            |
+| Stop-Market          | `3` (Stop)                           |
+| Stop-Limit           | `4` (Stop Limit)                     |
+| Market-To-Limit      | `K` (Market With Left Over as Limit) |
+| Market-If-Touched    | `J` (Market If Touched)              |
+| Limit-If-Touched     | 无专用值 †                               |
+| Trailing-Stop-Market | `3` (Stop) + 追踪 peg                  |
+| Trailing-Stop-Limit  | `4` (Stop Limit) + 追踪 peg            |
 
 † FIX 没有为 *Limit-If-Touched* 定义专用的 `OrdType`；它通常以 `4`（Stop Limit）
 配合一个有利的触发价发送。追踪止损同样没有专用值，被建模为 `3`/`4`

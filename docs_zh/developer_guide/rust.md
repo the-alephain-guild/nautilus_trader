@@ -1167,7 +1167,7 @@ fn test_symbol_is_composite()
 ```rust
 // AVOID: This creates reference cycles
 struct CallbackHolder {
-    handler: Option<Arc<PyObject>>,  // ❌ Arc wrapper causes cycles
+    handler: Option<Arc<PyObject>>,  // ✗ Arc wrapper causes cycles
 }
 ```
 
@@ -1180,7 +1180,7 @@ use nautilus_core::python::clone_py_object;
 
 // CORRECT: Use plain PyObject without Arc wrapper
 struct CallbackHolder {
-    handler: Option<PyObject>,  // ✅ No Arc wrapper
+    handler: Option<PyObject>,  // ✓ No Arc wrapper
 }
 
 // Manual Clone implementation using clone_py_object
@@ -1209,7 +1209,7 @@ self.py_handler.as_ref().map(clone_py_object)
 
 ```rust
 // BEFORE: Automatic derive causes issues with PyObject
-#[derive(Clone)]  // ❌ Remove this
+#[derive(Clone)]  // ✗ Remove this
 struct Config {
     handler: Option<PyObject>,
 }
@@ -1235,20 +1235,20 @@ impl Clone for Config {
 
 ```rust
 // BEFORE: Arc wrapper in function signatures
-fn spawn_task(handler: Arc<PyObject>) { ... }  // ❌
+fn spawn_task(handler: Arc<PyObject>) { ... }  // ✗
 
 // AFTER: Plain PyObject
-fn spawn_task(handler: PyObject) { ... }  // ✅
+fn spawn_task(handler: PyObject) { ... }  // ✓
 ```
 
 #### 4. 创建 Python 回调时避免 `Arc::new()`
 
 ```rust
 // BEFORE: Wrapping in Arc
-let callback = Arc::new(py_function);  // ❌
+let callback = Arc::new(py_function);  // ✗
 
 // AFTER: Use directly
-let callback = py_function;  // ✅
+let callback = py_function;  // ✓
 ```
 
 ### 为什么这有效
@@ -1466,9 +1466,9 @@ make pre-commit     # 重新运行所有检查
 ## 资源
 
 - [The Rustonomicon](https://doc.rust-lang.org/nomicon/) — Unsafe Rust 的暗黑艺术。
-- [The Rust Reference – Unsafety](https://doc.rust-lang.org/stable/reference/unsafety.html)。
-- [Safe Bindings in Rust – Russell Johnston](https://www.abubalay.com/blog/2020/08/22/safe-bindings-in-rust)。
-- [Google – Rust and C interoperability](https://www.chromium.org/Home/chromium-security/memory-safety/rust-and-c-interoperability/)。
+- [The Rust Reference - Unsafety](https://doc.rust-lang.org/stable/reference/unsafety.html)。
+- [Safe Bindings in Rust - Russell Johnston](https://www.abubalay.com/blog/2020/08/22/safe-bindings-in-rust)。
+- [Google - Rust and C interoperability](https://www.chromium.org/Home/chromium-security/memory-safety/rust-and-c-interoperability/)。
 
 ## Cap'n Proto 序列化
 
