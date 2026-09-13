@@ -97,6 +97,15 @@ def main() -> None:
             subscribe_trades=True,
             request_instruments=True,
             request_bars=True,
+            # The venue serves a book snapshot over REST and streams no book at all, so this is a
+            # one-shot read rather than a subscription.
+            request_book_snapshot=True,
+            # Funding, mark and index prices exist only on perps, and only in the ticker snapshot -
+            # there is no stream for any of them, so the adapter polls while they are subscribed.
+            request_funding_rates=MARKET == Market.PERPS,
+            subscribe_funding_rates=MARKET == Market.PERPS,
+            subscribe_mark_prices=MARKET == Market.PERPS,
+            subscribe_index_prices=MARKET == Market.PERPS,
             log_data=True,
         ),
     )
