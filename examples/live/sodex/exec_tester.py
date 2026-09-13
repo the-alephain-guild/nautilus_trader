@@ -62,31 +62,38 @@ from nautilus_trader.model import TraderId
 from nautilus_trader.testkit import ExecTesterConfig
 
 
-def _dry_run_from_env() -> bool:
+def _flag_from_env(name: str, *, default: bool) -> bool:
     """
-    Read ``SODEX_DRY_RUN``, defaulting to a dry run.
+    Read one boolean from the environment.
 
-    Scoped to one invocation rather than written into this file: ``env SODEX_DRY_RUN=false``
-    arms exactly the run it prefixes, where a constant edited to arm it stays armed until
-    somebody remembers to put it back - and the next run is usually started by someone who
-    did not do the editing.
+    Scoped to a single invocation rather than written into this file: ``env SODEX_DRY_RUN=false``
+    arms exactly the run it prefixes, where a constant edited to arm it stays armed until somebody
+    remembers to put it back - and the next run is usually started by someone who did not do the
+    editing.
 
-    An unrecognized value is refused rather than read as either answer. A typo that silently
-    means "no orders" only wastes a run; one that silently means "orders" spends money.
+    An unrecognized value is refused rather than read as either answer. A typo that silently means
+    "no orders" only wastes a run; one that silently means "orders" spends money.
 
     """
-    raw = os.environ.get("SODEX_DRY_RUN", "true").strip().lower()
+    raw = os.environ.get(name, str(default)).strip().lower()
 
     if raw in ("true", "1", "yes", "on"):
         return True
     if raw in ("false", "0", "no", "off"):
         return False
 
-    raise SystemExit(f"SODEX_DRY_RUN must be a boolean, not {raw!r}")
+    raise SystemExit(f"{name} must be a boolean, not {raw!r}")
 
 
 # WARNING: `SODEX_DRY_RUN=false` submits orders to the configured network.
-DRY_RUN = _dry_run_from_env()
+DRY_RUN = _flag_from_env("SODEX_DRY_RUN", default=True)
+
+# Amends the resting orders as the top of book moves, which is the only thing here that reaches the
+# venue's modify route - every other action either submits or cancels. Off by default because it
+# amends on every drift past the offset, which is a lot of requests for a run that only wants to
+# watch an order rest.
+MODIFY_ORDERS = _flag_from_env("SODEX_MODIFY_ORDERS", default=False)
+
 NETWORK = Network.TESTNET
 
 # Which engine to reach. `SODEX_MARKET=perps` switches everything venue-specific below, because
@@ -153,6 +160,7 @@ def main() -> None:
             # The venue expresses post-only as its GTX time-in-force, which the adapter maps
             # by name rather than by value - the two numbering schemes disagree on IOC and FOK.
             use_post_only=True,
+            modify_orders_to_maintain_tob_offset=MODIFY_ORDERS,
             cancel_orders_on_stop=True,
             # Works now that fills are accounted for through reconciliation, though a position
             # opened moments before the stop may not have been reconciled yet.
