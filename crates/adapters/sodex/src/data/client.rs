@@ -49,10 +49,12 @@ use nautilus_common::{
     messages::{
         DataEvent,
         data::{
-            BarsResponse, BookResponse, DataResponse, InstrumentResponse, InstrumentsResponse,
-            RequestBars, RequestBookSnapshot, RequestInstrument, RequestInstruments, SubscribeBars,
-            SubscribeQuotes, SubscribeTrades, UnsubscribeBars, UnsubscribeQuotes,
-            UnsubscribeTrades,
+            BarsResponse, BookResponse, DataResponse, FundingRatesResponse, InstrumentResponse,
+            InstrumentsResponse, RequestBars, RequestBookSnapshot, RequestFundingRates,
+            RequestInstrument, RequestInstruments, SubscribeBars, SubscribeFundingRates,
+            SubscribeIndexPrices, SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades,
+            UnsubscribeBars, UnsubscribeFundingRates, UnsubscribeIndexPrices,
+            UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
 };
@@ -74,6 +76,7 @@ use super::{
     book::{fetch_order_book, parse_order_book},
     history::{BarRequest, fetch_bars},
     parse::{parse_completed_bar, parse_quote, parse_trade, spec_to_interval},
+    tickers::{fetch_tickers, parse_funding_rate, parse_index_price, parse_mark_price, ticker_for},
 };
 use crate::{
     common::Market,
@@ -125,6 +128,30 @@ struct Feeds {
 }
 
 /// Live market data client for one SoDEX engine.
+/// Which polled ticker statistics one instrument is subscribed to.
+///
+/// The three arrive together in one row, so they are tracked together: subscribing to a second one
+/// must not start a second poll of the same data.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct TickerSubs {
+    funding: bool,
+    mark: bool,
+    index: bool,
+}
+
+impl TickerSubs {
+    const fn any(self) -> bool {
+        self.funding || self.mark || self.index
+    }
+}
+
+/// How often a ticker is polled while anything is subscribed to it.
+///
+/// The venue streams none of these. Funding changes hourly, but the mark price moves with the
+/// market and a position is valued against it, so the interval follows the fastest of the three
+/// rather than the slowest.
+const TICKER_POLL_INTERVAL_SECS: u64 = 5;
+
 pub struct SodexDataClient {
     client_id: ClientId,
     venue: Venue,
@@ -137,6 +164,10 @@ pub struct SodexDataClient {
     ws: Option<Arc<SodexWebSocketClient>>,
     /// What each subscribed feed maps to, keyed as the venue's push frames are.
     feeds: Arc<Mutex<Feeds>>,
+    /// Which polled statistics each instrument wants. The venue streams none of the three, and all
+    /// three arrive in one ticker row, so one task per instrument serves whatever is flagged here
+    /// rather than three tasks each fetching the same row.
+    ticker_subs: Arc<Mutex<HashMap<InstrumentId, TickerSubs>>>,
     is_connected: Arc<AtomicBool>,
     tasks: TaskHandles,
     cancellation: CancellationToken,
@@ -180,6 +211,7 @@ impl SodexDataClient {
             catalog: Arc::new(InstrumentCatalog::new()),
             ws: None,
             feeds: Arc::new(Mutex::new(Feeds::default())),
+            ticker_subs: Arc::new(Mutex::new(HashMap::new())),
             is_connected: Arc::new(AtomicBool::new(false)),
             tasks: TaskHandles::default(),
             cancellation: CancellationToken::new(),
@@ -214,6 +246,118 @@ impl SodexDataClient {
             price_precision: instrument.price_precision(),
             size_precision: instrument.size_precision(),
         })
+    }
+
+    /// Flags one polled statistic and starts the instrument's poll if it is not already running.
+    ///
+    /// Returns whether a task was started, which only matters for the log line: the caller does not
+    /// need to know, and the poll exits on its own once every flag clears.
+    fn flag_ticker_sub(
+        &self,
+        instrument_id: InstrumentId,
+        set: impl FnOnce(&mut TickerSubs),
+    ) -> anyhow::Result<()> {
+        // Resolved before anything is flagged, so an unknown instrument fails here rather than
+        // inside a task that can only log.
+        let feed = self.tick_feed(&instrument_id)?;
+
+        let start_poll = {
+            let mut subs = self.ticker_subs.lock();
+            let entry = subs.entry(instrument_id).or_default();
+            let was_idle = !entry.any();
+            set(entry);
+            was_idle
+        };
+
+        if !start_poll {
+            return Ok(());
+        }
+
+        let http = Arc::clone(&self.http);
+        let sender = self.data_sender.clone();
+        let clock = self.clock;
+        let subs = Arc::clone(&self.ticker_subs);
+        let cancellation = self.cancellation.clone();
+        let symbol = instrument_id.symbol.to_string();
+
+        self.tasks.push(get_runtime().spawn(async move {
+            let interval = std::time::Duration::from_secs(TICKER_POLL_INTERVAL_SECS);
+
+            loop {
+                let wanted = subs.lock().get(&instrument_id).copied().unwrap_or_default();
+
+                if !wanted.any() {
+                    log::debug!("sodex_ticker_poll_stopped instrument_id={instrument_id}");
+                    break;
+                }
+
+                match fetch_tickers(&http, Some(&symbol)).await {
+                    Ok(rows) => match ticker_for(rows, instrument_id) {
+                        Ok(ticker) => {
+                            let ts_init = clock.get_time_ns();
+                            let publish = |data: Data| {
+                                if let Err(e) = sender.send(DataEvent::Data(data)) {
+                                    log::error!("sodex_ticker_undeliverable error={e}");
+                                }
+                            };
+
+                            if wanted.funding {
+                                match parse_funding_rate(&ticker, instrument_id, ts_init) {
+                                    Ok(update) => publish(Data::FundingRate(update)),
+                                    Err(e) => log::error!("sodex_funding_rate_failed error={e}"),
+                                }
+                            }
+                            if wanted.mark {
+                                match parse_mark_price(
+                                    &ticker,
+                                    instrument_id,
+                                    feed.price_precision,
+                                    ts_init,
+                                ) {
+                                    Ok(update) => publish(Data::MarkPrice(update)),
+                                    Err(e) => log::error!("sodex_mark_price_failed error={e}"),
+                                }
+                            }
+                            if wanted.index {
+                                match parse_index_price(
+                                    &ticker,
+                                    instrument_id,
+                                    feed.price_precision,
+                                    ts_init,
+                                ) {
+                                    Ok(update) => publish(Data::IndexPrice(update)),
+                                    Err(e) => log::error!("sodex_index_price_failed error={e}"),
+                                }
+                            }
+                        }
+                        // Not an error: the venue lists only traded symbols, so a quiet market
+                        // looks exactly like this and will start reporting once it trades.
+                        Err(e) => log::debug!("sodex_ticker_absent error={e}"),
+                    },
+                    Err(e) => log::error!("sodex_ticker_request_failed error={e}"),
+                }
+
+                let sleep = tokio::time::sleep(interval);
+                tokio::pin!(sleep);
+                tokio::select! {
+                    () = cancellation.cancelled() => break,
+                    () = &mut sleep => {}
+                }
+            }
+        }));
+
+        Ok(())
+    }
+
+    /// Clears one polled statistic. The poll exits on its own once nothing wants it.
+    fn clear_ticker_sub(&self, instrument_id: InstrumentId, clear: impl FnOnce(&mut TickerSubs)) {
+        let mut subs = self.ticker_subs.lock();
+        if let Some(entry) = subs.get_mut(&instrument_id) {
+            clear(entry);
+            if !entry.any() {
+                subs.remove(&instrument_id);
+            }
+        }
     }
 
     fn spawn_subscribe(
@@ -681,6 +825,85 @@ impl DataClient for SodexDataClient {
                 Err(e) => log::error!("sodex_bars_request_failed bar_type={bar_type} error={e}"),
             }
         });
+        Ok(())
+    }
+
+    fn subscribe_funding_rates(&mut self, cmd: SubscribeFundingRates) -> anyhow::Result<()> {
+        self.flag_ticker_sub(cmd.instrument_id, |s| s.funding = true)
+    }
+
+    fn unsubscribe_funding_rates(&mut self, cmd: &UnsubscribeFundingRates) -> anyhow::Result<()> {
+        self.clear_ticker_sub(cmd.instrument_id, |s| s.funding = false);
+        Ok(())
+    }
+
+    fn subscribe_mark_prices(&mut self, cmd: SubscribeMarkPrices) -> anyhow::Result<()> {
+        self.flag_ticker_sub(cmd.instrument_id, |s| s.mark = true)
+    }
+
+    fn unsubscribe_mark_prices(&mut self, cmd: &UnsubscribeMarkPrices) -> anyhow::Result<()> {
+        self.clear_ticker_sub(cmd.instrument_id, |s| s.mark = false);
+        Ok(())
+    }
+
+    fn subscribe_index_prices(&mut self, cmd: SubscribeIndexPrices) -> anyhow::Result<()> {
+        self.flag_ticker_sub(cmd.instrument_id, |s| s.index = true)
+    }
+
+    fn unsubscribe_index_prices(&mut self, cmd: &UnsubscribeIndexPrices) -> anyhow::Result<()> {
+        self.clear_ticker_sub(cmd.instrument_id, |s| s.index = false);
+        Ok(())
+    }
+
+    fn request_funding_rates(&self, request: RequestFundingRates) -> anyhow::Result<()> {
+        let http = Arc::clone(&self.http);
+        let sender = self.data_sender.clone();
+        let clock = self.clock;
+        let client_id = request.client_id.unwrap_or(self.client_id);
+        let instrument_id = request.instrument_id;
+        let request_id = request.request_id;
+        let params = request.params;
+        let symbol = instrument_id.symbol.to_string();
+
+        // The venue serves only the current rate - there is no history endpoint - so a windowed
+        // request is answered with the one rate that exists rather than silently with nothing.
+        get_runtime().spawn(async move {
+            let ts_init = clock.get_time_ns();
+            let rates = match fetch_tickers(&http, Some(&symbol)).await {
+                Ok(rows) => match ticker_for(rows, instrument_id) {
+                    Ok(ticker) => match parse_funding_rate(&ticker, instrument_id, ts_init) {
+                        Ok(update) => vec![update],
+                        Err(e) => {
+                            log::error!("sodex_funding_rate_failed error={e}");
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        log::error!("sodex_funding_rate_unavailable error={e}");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    log::error!("sodex_ticker_request_failed error={e}");
+                    return;
+                }
+            };
+
+            let response = DataResponse::FundingRates(FundingRatesResponse::new(
+                request_id,
+                client_id,
+                instrument_id,
+                rates,
+                None,
+                None,
+                ts_init,
+                params,
+            ));
+            if let Err(e) = sender.send(DataEvent::Response(response)) {
+                log::error!("sodex_funding_rates_response_undeliverable error={e}");
+            }
+        });
+
         Ok(())
     }
 
