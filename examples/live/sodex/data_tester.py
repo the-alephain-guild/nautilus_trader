@@ -43,6 +43,7 @@ from nautilus_trader.adapters.sodex import Network
 from nautilus_trader.adapters.sodex import SodexDataClientConfig
 from nautilus_trader.adapters.sodex import SodexDataClientFactory
 from nautilus_trader.common import Environment
+from nautilus_trader.common import LoggerConfig
 from nautilus_trader.live import LiveNode
 from nautilus_trader.model import BarType
 from nautilus_trader.model import ClientId
@@ -68,25 +69,30 @@ else:
 
 BAR_TYPE = BarType.from_str(f"{INSTRUMENT_ID}-1-MINUTE-LAST-EXTERNAL")
 
+# `SODEX_LOG_SPEC="stdout=Debug"` raises the level without editing this file. Worth having: the
+# engine applies a book snapshot straight to the cache without surfacing it to any actor, so at the
+# default level a snapshot that arrived and one that never did look identical.
+LOG_SPEC = os.environ.get("SODEX_LOG_SPEC")
+
 
 def main() -> None:
     """
     Run the example.
     """
-    node = (
-        LiveNode.builder("SODEX-DATA-TESTER-001", TRADER_ID, Environment.LIVE)
-        .add_data_client(
-            # Named for the engine rather than left to default. One factory serves both
-            # engines, so two clients would otherwise share the id `SODEX` and collide.
-            VENUE_NAME,
-            SodexDataClientFactory(),
-            SodexDataClientConfig(
-                network=NETWORK,
-                market=MARKET,
-            ),
-        )
-        .build()
-    )
+    builder = LiveNode.builder("SODEX-DATA-TESTER-001", TRADER_ID, Environment.LIVE)
+    if LOG_SPEC:
+        builder = builder.with_logging(LoggerConfig.from_spec(LOG_SPEC))
+
+    node = builder.add_data_client(
+        # Named for the engine rather than left to default. One factory serves both
+        # engines, so two clients would otherwise share the id `SODEX` and collide.
+        VENUE_NAME,
+        SodexDataClientFactory(),
+        SodexDataClientConfig(
+            network=NETWORK,
+            market=MARKET,
+        ),
+    ).build()
     node.add_builtin_actor(
         "DataTester",
         DataTesterConfig(
