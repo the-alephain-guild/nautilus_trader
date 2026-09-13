@@ -114,7 +114,7 @@ pub struct RpcTicker {
 
 /// Fetches tickers, for one symbol or for every traded one.
 ///
-/// The venue honours `?symbol=`, so a per-instrument caller transfers one row rather than filtering
+/// The venue honors `?symbol=`, so a per-instrument caller transfers one row rather than filtering
 /// the whole list locally.
 ///
 /// # Errors
