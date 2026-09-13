@@ -9,7 +9,8 @@
 //! ```
 //!
 //! Optional: `SODEX_NETWORK` (default testnet), `SODEX_MARKET` (default spot),
-//! `SODEX_SYMBOL` (default `vBTC_vUSDC`), `SODEX_INTERVAL` (default `1h`).
+//! `SODEX_SYMBOL` (default `vBTC_vUSDC`), `SODEX_INTERVAL` (default `1h`),
+//! `SODEX_START_MINS` (fetch a window that many minutes back instead of a fixed count).
 
 use std::env;
 
@@ -76,6 +77,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec: BarSpecification = interval_to_spec(&interval)?;
     let client = SodexHttpClient::new_public(network, market)?;
 
+    let start_ms = match env::var("SODEX_START_MINS") {
+        Ok(mins) => {
+            let mins: u64 = mins.parse()?;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis() as u64;
+            Some(now_ms.saturating_sub(mins * 60_000))
+        }
+        Err(_) => None,
+    };
+
     let request = BarRequest {
         instrument_id,
         spec,
@@ -83,24 +95,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // prices disagree about scale, and this venue writes one tick size several ways.
         price_precision: instrument.price_precision(),
         size_precision: instrument.size_precision(),
-        start_ms: None,
+        // `SODEX_START_MINS` asks for a window instead of a count, which is what a node's warmup
+        // request looks like: a start time and no limit. Worth covering here, because the two
+        // combinations do not behave the same on this venue.
+        start_ms,
         end_ms: None,
-        limit: Some(10),
+        limit: if start_ms.is_some() { None } else { Some(10) },
     };
 
-    let bars = fetch_bars(&client, market, &request).await?;
-    println!("venue returned {} bars", bars.len());
+    // Already excludes the still-forming bar: `fetch_bars` drops it, since the venue does not flag
+    // one and no caller can tell from the payload. Re-checking here proves that, rather than
+    // assuming it.
+    let closed = fetch_bars(&client, market, &request).await?;
+    println!("venue returned {} closed bars", closed.len());
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as u64;
-    let closed = drop_forming_tail(bars.clone(), &spec, now_ms);
-
-    if closed.len() < bars.len() {
-        println!(
-            "dropped {} still-forming bar(s) - the venue does not flag them",
-            bars.len() - closed.len()
-        );
+    if drop_forming_tail(closed.clone(), &spec, now_ms).len() != closed.len() {
+        return Err("fetch_bars returned a bar whose interval has not elapsed".into());
     }
     println!();
 

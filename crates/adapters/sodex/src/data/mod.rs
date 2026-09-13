@@ -8,7 +8,9 @@ pub mod history;
 pub mod parse;
 
 pub use client::SodexDataClient;
-pub use history::{BarRequest, HistoryError, RpcKline, drop_forming_tail, fetch_bars, max_limit};
+pub use history::{
+    BarRequest, HistoryError, RpcKline, drop_forming_tail, fetch_bars, finalize_bars, max_limit,
+};
 pub use parse::{
     BarMappingError, bar_type_for, interval_to_spec, map_aggressor_side, parse_bar,
     parse_completed_bar, parse_quote, parse_trade, spec_to_interval,

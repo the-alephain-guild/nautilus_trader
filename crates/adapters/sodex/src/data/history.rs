@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use nautilus_core::UnixNanos;
+use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     data::{Bar, BarSpecification, BarType},
     enums::AggregationSource,
@@ -224,12 +224,41 @@ pub async fn fetch_bars(
         .await
         .map_err(|e| HistoryError::Transport(e.to_string()))?;
 
+    // When this client produced the bars, not epoch zero: the engine orders and validates a series
+    // by `ts_init`, so leaving it at 1970 makes every bar look older than any request window - and
+    // a node's warmup then receives an empty response with nothing logged as wrong.
+    finalize_bars(&klines, request, get_atomic_clock_realtime().get_time_ns())
+}
+
+/// Turns a raw kline response into the closed, ordered series the engine expects.
+///
+/// Separate from the request so the three things that go wrong here are testable without a venue:
+/// the response arrives newest-first, the newest bar is usually still forming, and a zero
+/// `ts_init` silently invalidates the whole series.
+///
+/// # Errors
+///
+/// Returns [`HistoryError`] if a kline cannot be parsed at the requested precisions.
+///
+/// # Panics
+///
+/// Debug builds panic on a zero `ts_init`, which is never a real timestamp and is how this adapter
+/// once made every historical bar unusable.
+pub fn finalize_bars(
+    klines: &[RpcKline],
+    request: &BarRequest,
+    ts_init: UnixNanos,
+) -> Result<Vec<Bar>, HistoryError> {
+    debug_assert!(
+        ts_init.as_u64() > 0,
+        "ts_init must be a real timestamp; epoch zero puts every bar before any request window",
+    );
+
     let bar_type = BarType::new(
         request.instrument_id,
         request.spec,
         AggregationSource::External,
     );
-    let ts_init = UnixNanos::default();
 
     let mut bars = klines
         .iter()
@@ -250,7 +279,97 @@ pub async fn fetch_bars(
     // left for each caller to discover.
     bars.sort_by_key(|bar| bar.ts_event);
 
-    Ok(bars)
+    // Dropped here rather than by each caller. The venue does not flag an incomplete bar, so a
+    // caller that forgets hands the engine a bar whose high and low are still moving - and the
+    // data client did forget, which is how a node's warmup received one.
+    Ok(drop_forming_tail(
+        bars,
+        &request.spec,
+        ts_init.as_u64() / 1_000_000,
+    ))
+}
+
+#[cfg(test)]
+mod finalize_tests {
+    use nautilus_model::{
+        enums::{BarAggregation, PriceType},
+        identifiers::{Symbol, Venue},
+    };
+    use rstest::rstest;
+
+    use super::*;
+    use crate::config::SODEX_PERPS;
+
+    const MINUTE_MS: u64 = 60_000;
+
+    fn kline(open_ms: u64) -> RpcKline {
+        RpcKline {
+            open_time_ms: open_ms,
+            open: "77226".to_string(),
+            high: "77226".to_string(),
+            low: "77226".to_string(),
+            close: "77226".to_string(),
+            volume: "0".to_string(),
+            quote_volume: "0".to_string(),
+            trade_count: 0,
+        }
+    }
+
+    fn request() -> BarRequest {
+        BarRequest {
+            instrument_id: InstrumentId::new(Symbol::from("BTC-USD"), Venue::from(SODEX_PERPS)),
+            spec: BarSpecification::new(1, BarAggregation::Minute, PriceType::Last),
+            price_precision: 0,
+            size_precision: 5,
+            start_ms: None,
+            end_ms: None,
+            limit: None,
+        }
+    }
+
+    /// The venue answers newest-first and never flags the bar it is still building, so the response
+    /// has to be reordered and trimmed before the engine sees it.
+    #[rstest]
+    fn a_newest_first_response_comes_back_ordered_without_the_forming_bar() {
+        let now_ms = 10 * MINUTE_MS;
+        let forming = now_ms; // its minute has not elapsed
+        let klines = vec![
+            kline(forming),
+            kline(now_ms - MINUTE_MS),
+            kline(now_ms - 2 * MINUTE_MS),
+        ];
+
+        let bars = finalize_bars(&klines, &request(), UnixNanos::from(now_ms * 1_000_000)).unwrap();
+
+        assert_eq!(bars.len(), 2, "the forming bar must not be published");
+        assert!(
+            bars[0].ts_event < bars[1].ts_event,
+            "the series must be oldest-first",
+        );
+    }
+
+    /// Every bar carries the time this client produced it. Zero is what it used to carry, which put
+    /// the whole series before any request window and made a node's warmup arrive empty.
+    #[rstest]
+    fn bars_carry_the_supplied_ts_init() {
+        let now_ms = 10 * MINUTE_MS;
+        let ts_init = UnixNanos::from(now_ms * 1_000_000);
+        let klines = vec![kline(now_ms - MINUTE_MS)];
+
+        let bars = finalize_bars(&klines, &request(), ts_init).unwrap();
+
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].ts_init, ts_init);
+        assert!(bars[0].ts_init.as_u64() > 0);
+    }
+
+    /// Epoch zero is never a real timestamp here, so it fails loudly rather than producing a series
+    /// the engine silently discards.
+    #[rstest]
+    #[should_panic(expected = "ts_init must be a real timestamp")]
+    fn a_zero_ts_init_is_refused() {
+        let _ = finalize_bars(&[kline(0)], &request(), UnixNanos::default());
+    }
 }
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ use nautilus_common::{
     messages::DataEvent,
     providers::{InstrumentProvider, InstrumentStore},
 };
-use nautilus_core::{AtomicMap, UnixNanos};
+use nautilus_core::{AtomicMap, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     currencies::CURRENCY_MAP,
     enums::CurrencyType,
@@ -327,7 +327,10 @@ pub async fn fetch_instruments(
     market: Market,
     venue: Venue,
 ) -> anyhow::Result<Listing> {
-    let ts = UnixNanos::default();
+    // When this definition was built. `UnixNanos::default()` is epoch zero, which reads as 1970 to
+    // anything reasoning about instrument freshness - and the venue's symbol listing carries no
+    // timestamp of its own, so the moment of the read is the honest answer.
+    let ts = get_atomic_clock_realtime().get_time_ns();
     let mut listing = Listing::default();
 
     match market {
