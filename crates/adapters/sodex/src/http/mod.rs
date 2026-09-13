@@ -32,7 +32,9 @@ pub use client::{ClientError, SignedRequest, SodexHttpClient};
 pub use models::{ApiResponse, EnvelopeError};
 pub use orders::{AlignError, OrderAck, align_batch};
 pub use ratelimit::{Axis, BatchCost, RateLimited, WeightBudget};
-pub use requests::{CancelOrderRequest, ClientOrderId, NewOrderRequest, OrderItem, RequestError};
+pub use requests::{
+    CancelOrderRequest, ClientOrderId, ModifyOrderRequest, NewOrderRequest, OrderItem, RequestError,
+};
 
 use crate::common::Market;
 

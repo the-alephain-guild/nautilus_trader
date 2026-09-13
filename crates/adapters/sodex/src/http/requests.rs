@@ -33,6 +33,10 @@ pub enum RequestError {
     FundsOnMarketBuyOnly,
     #[error("a cancel must name the order by exactly one of order id or client order id")]
     CancelIdentification,
+    #[error("a modify must name the order by its order id or its client order id")]
+    UnidentifiedOrder,
+    #[error("a modify must change at least one of price, quantity or stop price")]
+    NothingToModify,
 }
 
 /// A client-assigned order identifier.
@@ -234,6 +238,79 @@ impl OrderItem {
     }
 }
 
+/// Body of `POST /trade/orders/modify`, perps only.
+///
+/// The route exists on perps and answers `404` on spot, so an amend has no spot equivalent: there,
+/// the engine has to cancel and replace. Worth knowing before reaching for it, because on a venue
+/// that settles on-chain a cancel-replace costs a second round trip and gives up queue position.
+///
+/// Field names and their order come from the official SDK's `ModifyOrderRequest`, not from this
+/// adapter's reading of the documentation. The signing digest is compact JSON in declaration order,
+/// so one renamed or reordered key produces `API key not found` - an error naming credentials for a
+/// payload fault, which this integration has already paid for once.
+///
+/// Every mutable field is optional, and the venue takes what is sent: omitting the price amends
+/// only the quantity. At least one of `order_id` or `cl_ord_id` has to identify the order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModifyOrderRequest {
+    #[serde(rename = "accountID")]
+    pub account_id: u64,
+    #[serde(rename = "symbolID")]
+    pub symbol_id: u64,
+    #[serde(rename = "orderID", skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<u64>,
+    #[serde(rename = "clOrdID", skip_serializing_if = "Option::is_none")]
+    pub cl_ord_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<String>,
+    #[serde(rename = "stopPrice", skip_serializing_if = "Option::is_none")]
+    pub stop_price: Option<String>,
+}
+
+impl ModifyOrderRequest {
+    /// Path this request must be posted to. Perps only.
+    pub const ENDPOINT: &'static str = "/trade/orders/modify";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "modifyOrder";
+
+    /// Builds an amend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::UnidentifiedOrder`] if neither id is given - the venue would have
+    /// nothing to amend - or [`RequestError::NothingToModify`] if no field would change, which would
+    /// spend a signed request and a rate-limit slot to ask for nothing.
+    pub fn new(
+        account_id: u64,
+        symbol_id: u64,
+        order_id: Option<u64>,
+        cl_ord_id: Option<String>,
+        price: Option<String>,
+        quantity: Option<String>,
+        stop_price: Option<String>,
+    ) -> Result<Self, RequestError> {
+        if order_id.is_none() && cl_ord_id.is_none() {
+            return Err(RequestError::UnidentifiedOrder);
+        }
+        if price.is_none() && quantity.is_none() && stop_price.is_none() {
+            return Err(RequestError::NothingToModify);
+        }
+
+        Ok(Self {
+            account_id,
+            symbol_id,
+            order_id,
+            cl_ord_id,
+            price,
+            quantity,
+            stop_price,
+        })
+    }
+}
+
 /// Body of `POST /trade/orders`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NewOrderRequest {
@@ -431,6 +508,86 @@ mod tests {
     /// This is the field-order contract: key order, omitted optionals, quoted decimals, and
     /// non-optional fields present at their zero value. A reordered field or a dropped
     /// `skip_serializing_if` fails here rather than as an opaque signature rejection.
+    /// The signing digest is compact JSON in the SDK's declaration order, so this pins the exact
+    /// bytes. A renamed or reordered key yields `API key not found` - an error naming credentials
+    /// for a payload fault, which this integration has already paid for once.
+    #[rstest]
+    fn a_modify_serializes_to_the_sdk_shape() {
+        let request = ModifyOrderRequest::new(
+            12345,
+            1,
+            Some(2_772_119_007),
+            None,
+            Some("77280".to_string()),
+            Some("0.0002".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"accountID":12345,"symbolID":1,"orderID":2772119007,"price":"77280","quantity":"0.0002"}"#
+        );
+    }
+
+    /// Absent fields are omitted rather than sent as null: the venue amends what it is given, so a
+    /// null price would be a different request from no price.
+    #[rstest]
+    fn an_unchanged_field_is_omitted_entirely() {
+        let request =
+            ModifyOrderRequest::new(1, 2, Some(3), None, None, Some("0.5".to_string()), None)
+                .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"accountID":1,"symbolID":2,"orderID":3,"quantity":"0.5"}"#
+        );
+    }
+
+    #[rstest]
+    fn a_modify_can_name_its_target_by_client_order_id() {
+        let request = ModifyOrderRequest::new(
+            1,
+            2,
+            None,
+            Some("my-order-1".to_string()),
+            Some("100".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"accountID":1,"symbolID":2,"clOrdID":"my-order-1","price":"100"}"#
+        );
+    }
+
+    /// Neither id means the venue has nothing to amend, so this fails here rather than spending a
+    /// signed request to find out.
+    #[rstest]
+    fn a_modify_without_either_id_is_refused() {
+        let error = ModifyOrderRequest::new(1, 2, None, None, Some("100".to_string()), None, None)
+            .unwrap_err();
+
+        assert!(matches!(error, RequestError::UnidentifiedOrder));
+    }
+
+    /// An amend that changes nothing would spend a signed request and a rate-limit slot to ask for
+    /// the state the order is already in.
+    #[rstest]
+    fn a_modify_that_changes_nothing_is_refused() {
+        let error = ModifyOrderRequest::new(1, 2, Some(3), None, None, None, None).unwrap_err();
+
+        assert!(matches!(error, RequestError::NothingToModify));
+    }
+
     #[rstest]
     fn new_order_request_matches_the_venue_signing_example_byte_for_byte() {
         let expected = r#"{"accountID":12345,"symbolID":1,"orders":[{"clOrdID":"my-order-1","modifier":1,"side":1,"type":2,"timeInForce":3,"quantity":"0.001","reduceOnly":false,"positionSide":1}]}"#;

@@ -931,6 +931,15 @@ impl DataClient for SodexDataClient {
                         feed.size_precision,
                     ) {
                         Ok(book) => {
+                            // Logged because the engine applies a book response straight to the
+                            // cache without surfacing it to any actor: without this line, a
+                            // snapshot that arrived and one that never did look identical.
+                            log::debug!(
+                                "sodex_book_snapshot instrument_id={instrument_id} bids={} asks={} sequence={}",
+                                book.bids(None).count(),
+                                book.asks(None).count(),
+                                book.sequence,
+                            );
                             let response = DataResponse::Book(BookResponse::new(
                                 request_id,
                                 client_id,

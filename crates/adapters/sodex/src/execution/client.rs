@@ -65,7 +65,7 @@ use nautilus_common::{
     live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
     messages::execution::{
         CancelOrder, GenerateFillReports, GenerateOrderStatusReport, GenerateOrderStatusReports,
-        GeneratePositionStatusReports, QueryAccount, SubmitOrder, SubmitOrderList,
+        GeneratePositionStatusReports, ModifyOrder, QueryAccount, SubmitOrder, SubmitOrderList,
     },
 };
 use nautilus_core::{Params, UnixNanos, time::AtomicTime};
@@ -93,7 +93,8 @@ use crate::{
     common::Market,
     config::SodexExecClientConfig,
     http::{
-        BatchCost, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
+        BatchCost, CancelOrderRequest, ClientError, ModifyOrderRequest, NewOrderRequest, OrderAck,
+        SodexHttpClient,
         account_reads::OrderRecord,
         align_batch,
         requests::{CancelItem, ClientOrderId as VenueClientOrderId},
@@ -855,6 +856,143 @@ impl ExecutionClient for SodexExecutionClient {
                 cmd.correlation_id,
             ))?;
         }
+        Ok(())
+    }
+
+    fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
+        let order = self.core.get_order(&cmd.client_order_id)?;
+        let ts_event = self.clock.get_time_ns();
+
+        let reject = |reason: String| {
+            self.emitter
+                .emit_order_modify_rejected(&order, cmd.venue_order_id, &reason, ts_event);
+        };
+
+        // Perps only. The route answers 404 on spot, so there an amend has to be a cancel and a
+        // replace - said plainly, because a silent rejection would look like a venue refusal.
+        if self.config.market == Market::Spot {
+            reject(
+                "this venue serves no amend route on spot; cancel and replace instead".to_string(),
+            );
+            return Ok(());
+        }
+
+        let symbol_id = match self.symbol_id(&cmd.instrument_id) {
+            Ok(id) => id,
+            Err(e) => {
+                reject(e.to_string());
+                return Ok(());
+            }
+        };
+
+        // Prefer the venue's own id for the same reason a cancel does: a client order id is unique
+        // only among live orders, so amending by it after a reuse would target the wrong one.
+        let (order_id, cl_ord_id) = match cmd.venue_order_id {
+            Some(venue_order_id) => match venue_order_id.as_str().parse::<u64>() {
+                Ok(id) => (Some(id), None),
+                Err(_) => {
+                    reject(format!("venue order id {venue_order_id} is not numeric"));
+                    return Ok(());
+                }
+            },
+            None => match super::parse::map_client_order_id(&cmd.client_order_id) {
+                Ok(id) => (None, Some(id.as_str().to_string())),
+                Err(e) => {
+                    reject(e.to_string());
+                    return Ok(());
+                }
+            },
+        };
+
+        let request = match ModifyOrderRequest::new(
+            self.venue_account_id,
+            symbol_id,
+            order_id,
+            cl_ord_id,
+            cmd.price.map(|p| p.to_string()),
+            cmd.quantity.map(|q| q.to_string()),
+            cmd.trigger_price.map(|p| p.to_string()),
+        ) {
+            Ok(request) => request,
+            Err(e) => {
+                reject(e.to_string());
+                return Ok(());
+            }
+        };
+
+        // Reported on success, so they are resolved before the request leaves: the command carries
+        // only what changes, while the event describes the order's whole new state.
+        let new_quantity = cmd.quantity.unwrap_or_else(|| order.quantity());
+        let new_price = cmd.price.or_else(|| order.price());
+        let new_trigger = cmd.trigger_price.or_else(|| order.trigger_price());
+        let Some(venue_order_id) = cmd.venue_order_id.or_else(|| order.venue_order_id()) else {
+            reject(
+                "the order has no venue order id yet, so an amend could not be reported"
+                    .to_string(),
+            );
+            return Ok(());
+        };
+
+        let http = Arc::clone(&self.http);
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+
+        get_runtime().spawn(async move {
+            let signed = match http.build_signed(
+                Method::POST,
+                ModifyOrderRequest::ENDPOINT,
+                ModifyOrderRequest::ACTION,
+                &request,
+            ) {
+                Ok(signed) => signed,
+                Err(e) => {
+                    emitter.emit_order_modify_rejected(
+                        &order,
+                        Some(venue_order_id),
+                        &e.to_string(),
+                        clock.get_time_ns(),
+                    );
+                    return;
+                }
+            };
+
+            let ts_event = clock.get_time_ns();
+            let accepted = |emitter: &ExecutionEventEmitter| {
+                emitter.emit_order_updated(
+                    &order,
+                    venue_order_id,
+                    new_quantity,
+                    new_price,
+                    new_trigger,
+                    None,
+                    ts_event,
+                );
+            };
+
+            // The response shape is unobserved: the official SDK ships the request type but no
+            // client, and this venue answers some endpoints with no `data` at all. So success
+            // without a payload is taken as accepted rather than read as a malformed reply.
+            match http.send_optional::<Vec<OrderAck>>(signed).await {
+                Ok(Some(acks)) => match acks.first() {
+                    Some(ack) if ack.is_success() => accepted(&emitter),
+                    Some(ack) => emitter.emit_order_modify_rejected(
+                        &order,
+                        Some(venue_order_id),
+                        ack.error.as_deref().unwrap_or("venue rejected the amend"),
+                        ts_event,
+                    ),
+                    None => accepted(&emitter),
+                },
+                Ok(None) => accepted(&emitter),
+                Err(e) => emitter.emit_order_modify_rejected(
+                    &order,
+                    Some(venue_order_id),
+                    &e.to_string(),
+                    ts_event,
+                ),
+            }
+        });
+
         Ok(())
     }
 
