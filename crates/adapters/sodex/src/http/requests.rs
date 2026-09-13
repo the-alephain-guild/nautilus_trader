@@ -376,6 +376,18 @@ impl UpdateMarginRequest {
             }
         }
 
+        // Parsing to a non-zero decimal is not enough, because the venue reads the string rather
+        // than a number. Applied by the same rule as an order's fields, not from a measurement of
+        // this route: a local refusal of `"12.30"` costs the caller a rewrite to `"12.3"`, which
+        // is the cheaper way to be wrong. Ordered after the zero check so `"0.0"` still reads as
+        // an attempt to move nothing.
+        if has_trailing_zero(&amount) {
+            return Err(RequestError::TrailingZero {
+                field: "amount",
+                value: amount,
+            });
+        }
+
         Ok(Self {
             account_id,
             symbol_id,
@@ -443,6 +455,27 @@ impl ModifyOrderRequest {
         }
         if price.is_none() && quantity.is_none() && stop_price.is_none() {
             return Err(RequestError::NothingToModify);
+        }
+
+        // The same backstop an order item carries, on a route an amend reaches through its own
+        // construction site. What was measured is narrower than what this guards: the venue
+        // refused `"0.00020"` as a quantity where `"0.0002"` was accepted byte-for-byte
+        // otherwise. The rule is applied to the other decimal fields rather than waiting to be
+        // bitten by each one - being wrong here refuses a value locally that can be written
+        // without the zero, while being wrong the other way sent every order to rejection.
+        for (field, value) in [
+            ("price", price.as_deref()),
+            ("quantity", quantity.as_deref()),
+            ("stopPrice", stop_price.as_deref()),
+        ] {
+            if let Some(value) = value
+                && has_trailing_zero(value)
+            {
+                return Err(RequestError::TrailingZero {
+                    field,
+                    value: value.to_string(),
+                });
+            }
         }
 
         Ok(Self {
@@ -802,6 +835,36 @@ mod tests {
         let error = ModifyOrderRequest::new(1, 2, Some(3), None, None, None, None).unwrap_err();
 
         assert!(matches!(error, RequestError::NothingToModify));
+    }
+
+    #[rstest]
+    fn a_modify_with_a_trailing_zero_is_refused() {
+        // The venue reads these by string form, and every engine-formatted price carries that zero
+        // whenever the value uses fewer decimals than the instrument allows.
+        let error =
+            ModifyOrderRequest::new(1, 2, Some(3), None, Some("76562.0".to_string()), None, None)
+                .unwrap_err();
+
+        assert!(
+            matches!(error, RequestError::TrailingZero { field: "price", .. }),
+            "{error:?}"
+        );
+    }
+
+    #[rstest]
+    fn a_margin_amount_with_a_trailing_zero_is_refused() {
+        let error = UpdateMarginRequest::new(1, 2, "12.30").unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                RequestError::TrailingZero {
+                    field: "amount",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[rstest]
