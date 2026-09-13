@@ -35,6 +35,7 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
+    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -48,9 +49,10 @@ use nautilus_common::{
     messages::{
         DataEvent,
         data::{
-            BarsResponse, DataResponse, InstrumentResponse, InstrumentsResponse, RequestBars,
-            RequestInstrument, RequestInstruments, SubscribeBars, SubscribeQuotes, SubscribeTrades,
-            UnsubscribeBars, UnsubscribeQuotes, UnsubscribeTrades,
+            BarsResponse, BookResponse, DataResponse, InstrumentResponse, InstrumentsResponse,
+            RequestBars, RequestBookSnapshot, RequestInstrument, RequestInstruments, SubscribeBars,
+            SubscribeQuotes, SubscribeTrades, UnsubscribeBars, UnsubscribeQuotes,
+            UnsubscribeTrades,
         },
     },
 };
@@ -69,6 +71,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::{
+    book::{fetch_order_book, parse_order_book},
     history::{BarRequest, fetch_bars},
     parse::{parse_completed_bar, parse_quote, parse_trade, spec_to_interval},
 };
@@ -678,6 +681,60 @@ impl DataClient for SodexDataClient {
                 Err(e) => log::error!("sodex_bars_request_failed bar_type={bar_type} error={e}"),
             }
         });
+        Ok(())
+    }
+
+    fn request_book_snapshot(&self, request: RequestBookSnapshot) -> anyhow::Result<()> {
+        let http = Arc::clone(&self.http);
+        let sender = self.data_sender.clone();
+        let clock = self.clock;
+        let client_id = request.client_id.unwrap_or(self.client_id);
+        let instrument_id = request.instrument_id;
+        let depth = request.depth.map(NonZeroUsize::get);
+        let request_id = request.request_id;
+        let params = request.params;
+
+        // Resolved before the call goes out, for the reason the bar path had to learn: a book
+        // parsed at a guessed precision is how the engine ends up rejecting a level.
+        let feed = self.tick_feed(&instrument_id)?;
+
+        get_runtime().spawn(async move {
+            match fetch_order_book(&http, instrument_id, depth).await {
+                Ok(raw) => {
+                    match parse_order_book(
+                        &raw,
+                        instrument_id,
+                        feed.price_precision,
+                        feed.size_precision,
+                    ) {
+                        Ok(book) => {
+                            let response = DataResponse::Book(BookResponse::new(
+                                request_id,
+                                client_id,
+                                instrument_id,
+                                book,
+                                None,
+                                None,
+                                clock.get_time_ns(),
+                                params,
+                            ));
+                            if let Err(e) = sender.send(DataEvent::Response(response)) {
+                                log::error!("sodex_book_response_undeliverable error={e}");
+                            }
+                        }
+                        Err(e) => log::error!(
+                            "sodex_book_parse_failed instrument_id={instrument_id} error={e}"
+                        ),
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "sodex_book_request_failed instrument_id={instrument_id} error={e}"
+                    );
+                }
+            }
+        });
+
         Ok(())
     }
 

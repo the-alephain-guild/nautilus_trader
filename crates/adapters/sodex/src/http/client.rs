@@ -398,7 +398,7 @@ impl SodexHttpClient {
         }
     }
 
-    /// Sends an unsigned GET against a market-data path.
+    /// Sends an unsigned GET against a market-data path at the default endpoint weight.
     ///
     /// # Errors
     ///
@@ -408,12 +408,30 @@ impl SodexHttpClient {
         path: &str,
         params: Option<&HashMap<String, Vec<String>>>,
     ) -> Result<T, ClientError> {
+        self.get_public_weighted(path, params, DEFAULT_ENDPOINT_WEIGHT)
+            .await
+    }
+
+    /// Sends an unsigned GET whose weight the venue scales by something other than the default.
+    ///
+    /// The order book is the case this exists for: the venue charges by requested depth, and
+    /// charging the default would let a deep book read past the budget it actually consumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on transport, status or decoding failure.
+    pub async fn get_public_weighted<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        params: Option<&HashMap<String, Vec<String>>>,
+        weight: u32,
+    ) -> Result<T, ClientError> {
         let url = self.url_for(path);
         let keys = Self::rate_limit_keys(&url);
         let headers = HashMap::from([("Accept".to_string(), "application/json".to_string())]);
 
         let attempt = || async {
-            self.reserve_weight(DEFAULT_ENDPOINT_WEIGHT, now_millis())?;
+            self.reserve_weight(weight, now_millis())?;
             self.http
                 .request(
                     Method::GET,
