@@ -36,7 +36,10 @@ use nautilus_model::{
 };
 
 use crate::{
-    common::enums::{ExecutionType, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce},
+    common::{
+        decimal::for_wire,
+        enums::{ExecutionType, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce},
+    },
     http::{
         requests::{ClientOrderId, OrderItem, RequestError},
         spot::SpotOrderItem,
@@ -58,6 +61,8 @@ pub enum OrderConversionError {
     LimitWithoutPrice,
     #[error(transparent)]
     Request(#[from] RequestError),
+    #[error("value {0:?} could not be rendered for the venue")]
+    Decimal(#[from] crate::common::decimal::DecimalError),
 }
 
 /// Maps an order side.
@@ -109,8 +114,10 @@ impl OrderSpec {
             side: map_side(init.order_side),
             order_type,
             time_in_force: map_time_in_force(init.time_in_force, init.post_only)?,
-            quantity: init.quantity.to_string(),
-            price: init.price.map(|p| p.to_string()),
+            // Through `for_wire`, not `to_string`: Nautilus formats these at the instrument's
+            // precision, and the venue refuses the trailing zero that produces.
+            quantity: for_wire(&init.quantity.to_string())?,
+            price: init.price.map(|p| for_wire(&p.to_string())).transpose()?,
             quote_quantity: init.quote_quantity,
             reduce_only: init.reduce_only,
         })
@@ -191,6 +198,10 @@ pub fn to_spot_order(
         });
     }
 
+    // Rendered for the venue here, for the reason the perps builder carries: the trailing zero that
+    // Nautilus's precision formatting produces is refused, with an error that names the wrong thing.
+    let quantity = for_wire(&spec.quantity)?;
+
     if spec.quote_quantity {
         if spec.order_type != OrderType::Market || spec.side != OrderSide::Buy {
             return Err(OrderConversionError::QuoteQuantityNotMarketBuy);
@@ -203,18 +214,15 @@ pub fn to_spot_order(
             time_in_force: spec.time_in_force,
             price: None,
             quantity: None,
-            funds: Some(spec.quantity.clone()),
+            funds: Some(quantity),
         });
     }
 
+    let rendered_price = spec.price.as_deref().map(for_wire).transpose()?;
     let price = match spec.order_type {
-        OrderType::Limit => Some(
-            spec.price
-                .clone()
-                .ok_or(OrderConversionError::LimitWithoutPrice)?,
-        ),
+        OrderType::Limit => Some(rendered_price.ok_or(OrderConversionError::LimitWithoutPrice)?),
         // A market order may still carry a price as a slippage bound.
-        OrderType::Market => spec.price.clone(),
+        OrderType::Market => rendered_price,
     };
 
     Ok(SpotOrderItem {
@@ -224,7 +232,7 @@ pub fn to_spot_order(
         order_type: spec.order_type,
         time_in_force: spec.time_in_force,
         price,
-        quantity: Some(spec.quantity.clone()),
+        quantity: Some(quantity),
         funds: None,
     })
 }
@@ -237,30 +245,28 @@ pub fn to_spot_order(
 pub fn to_perps_order(spec: &OrderSpec) -> Result<OrderItem, OrderConversionError> {
     let cl_ord_id = spec.cl_ord_id.clone();
 
+    // Rendered here, at the last step before the venue sees it. Nautilus formats a quantity or a
+    // price at the instrument's precision, and the venue refuses the trailing zero that produces -
+    // `"0.00020"` comes back as `quantity is invalid`, which names the wrong thing and sent every
+    // order from the engine to rejection until a probe isolated it.
+    let quantity = for_wire(&spec.quantity)?;
+    let price = spec.price.as_deref().map(for_wire).transpose()?;
+
     let mut item = match spec.order_type {
         OrderType::Limit => {
-            let price = spec
-                .price
-                .clone()
-                .ok_or(OrderConversionError::LimitWithoutPrice)?;
-            OrderItem::limit(
-                cl_ord_id,
-                spec.side,
-                spec.time_in_force,
-                price,
-                spec.quantity.clone(),
-            )?
+            let price = price.ok_or(OrderConversionError::LimitWithoutPrice)?;
+            OrderItem::limit(cl_ord_id, spec.side, spec.time_in_force, price, quantity)?
         }
         OrderType::Market => {
             if spec.quote_quantity {
                 if spec.side != OrderSide::Buy {
                     return Err(OrderConversionError::QuoteQuantityNotMarketBuy);
                 }
-                OrderItem::market_buy_with_funds(cl_ord_id, spec.quantity.clone())
+                OrderItem::market_buy_with_funds(cl_ord_id, quantity)
             } else {
-                let mut market = OrderItem::market(cl_ord_id, spec.side, spec.quantity.clone());
-                if let Some(price) = &spec.price {
-                    market = market.with_price_bound(price.clone());
+                let mut market = OrderItem::market(cl_ord_id, spec.side, quantity);
+                if let Some(price) = price {
+                    market = market.with_price_bound(price);
                 }
                 market
             }
@@ -311,6 +317,61 @@ mod tests {
     use super::*;
     /// The default Nautilus client order id shape: 27 characters, inside the venue's limit.
     const DEFAULT_ID: &str = "O-19700101-000000-001-001-1";
+
+    /// The test that was missing, driven through the conversion rather than past it.
+    ///
+    /// Nautilus renders a `Quantity` at the instrument's precision, so 0.0002 on a five-decimal
+    /// instrument becomes `"0.00020"` - and the venue answers that with `quantity is invalid`, an
+    /// error naming the wrong thing. Every order the engine sent on perps was rejected this way
+    /// until a probe sent the same order with the zero removed and it was accepted.
+    ///
+    /// An earlier attempt at this test asserted on `for_wire` directly and on a hand-built payload;
+    /// both passed with the conversion reverted, so neither protected anything.
+    #[rstest]
+    fn a_perps_payload_carries_no_trailing_zero() {
+        let mut spec = spec(OrderType::Limit, OrderSide::Buy, TimeInForce::Gtc);
+        spec.quantity = "0.00020".to_string();
+        spec.price = Some("2465.10".to_string());
+
+        let item = to_perps_order(&spec).unwrap();
+
+        assert_eq!(item.quantity.as_deref(), Some("0.0002"));
+        assert_eq!(item.price.as_deref(), Some("2465.1"));
+    }
+
+    #[rstest]
+    fn a_spot_payload_carries_no_trailing_zero() {
+        let mut spec = spec(OrderType::Limit, OrderSide::Buy, TimeInForce::Gtc);
+        spec.quantity = "0.00100".to_string();
+        spec.price = Some("40000.0".to_string());
+
+        let item = to_spot_order(&spec, 1).unwrap();
+
+        assert_eq!(item.quantity.as_deref(), Some("0.001"));
+        assert_eq!(item.price.as_deref(), Some("40000"));
+    }
+
+    /// And the payload refuses to be built with one, so a call site that formats its own string
+    /// fails locally rather than at the venue with an error about the wrong thing.
+    #[rstest]
+    fn an_order_item_with_a_trailing_zero_is_refused() {
+        let mut item = OrderItem::market(
+            ClientOrderId::parse(DEFAULT_ID).unwrap(),
+            OrderSide::Buy,
+            "0.00020",
+        );
+        item.position_side = PositionSide::Both;
+
+        let error = item.validate().unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::TrailingZero {
+                field: "quantity",
+                ..
+            }
+        ));
+    }
 
     fn spec(order_type: OrderType, side: OrderSide, tif: TimeInForce) -> OrderSpec {
         OrderSpec {

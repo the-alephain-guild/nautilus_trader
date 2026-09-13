@@ -1099,9 +1099,11 @@ impl ExecutionClient for SodexExecutionClient {
             symbol_id,
             order_id,
             cl_ord_id,
-            cmd.price.map(|p| p.to_string()),
-            cmd.quantity.map(|q| q.to_string()),
-            cmd.trigger_price.map(|p| p.to_string()),
+            // Through `for_wire` for the same reason an order's fields are: the venue refuses the
+            // trailing zero that formatting at the instrument's precision produces.
+            wire(cmd.price),
+            wire(cmd.quantity),
+            wire(cmd.trigger_price),
         ) {
             Ok(request) => request,
             Err(e) => {
@@ -1759,6 +1761,18 @@ mod tests {
 
         assert!(label.as_str().starts_with("O12-"), "{}", label.as_str());
     }
+}
+
+/// Renders an engine value for a request body, dropping a trailing zero the venue refuses.
+///
+/// A value that cannot be rendered yields `None`, which omits the field - and omitting a field in an
+/// amend means "leave it alone", so the amend then changes less than asked rather than being
+/// silently wrong about what it changed. `ModifyOrderRequest::new` refuses an amend that would
+/// change nothing at all.
+fn wire(value: Option<impl ToString>) -> Option<String> {
+    value
+        .map(|v| v.to_string())
+        .and_then(|raw| crate::common::decimal::for_wire(&raw).ok())
 }
 
 #[cfg(test)]

@@ -44,6 +44,20 @@ pub enum RequestError {
     ZeroMargin,
     #[error("margin amount {value:?} could not be read: {reason}")]
     InvalidMargin { value: String, reason: String },
+    #[error(
+        "{field} {value:?} carries a trailing zero, which the venue refuses as invalid; \
+         pass it through `common::decimal::for_wire`"
+    )]
+    TrailingZero { field: &'static str, value: String },
+}
+
+/// Whether a decimal string has a fractional part ending in zero.
+///
+/// Integers are left alone: `"70000"` is what the venue wants, while `"0.00020"` is not.
+fn has_trailing_zero(value: &str) -> bool {
+    value
+        .split_once('.')
+        .is_some_and(|(_, fraction)| fraction.ends_with('0'))
 }
 
 /// A client-assigned order identifier.
@@ -241,6 +255,26 @@ impl OrderItem {
         {
             return Err(RequestError::FundsOnMarketBuyOnly);
         }
+
+        // Checked here rather than left to each construction site, because the venue's answer to a
+        // trailing zero is `quantity is invalid` - an error that says nothing about formatting and
+        // sent every order from the engine to rejection until it was traced.
+        for (field, value) in [
+            ("quantity", self.quantity.as_deref()),
+            ("price", self.price.as_deref()),
+            ("stopPrice", self.stop_price.as_deref()),
+            ("funds", self.funds.as_deref()),
+        ] {
+            if let Some(value) = value
+                && has_trailing_zero(value)
+            {
+                return Err(RequestError::TrailingZero {
+                    field,
+                    value: value.to_string(),
+                });
+            }
+        }
+
         Ok(())
     }
 }

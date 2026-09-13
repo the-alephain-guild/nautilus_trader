@@ -46,6 +46,25 @@ pub fn normalize(raw: &str) -> Result<String, DecimalError> {
     Ok(capped.to_string())
 }
 
+/// Renders a decimal for the venue's request bodies.
+///
+/// The venue refuses a trailing zero: `"0.00020"` comes back as `quantity is invalid` where
+/// `"0.0002"` is accepted, with the order otherwise byte-identical. That was measured against the
+/// live venue, not inferred - and it matters because Nautilus formats a `Quantity` or a `Price` at
+/// the instrument's precision, which produces exactly that whenever the value uses fewer decimals
+/// than the instrument allows. On perps BTC-USD, precision 5, every order smaller than five
+/// decimals was rejected.
+///
+/// Same operation as [`normalize`], named for the direction it is used in, because the call sites
+/// read as "prepare this for the wire" rather than "make this representable".
+///
+/// # Errors
+///
+/// Returns [`DecimalError`] if the input is not a decimal number.
+pub fn for_wire(raw: &str) -> Result<String, DecimalError> {
+    normalize(raw)
+}
+
 /// Rewrites a venue decimal string at exactly `precision` decimal places.
 ///
 /// [`normalize`] makes a value representable; this makes two values *comparable*. Nautilus
