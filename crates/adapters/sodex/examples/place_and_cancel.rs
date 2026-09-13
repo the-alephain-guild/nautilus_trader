@@ -11,12 +11,16 @@
 //!
 //! # Usage
 //!
+//! Written as one `env` invocation rather than `export`: the key then lives only for this command,
+//! instead of staying in the shell's environment for everything run afterwards and every child
+//! process it spawns. The leading space keeps the line out of shell history where that is enabled.
+//!
 //! ```text
-//! export SODEX_API_KEY_NAME=api-key-01
-//! export SODEX_API_PRIVATE_KEY=<from register_api_key>
-//! export SODEX_ACCOUNT_ID=60366
-//! export SODEX_NETWORK=testnet
-//! cargo run -p nautilus-sodex --example place_and_cancel
+//!  env SODEX_API_KEY_NAME=api-key-01 \
+//!      SODEX_API_PRIVATE_KEY=<from register_api_key> \
+//!      SODEX_ACCOUNT_ID=60366 \
+//!      SODEX_NETWORK=testnet \
+//!      cargo run -p nautilus-sodex --example place_and_cancel
 //! ```
 //!
 //! Optional overrides: `SODEX_SYMBOL_ID` (default 1, `vBTC_vUSDC`), `SODEX_LIMIT_PRICE`

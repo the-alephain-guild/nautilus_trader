@@ -24,15 +24,21 @@
 //! Set `SODEX_HOLD_ONLY=1` to skip the close and leave the position open for further inspection.
 //! Whatever is left then has to be flattened by hand.
 //!
+//! Written as one `env` invocation rather than `export`: the key then lives only for this command,
+//! instead of staying in the shell's environment for everything run afterwards and every child
+//! process it spawns. The leading space keeps the line out of shell history where that is enabled.
+//!
+//! `SODEX_SYMBOL_ID=1` is BTC-USD; `SODEX_SIDE=sell` opens the short instead.
+//!
 //! ```text
-//! export SODEX_API_KEY_NAME=perps-key-01
-//! export SODEX_API_PRIVATE_KEY=<key registered on the perps engine>
-//! export SODEX_ACCOUNT_ID=60366
-//! export SODEX_WALLET_ADDRESS=0x766a478C89E5E9354b7a23922De18da6A5163b00
-//! export SODEX_SYMBOL_ID=1          # BTC-USD
-//! export SODEX_QUANTITY=0.0002
-//! export SODEX_SIDE=buy             # or sell, to observe a short
-//! cargo run -p nautilus-sodex --example observe_position
+//!  env SODEX_API_KEY_NAME=perps-key-01 \
+//!      SODEX_API_PRIVATE_KEY=<key registered on the perps engine> \
+//!      SODEX_ACCOUNT_ID=60366 \
+//!      SODEX_WALLET_ADDRESS=0x766a478C89E5E9354b7a23922De18da6A5163b00 \
+//!      SODEX_SYMBOL_ID=1 \
+//!      SODEX_QUANTITY=0.0002 \
+//!      SODEX_SIDE=buy \
+//!      cargo run -p nautilus-sodex --example observe_position
 //! ```
 
 use std::{env, time::Duration};

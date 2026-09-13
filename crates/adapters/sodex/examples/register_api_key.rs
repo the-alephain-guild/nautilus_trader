@@ -5,13 +5,20 @@
 //!
 //! # Usage
 //!
+//! Written as one `env` invocation rather than `export`: the key then lives only for this command,
+//! instead of staying in the shell's environment for everything run afterwards and every child
+//! process it spawns. The leading space keeps the line out of shell history where that is enabled.
+//!
+//! `SODEX_NETWORK` takes `testnet` or `mainnet`, `SODEX_MARKET` takes `perps` or `spot`, and the
+//! account id is the `aid` from `/accounts/{address}/state`.
+//!
 //! ```text
-//! export SODEX_MASTER_PRIVATE_KEY=<exported from Settings → Export Email Wallet>
-//! export SODEX_ACCOUNT_ID=<the "aid" from /accounts/{address}/state>
-//! export SODEX_API_KEY_NAME=api-key-01
-//! export SODEX_NETWORK=testnet          # or mainnet
-//! export SODEX_MARKET=perps             # or spot
-//! cargo run -p nautilus-sodex --example register_api_key
+//!  env SODEX_MASTER_PRIVATE_KEY=<exported from Settings -> Export Email Wallet> \
+//!      SODEX_ACCOUNT_ID=60366 \
+//!      SODEX_API_KEY_NAME=api-key-01 \
+//!      SODEX_NETWORK=testnet \
+//!      SODEX_MARKET=perps \
+//!      cargo run -p nautilus-sodex --example register_api_key
 //! ```
 //!
 //! # One key, both engines

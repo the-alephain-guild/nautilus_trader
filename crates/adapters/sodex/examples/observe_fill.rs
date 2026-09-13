@@ -24,12 +24,16 @@
 //! Set `SODEX_FLATTEN_ONLY=1` to skip the buy and only sell what the account already holds, which
 //! is how a leftover from an earlier run gets cleaned up.
 //!
+//! Written as one `env` invocation rather than `export`: the key then lives only for this command,
+//! instead of staying in the shell's environment for everything run afterwards and every child
+//! process it spawns. The leading space keeps the line out of shell history where that is enabled.
+//!
 //! ```text
-//! export SODEX_API_KEY_NAME=api-key-01
-//! export SODEX_API_PRIVATE_KEY=<registered key>
-//! export SODEX_ACCOUNT_ID=60366
-//! export SODEX_WALLET_ADDRESS=0x766a478C89E5E9354b7a23922De18da6A5163b00
-//! cargo run -p nautilus-sodex --example observe_fill
+//!  env SODEX_API_KEY_NAME=api-key-01 \
+//!      SODEX_API_PRIVATE_KEY=<registered key> \
+//!      SODEX_ACCOUNT_ID=60366 \
+//!      SODEX_WALLET_ADDRESS=0x766a478C89E5E9354b7a23922De18da6A5163b00 \
+//!      cargo run -p nautilus-sodex --example observe_fill
 //! ```
 
 use std::{env, time::Duration};

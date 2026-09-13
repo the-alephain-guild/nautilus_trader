@@ -16,15 +16,21 @@
 //! whether a negative amount withdraws. Whoever runs this first should record what it does - that
 //! is the one open question in this pair.
 //!
+//! Written as one `env` invocation rather than `export`: the key then lives only for this command,
+//! instead of staying in the shell's environment for everything run afterwards and every child
+//! process it spawns. The leading space keeps the line out of shell history where that is enabled.
+//!
+//! `SODEX_SYMBOL_ID=1` is BTC-USD, `SODEX_MARGIN_MODE` takes `cross` or `isolated`, and
+//! `SODEX_MARGIN_AMOUNT` is optional - adding it moves margin as well as setting leverage.
+//!
 //! ```text
-//! export SODEX_API_KEY_NAME=perps-key-01
-//! export SODEX_API_PRIVATE_KEY=<key registered on the perps engine>
-//! export SODEX_ACCOUNT_ID=60366
-//! export SODEX_SYMBOL_ID=1            # BTC-USD
-//! export SODEX_LEVERAGE=20
-//! export SODEX_MARGIN_MODE=cross      # or isolated
-//! # export SODEX_MARGIN_AMOUNT=1.5    # optional, moves margin as well
-//! cargo run -p nautilus-sodex --example set_leverage
+//!  env SODEX_API_KEY_NAME=perps-key-01 \
+//!      SODEX_API_PRIVATE_KEY=<key registered on the perps engine> \
+//!      SODEX_ACCOUNT_ID=60366 \
+//!      SODEX_SYMBOL_ID=1 \
+//!      SODEX_LEVERAGE=20 \
+//!      SODEX_MARGIN_MODE=cross \
+//!      cargo run -p nautilus-sodex --example set_leverage
 //! ```
 
 use std::env;
