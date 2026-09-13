@@ -16,8 +16,10 @@
 //! - The **master wallet** owns the account. It signs only account-level actions
 //!   (`addAPIKey`, `revokeAPIKey`, `approveBuilderFee`) and is expected to stay offline.
 //! - An **API key** is a named, revocable signing credential registered by the master
-//!   wallet. It signs day-to-day trading actions and cannot read account data. This is
-//!   the only key a running process needs to hold.
+//!   wallet. It signs day-to-day trading actions, and it is the only key a running process
+//!   needs to hold. Registered without a permission mask it withholds nothing, so it is not
+//!   by itself a credential that cannot move funds - revocation and expiry are the controls
+//!   that hold, not a narrower authority. Account reads need no key, being unsigned.
 //!
 //! # Signature layout
 //!

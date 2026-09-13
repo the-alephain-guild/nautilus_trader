@@ -66,8 +66,18 @@ impl MasterPrivateKey {
     }
 }
 
-/// The key registered via `addAPIKey`. Signs trading actions and nothing else - it cannot
-/// query account data, and it can be revoked without moving funds.
+/// The key registered via `addAPIKey`. Signs exchange-domain actions, and is revocable, which
+/// is the control that actually holds.
+///
+/// It is **not** inherently unable to move funds. The venue's permission model counts
+/// withdrawals and internal transfers among the things such a key may do - see
+/// [`DisabledPermissions`](crate::common::enums::DisabledPermissions), where `WITHDRAW` and
+/// `TRANSFER` are bits that have to be *withheld*, and omitting the field withholds nothing. A
+/// key registered without a mask therefore carries them. Whether a key can be registered that
+/// trades while withholding only those two is unmeasured; the `probe_key_permissions` example
+/// asks the venue, because the answer decides how far a delegated key can be narrowed.
+///
+/// Account data needs no key at all: those reads are unsigned.
 #[derive(Clone, Debug)]
 pub struct ApiPrivateKey(PrivateKeyHex);
 

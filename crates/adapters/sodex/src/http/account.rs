@@ -3,7 +3,9 @@
 //! These are the only actions signed by the master wallet, and they are one-off setup rather
 //! than part of a trading loop. [`AccountClient`] is therefore separate from
 //! [`SodexHttpClient`](super::client::SodexHttpClient): a trading process constructs the
-//! latter and never holds the key that can authorize withdrawals.
+//! latter and never holds the key that owns the account. That is a difference in blast radius
+//! rather than in kind: the master wallet cannot be revoked, while an API key can - but an API
+//! key registered without a permission mask still withholds nothing.
 //!
 //! # API keys are registered per engine
 //!
