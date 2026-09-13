@@ -8,7 +8,7 @@
 //! The two engines cancel through different routes, the mirror of the asymmetry in batch
 //! submission: perps through `DELETE /trade/orders` with action `cancelOrder`, spot through
 //! `/trade/orders/batch` with action `batchCancelOrder`, where each cancellation additionally
-//! carries a client order id labelling the cancellation itself.
+//! carries a client order id labeling the cancellation itself.
 //!
 //! **This cancels everything resting on the selected engine**, not only what one program placed.
 //! It does not touch positions: a resting order and an open position are different things, and

@@ -60,8 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let body = ScheduleCancelRequest::clear(account_id);
     let request = client.build_signed(
         Method::POST,
-        "/trade/orders/schedule-cancel",
-        "scheduleCancel",
+        ScheduleCancelRequest::ENDPOINT,
+        ScheduleCancelRequest::ACTION,
         &body,
     )?;
 

@@ -573,6 +573,12 @@ pub struct ScheduleCancelRequest {
 }
 
 impl ScheduleCancelRequest {
+    /// Path this request must be posted to.
+    pub const ENDPOINT: &'static str = "/trade/orders/schedule-cancel";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "scheduleCancel";
+
     /// Clears any pending scheduled cancel.
     #[must_use]
     pub const fn clear(account_id: u64) -> Self {
