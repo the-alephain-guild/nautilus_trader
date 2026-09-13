@@ -27,9 +27,13 @@
 //! read-only deployment needs no credential to reconcile - only the wallet address, which is
 //! public information.
 
+use nautilus_network::http::Method;
 use serde::Deserialize;
 
-use super::{ClientError, SodexHttpClient};
+use super::{
+    ClientError, SodexHttpClient,
+    requests::{UpdateLeverageRequest, UpdateMarginRequest},
+};
 use crate::common::enums::{OrderSide, OrderStatus, OrderType, TimeInForce};
 
 /// One coin balance.
@@ -321,6 +325,52 @@ impl SodexHttpClient {
     pub async fn account_positions(&self, wallet: &str) -> Result<Positions, ClientError> {
         self.get_public(&format!("/accounts/{wallet}/positions"), None)
             .await
+    }
+
+    /// Sets leverage and margin mode for one perps instrument.
+    ///
+    /// Signed with the trading domain, like an order - not the universal domain the API key actions
+    /// use. The route answers `404` on spot, so calling this on a spot client is a configuration
+    /// error rather than a venue refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on transport, status or decoding failure. The venue may also refuse
+    /// the change itself - reducing leverage under an open position, for one - and that arrives as a
+    /// status or envelope error rather than as a local validation failure.
+    pub async fn update_leverage(
+        &self,
+        request: &UpdateLeverageRequest,
+    ) -> Result<(), ClientError> {
+        let signed = self.build_signed(
+            Method::POST,
+            UpdateLeverageRequest::ENDPOINT,
+            UpdateLeverageRequest::ACTION,
+            request,
+        )?;
+
+        // Discarded rather than typed: the response shape is unobserved, and these two actions
+        // answer the question they were asked by succeeding. A later reader who sees a payload worth
+        // having should type it then, with the payload in hand.
+        let _: Option<serde_json::Value> = self.send_optional(signed).await?;
+        Ok(())
+    }
+
+    /// Moves margin against one isolated perps position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on transport, status or decoding failure.
+    pub async fn update_margin(&self, request: &UpdateMarginRequest) -> Result<(), ClientError> {
+        let signed = self.build_signed(
+            Method::POST,
+            UpdateMarginRequest::ENDPOINT,
+            UpdateMarginRequest::ACTION,
+            request,
+        )?;
+
+        let _: Option<serde_json::Value> = self.send_optional(signed).await?;
+        Ok(())
     }
 
     /// Lists the API keys registered for a wallet on this engine.

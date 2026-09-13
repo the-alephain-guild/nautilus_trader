@@ -12,7 +12,8 @@
 use serde::Serialize;
 
 use crate::common::enums::{
-    OrderModifier, OrderSide, OrderType, PositionSide, StopType, TimeInForce, TriggerType,
+    MarginMode, OrderModifier, OrderSide, OrderType, PositionSide, StopType, TimeInForce,
+    TriggerType,
 };
 
 /// Largest batch the venue accepts for orders, cancels and replaces.
@@ -37,6 +38,12 @@ pub enum RequestError {
     UnidentifiedOrder,
     #[error("a modify must change at least one of price, quantity or stop price")]
     NothingToModify,
+    #[error("leverage must be at least 1, received {0}")]
+    LeverageOutOfRange(u32),
+    #[error("a margin change of zero would move nothing")]
+    ZeroMargin,
+    #[error("margin amount {value:?} could not be read: {reason}")]
+    InvalidMargin { value: String, reason: String },
 }
 
 /// A client-assigned order identifier.
@@ -235,6 +242,111 @@ impl OrderItem {
             return Err(RequestError::FundsOnMarketBuyOnly);
         }
         Ok(())
+    }
+}
+
+/// Body of `POST /trade/leverage`, perps only.
+///
+/// Both routes in this pair answer `404` on spot, which is consistent: spot here holds balances and
+/// carries neither leverage nor margin.
+///
+/// Field names and order come from the official SDK's `UpdateLeverageRequest`. `marginMode` rides as
+/// the venue's integer, like every other enum in a request body on this venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UpdateLeverageRequest {
+    #[serde(rename = "accountID")]
+    pub account_id: u64,
+    #[serde(rename = "symbolID")]
+    pub symbol_id: u64,
+    pub leverage: u32,
+    #[serde(rename = "marginMode")]
+    pub margin_mode: MarginMode,
+}
+
+impl UpdateLeverageRequest {
+    /// Path this request must be posted to. Perps only.
+    pub const ENDPOINT: &'static str = "/trade/leverage";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "updateLeverage";
+
+    /// Builds a leverage change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::LeverageOutOfRange`] for zero leverage, which is not a position with
+    /// no leverage but a meaningless request. The venue's own per-instrument ceiling
+    /// (`maxLeverage`, 40 on perps BTC-USD) is not checked here: it lives on the instrument, and a
+    /// request type that guessed it would drift from the listing.
+    pub fn new(
+        account_id: u64,
+        symbol_id: u64,
+        leverage: u32,
+        margin_mode: MarginMode,
+    ) -> Result<Self, RequestError> {
+        if leverage == 0 {
+            return Err(RequestError::LeverageOutOfRange(leverage));
+        }
+
+        Ok(Self {
+            account_id,
+            symbol_id,
+            leverage,
+            margin_mode,
+        })
+    }
+}
+
+/// Body of `POST /trade/margin`, perps only.
+///
+/// Moves margin against one isolated position. The **sign convention is unobserved**: the SDK types
+/// it as a plain decimal and neither the route nor the documentation says whether a negative amount
+/// withdraws. So this carries the caller's string through unchanged rather than normalizing it, and
+/// whoever first runs it should record what a negative amount does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UpdateMarginRequest {
+    #[serde(rename = "accountID")]
+    pub account_id: u64,
+    #[serde(rename = "symbolID")]
+    pub symbol_id: u64,
+    pub amount: String,
+}
+
+impl UpdateMarginRequest {
+    /// Path this request must be posted to. Perps only.
+    pub const ENDPOINT: &'static str = "/trade/margin";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "updateMargin";
+
+    /// Builds a margin change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::ZeroMargin`] for an amount that parses to zero, which would spend a
+    /// signed request and a rate-limit slot to move nothing.
+    pub fn new(
+        account_id: u64,
+        symbol_id: u64,
+        amount: impl Into<String>,
+    ) -> Result<Self, RequestError> {
+        let amount = amount.into();
+        match amount.parse::<rust_decimal::Decimal>() {
+            Ok(value) if value.is_zero() => return Err(RequestError::ZeroMargin),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(RequestError::InvalidMargin {
+                    value: amount,
+                    reason: e.to_string(),
+                });
+            }
+        }
+
+        Ok(Self {
+            account_id,
+            symbol_id,
+            amount,
+        })
     }
 }
 
@@ -508,6 +620,76 @@ mod tests {
     /// This is the field-order contract: key order, omitted optionals, quoted decimals, and
     /// non-optional fields present at their zero value. A reordered field or a dropped
     /// `skip_serializing_if` fails here rather than as an opaque signature rejection.
+    /// Pinned for the same reason every other request body here is: the signing digest is compact
+    /// JSON in the SDK's declaration order, and `marginMode` rides as the venue's integer rather
+    /// than its string, which is how every enum travels in a request on this venue.
+    #[rstest]
+    fn a_leverage_change_serializes_to_the_sdk_shape() {
+        let request = UpdateLeverageRequest::new(60366, 1, 20, MarginMode::Cross).unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"accountID":60366,"symbolID":1,"leverage":20,"marginMode":2}"#
+        );
+    }
+
+    #[rstest]
+    fn isolated_mode_rides_as_its_own_integer() {
+        let request = UpdateLeverageRequest::new(1, 2, 3, MarginMode::Isolated).unwrap();
+
+        assert!(
+            serde_json::to_string(&request)
+                .unwrap()
+                .contains(r#""marginMode":1"#)
+        );
+    }
+
+    /// Zero is not "no leverage", it is a meaningless request, so it fails before it is signed.
+    #[rstest]
+    fn zero_leverage_is_refused() {
+        let error = UpdateLeverageRequest::new(1, 2, 0, MarginMode::Cross).unwrap_err();
+
+        assert!(matches!(error, RequestError::LeverageOutOfRange(0)));
+    }
+
+    #[rstest]
+    fn a_margin_change_serializes_to_the_sdk_shape() {
+        let request = UpdateMarginRequest::new(60366, 1, "1.5").unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(json, r#"{"accountID":60366,"symbolID":1,"amount":"1.5"}"#);
+    }
+
+    /// The amount is carried through verbatim rather than normalized, because the sign convention is
+    /// unobserved: nothing says whether a negative amount withdraws margin.
+    #[rstest]
+    fn a_negative_margin_amount_is_passed_through_unchanged() {
+        let request = UpdateMarginRequest::new(1, 2, "-0.75").unwrap();
+
+        assert_eq!(request.amount, "-0.75");
+    }
+
+    #[rstest]
+    fn a_margin_change_of_zero_is_refused() {
+        for zero in ["0", "0.0", "-0.00"] {
+            let error = UpdateMarginRequest::new(1, 2, zero).unwrap_err();
+            assert!(
+                matches!(error, RequestError::ZeroMargin),
+                "{zero} was accepted"
+            );
+        }
+    }
+
+    #[rstest]
+    fn an_unreadable_margin_amount_is_refused() {
+        let error = UpdateMarginRequest::new(1, 2, "plenty").unwrap_err();
+
+        assert!(matches!(error, RequestError::InvalidMargin { .. }));
+    }
+
     /// The signing digest is compact JSON in the SDK's declaration order, so this pins the exact
     /// bytes. A renamed or reordered key yields `API key not found` - an error naming credentials
     /// for a payload fault, which this integration has already paid for once.
