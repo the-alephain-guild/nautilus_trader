@@ -34,6 +34,9 @@ rather than set to False-by-omission: it would never produce data.
 
 from __future__ import annotations
 
+import os
+
+from nautilus_trader.adapters.sodex import SODEX_PERPS
 from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import Market
 from nautilus_trader.adapters.sodex import Network
@@ -49,10 +52,20 @@ from nautilus_trader.testkit import DataTesterConfig
 
 
 TRADER_ID = TraderId.from_str("TESTER-001")
+NETWORK = Network.TESTNET
+
+# Which engine to reach; `SODEX_MARKET=perps` switches the whole configuration below.
+MARKET = Market.PERPS if os.environ.get("SODEX_MARKET", "spot").lower() == "perps" else Market.SPOT
 
 # The two engines do not share symbol names: spot lists `vBTC_vUSDC`, perps lists `BTC-USD`.
 # An instrument id must carry the venue of the engine its client is bound to.
-INSTRUMENT_ID = InstrumentId.from_str(f"vBTC_vUSDC.{SODEX_SPOT}")
+if MARKET == Market.SPOT:
+    VENUE_NAME = SODEX_SPOT
+    INSTRUMENT_ID = InstrumentId.from_str(f"vBTC_vUSDC.{SODEX_SPOT}")
+else:
+    VENUE_NAME = SODEX_PERPS
+    INSTRUMENT_ID = InstrumentId.from_str(f"BTC-USD.{SODEX_PERPS}")
+
 BAR_TYPE = BarType.from_str(f"{INSTRUMENT_ID}-1-MINUTE-LAST-EXTERNAL")
 
 
@@ -65,11 +78,11 @@ def main() -> None:
         .add_data_client(
             # Named for the engine rather than left to default. One factory serves both
             # engines, so two clients would otherwise share the id `SODEX` and collide.
-            SODEX_SPOT,
+            VENUE_NAME,
             SodexDataClientFactory(),
             SodexDataClientConfig(
-                network=Network.TESTNET,
-                market=Market.SPOT,
+                network=NETWORK,
+                market=MARKET,
             ),
         )
         .build()
@@ -77,7 +90,7 @@ def main() -> None:
     node.add_builtin_actor(
         "DataTester",
         DataTesterConfig(
-            client_id=ClientId.from_str(SODEX_SPOT),
+            client_id=ClientId.from_str(VENUE_NAME),
             instrument_ids=[INSTRUMENT_ID],
             bar_types=[BAR_TYPE],
             subscribe_quotes=True,

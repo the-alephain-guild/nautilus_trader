@@ -41,6 +41,8 @@ trade, each carrying a synthetic trade id instead of the venue's own.
 
 from __future__ import annotations
 
+import os
+
 from nautilus_trader.adapters.sodex import SODEX_PERPS
 from nautilus_trader.adapters.sodex import SODEX_SPOT
 from nautilus_trader.adapters.sodex import Market
@@ -64,11 +66,14 @@ from nautilus_trader.testkit import ExecTesterConfig
 DRY_RUN = True
 NETWORK = Network.TESTNET
 
-# Switching engines is this one line - everything venue-specific derives from it below. Spot and
-# perps are two separate venues here, so the parts have to move together: a perps market paired
-# with a spot instrument id is rejected rather than routed to the wrong engine, which is the
+# Which engine to reach. `SODEX_MARKET=perps` switches everything venue-specific below, because
+# spot and perps are two separate venues here and the parts have to move together: a perps market
+# paired with a spot instrument id is rejected rather than routed to the wrong engine, which is the
 # behavior to want but an annoying way to find out you edited only half the configuration.
-MARKET = Market.SPOT
+#
+# Reading the engine from the environment but not `DRY_RUN`: one selects which venue to watch, the
+# other decides whether real orders are submitted, and that decision should cost an edit.
+MARKET = Market.PERPS if os.environ.get("SODEX_MARKET", "spot").lower() == "perps" else Market.SPOT
 
 if MARKET == Market.SPOT:
     VENUE_NAME = SODEX_SPOT
