@@ -53,7 +53,11 @@
 //! independently would leave a stop that never activates and a take-profit that fires with
 //! no position, so a contingent list is denied rather than flattened.
 
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    fmt::Debug,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use nautilus_common::{
@@ -191,6 +195,35 @@ impl SodexExecutionClient {
     ///
     /// Returns an error naming what the venue does hold, because the two ways this fails want
     /// different fixes: a wrong address, or a key registered on the other engine.
+    /// Waits until the engine has registered this client's account in the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the account has not appeared within `timeout_secs`, which means the
+    /// account state never reached the engine - connecting anyway would let reconciliation run
+    /// against an account that does not exist.
+    async fn await_account_registered(&self, timeout_secs: f64) -> anyhow::Result<()> {
+        let account_id = self.core.account_id;
+        let start = Instant::now();
+        let timeout = Duration::from_secs_f64(timeout_secs);
+
+        loop {
+            if self.core.cache().account(&account_id).is_some() {
+                log::info!("sodex_account_registered account={account_id}");
+                return Ok(());
+            }
+
+            if start.elapsed() >= timeout {
+                anyhow::bail!(
+                    "account {account_id} was not registered within {timeout_secs}s; the engine \
+                     never received its state, so reconciliation would drop every fill"
+                );
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     async fn verify_wallet_owns_signing_key(&self) -> anyhow::Result<()> {
         let registered = self
             .http
@@ -482,6 +515,15 @@ impl ExecutionClient for SodexExecutionClient {
 
         // Before anything else reads the account: prove the address is the right one.
         self.verify_wallet_owns_signing_key().await?;
+
+        // The engine applies an order or a fill against an account, so reconciliation - which
+        // begins as soon as connect returns - discards every inferred fill while the account is
+        // absent from the cache, logging `account not found in cache` per event and leaving
+        // positions and P&L silently unbuilt. Published and awaited here rather than left to
+        // `query_account`: the engine calls that on its own schedule, and it spawns, so it races.
+        self.clone_for_task().publish_account_state().await?;
+        self.await_account_registered(ACCOUNT_REGISTERED_TIMEOUT_SECS)
+            .await?;
 
         if let Some(task) = spawn_instrument_refresh(
             self.config.update_instruments_interval_mins,
@@ -1084,6 +1126,13 @@ fn money(raw: &str, currency: Currency) -> anyhow::Result<Money> {
     let normalized = crate::common::decimal::normalize_to(raw, currency.precision)?;
     Ok(Money::new(normalized.parse()?, currency))
 }
+
+/// How long to wait for the engine to register the account before refusing to connect.
+///
+/// Generous because the cost of being wrong is asymmetric: a slow registration that still
+/// succeeds costs a few seconds, while connecting without an account lets reconciliation run and
+/// discard every fill it infers.
+const ACCOUNT_REGISTERED_TIMEOUT_SECS: f64 = 30.0;
 
 /// How many times to look for an order whose submission produced no verdict.
 ///
