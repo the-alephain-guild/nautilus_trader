@@ -766,6 +766,47 @@ mod tests {
         assert!(!json.contains("clOrdID"));
     }
 
+    /// Several cancels travel in one request, which is the point of batching them: the venue charges
+    /// `1 + floor(N / 40)` weight for a batch against 1 per separate cancel.
+    #[rstest]
+    fn a_batch_cancel_carries_every_target_in_one_request() {
+        let request = CancelOrderRequest::new(
+            7,
+            vec![
+                CancelItem::by_order_id(1, 99),
+                CancelItem::by_order_id(2, 100),
+                CancelItem::by_client_order_id(1, id("my-order-1")),
+            ],
+        )
+        .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"accountID":7,"cancels":[{"symbolID":1,"orderID":99},{"symbolID":2,"orderID":100},{"symbolID":1,"clOrdID":"my-order-1"}]}"#
+        );
+    }
+
+    /// Mixed instruments in one batch: the symbol rides on each item, not on the request, so there is
+    /// no reason to split a withdrawal by instrument.
+    #[rstest]
+    fn a_batch_cancel_may_span_instruments() {
+        let request = CancelOrderRequest::new(
+            7,
+            vec![
+                CancelItem::by_order_id(1, 99),
+                CancelItem::by_order_id(5, 101),
+            ],
+        )
+        .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert!(json.contains(r#"{"symbolID":1,"orderID":99}"#));
+        assert!(json.contains(r#"{"symbolID":5,"orderID":101}"#));
+    }
+
     #[rstest]
     fn builder_is_omitted_unless_attached() {
         let plain =

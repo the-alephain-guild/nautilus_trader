@@ -64,8 +64,9 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
     messages::execution::{
-        CancelOrder, GenerateFillReports, GenerateOrderStatusReport, GenerateOrderStatusReports,
-        GeneratePositionStatusReports, ModifyOrder, QueryAccount, SubmitOrder, SubmitOrderList,
+        BatchCancelOrders, CancelOrder, GenerateFillReports, GenerateOrderStatusReport,
+        GenerateOrderStatusReports, GeneratePositionStatusReports, ModifyOrder, QueryAccount,
+        SubmitOrder, SubmitOrderList,
     },
 };
 use nautilus_core::{Params, UnixNanos, time::AtomicTime};
@@ -392,6 +393,57 @@ impl Cancellation {
         })
     }
 
+    /// Builds one request cancelling several orders.
+    ///
+    /// Both engines already take a list, so this is one request rather than several: the venue
+    /// charges `1 + floor(N / 40)` weight for a batch against 1 per separate cancel, which is a
+    /// twentyfold difference when a strategy withdraws a book of forty.
+    fn build_many(
+        market: Market,
+        account_id: u64,
+        targets: Vec<(u64, CancelTarget, VenueClientOrderId)>,
+    ) -> anyhow::Result<Self> {
+        Ok(match market {
+            Market::Spot => {
+                let items = targets
+                    .into_iter()
+                    .map(|(symbol_id, target, label)| match target {
+                        CancelTarget::VenueOrderId(order_id) => {
+                            SpotCancelItem::by_order_id(symbol_id, label, order_id)
+                        }
+                        CancelTarget::ClientOrderId(id) => {
+                            SpotCancelItem::by_client_order_id(symbol_id, label, id)
+                        }
+                    })
+                    .collect();
+                Self::Spot(SpotCancelOrderRequest::new(account_id, items)?)
+            }
+            Market::Perps => {
+                let items = targets
+                    .into_iter()
+                    .map(|(symbol_id, target, _)| match target {
+                        CancelTarget::VenueOrderId(order_id) => {
+                            CancelItem::by_order_id(symbol_id, order_id)
+                        }
+                        CancelTarget::ClientOrderId(id) => {
+                            CancelItem::by_client_order_id(symbol_id, id)
+                        }
+                    })
+                    .collect();
+                Self::Perps(CancelOrderRequest::new(account_id, items)?)
+            }
+        })
+    }
+
+    /// How many orders this request cancels, which sets its weight.
+    fn item_count(&self) -> u32 {
+        let len = match self {
+            Self::Spot(request) => request.cancels.len(),
+            Self::Perps(request) => request.cancels.len(),
+        };
+        u32::try_from(len).unwrap_or(u32::MAX)
+    }
+
     async fn send(&self, http: &SodexHttpClient) -> Result<Vec<OrderAck>, ClientError> {
         let signed = match self {
             Self::Spot(request) => http.build_signed(
@@ -409,8 +461,9 @@ impl Cancellation {
         };
 
         // A cancel places no orders, so it draws only on the weight budget. Charging it to the
-        // order allowance would make winding down a book compete with opening one.
-        http.send_weighted(signed, BatchCost::for_batch(0).ip_weight, 0)
+        // order allowance would make winding down a book compete with opening one. The weight does
+        // scale with how many are cancelled at once.
+        http.send_weighted(signed, BatchCost::for_batch(self.item_count()).ip_weight, 0)
             .await
     }
 }
@@ -856,6 +909,143 @@ impl ExecutionClient for SodexExecutionClient {
                 cmd.correlation_id,
             ))?;
         }
+        Ok(())
+    }
+
+    fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
+        let ts_event = self.clock.get_time_ns();
+        let mut targets = Vec::with_capacity(cmd.cancels.len());
+        let mut orders = Vec::with_capacity(cmd.cancels.len());
+
+        // One bad cancel rejects itself and the rest of the batch still goes: dropping the whole
+        // request because one order had no numeric id would leave the others resting.
+        for cancel in &cmd.cancels {
+            let order = self.core.get_order(&cancel.client_order_id)?;
+
+            let reject = |reason: String| {
+                self.emitter.emit_order_cancel_rejected(
+                    &order,
+                    cancel.venue_order_id,
+                    &reason,
+                    ts_event,
+                );
+            };
+
+            let Ok(symbol_id) = self.symbol_id(&cancel.instrument_id) else {
+                reject(format!("{} has not been loaded", cancel.instrument_id));
+                continue;
+            };
+
+            // Same preference as a single cancel: a client order id is unique only among live
+            // orders, so cancelling by it after a reuse would target the wrong one.
+            let target = match cancel.venue_order_id {
+                Some(venue_order_id) => match venue_order_id.as_str().parse::<u64>() {
+                    Ok(id) => CancelTarget::VenueOrderId(id),
+                    Err(_) => {
+                        reject(format!("venue order id {venue_order_id} is not numeric"));
+                        continue;
+                    }
+                },
+                None => match super::parse::map_client_order_id(&cancel.client_order_id) {
+                    Ok(id) => CancelTarget::ClientOrderId(id),
+                    Err(e) => {
+                        reject(e.to_string());
+                        continue;
+                    }
+                },
+            };
+
+            let label = match cancel_label(&cancel.client_order_id, self.clock.get_time_ns()) {
+                Ok(label) => label,
+                Err(e) => {
+                    reject(e.to_string());
+                    continue;
+                }
+            };
+
+            targets.push((symbol_id, target, label));
+            orders.push((order, cancel.venue_order_id));
+        }
+
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        let cancellation =
+            match Cancellation::build_many(self.config.market, self.venue_account_id, targets) {
+                Ok(cancellation) => cancellation,
+                Err(e) => {
+                    for (order, venue_order_id) in &orders {
+                        self.emitter.emit_order_cancel_rejected(
+                            order,
+                            *venue_order_id,
+                            &e.to_string(),
+                            ts_event,
+                        );
+                    }
+                    return Ok(());
+                }
+            };
+
+        let http = Arc::clone(&self.http);
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+
+        get_runtime().spawn(async move {
+            let ts_event = clock.get_time_ns();
+            match cancellation.send(&http).await {
+                Ok(acks) => {
+                    // Acknowledged per order, so the verdicts are matched to the orders that asked
+                    // for them rather than assumed uniform: a batch can be half accepted.
+                    let submitted: Vec<String> = orders
+                        .iter()
+                        .map(|(order, _)| order.client_order_id().to_string())
+                        .collect();
+
+                    match align_batch(&submitted, acks) {
+                        Ok(aligned) => {
+                            for ((order, venue_order_id), ack) in orders.iter().zip(aligned) {
+                                if ack.is_success() {
+                                    emitter.emit_order_canceled(order, *venue_order_id, ts_event);
+                                } else {
+                                    emitter.emit_order_cancel_rejected(
+                                        order,
+                                        *venue_order_id,
+                                        ack.error.as_deref().unwrap_or("venue rejected the cancel"),
+                                        ts_event,
+                                    );
+                                }
+                            }
+                        }
+                        // Unmatchable verdicts are worse than none: guessing which order each one
+                        // belongs to could report a live order as cancelled.
+                        Err(e) => {
+                            for (order, venue_order_id) in &orders {
+                                emitter.emit_order_cancel_rejected(
+                                    order,
+                                    *venue_order_id,
+                                    &format!(
+                                        "batch cancel acknowledgements could not be matched: {e}"
+                                    ),
+                                    ts_event,
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    for (order, venue_order_id) in &orders {
+                        emitter.emit_order_cancel_rejected(
+                            order,
+                            *venue_order_id,
+                            &e.to_string(),
+                            ts_event,
+                        );
+                    }
+                }
+            }
+        });
+
         Ok(())
     }
 
