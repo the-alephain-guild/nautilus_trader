@@ -15,8 +15,8 @@
 """
 Exercise SoDEX order submission with the built-in ExecTester strategy.
 
-**With DRY_RUN = False this submits real orders.** On testnet that is play money; the same
-program against ``Network.MAINNET`` would spend real funds. Start with DRY_RUN = True, which
+**With ``SODEX_DRY_RUN=false`` this submits real orders.** On testnet that is play money; the
+same program against ``Network.MAINNET`` would spend real funds. The default is a dry run, which
 connects and subscribes without submitting anything.
 
 Credentials come from the environment - ``SODEX_ACCOUNT_ID``, ``SODEX_API_KEY_NAME``,
@@ -62,8 +62,31 @@ from nautilus_trader.model import TraderId
 from nautilus_trader.testkit import ExecTesterConfig
 
 
-# WARNING: With DRY_RUN = False this submits orders to the configured network.
-DRY_RUN = True
+def _dry_run_from_env() -> bool:
+    """
+    Read ``SODEX_DRY_RUN``, defaulting to a dry run.
+
+    Scoped to one invocation rather than written into this file: ``env SODEX_DRY_RUN=false``
+    arms exactly the run it prefixes, where a constant edited to arm it stays armed until
+    somebody remembers to put it back - and the next run is usually started by someone who
+    did not do the editing.
+
+    An unrecognized value is refused rather than read as either answer. A typo that silently
+    means "no orders" only wastes a run; one that silently means "orders" spends money.
+
+    """
+    raw = os.environ.get("SODEX_DRY_RUN", "true").strip().lower()
+
+    if raw in ("true", "1", "yes", "on"):
+        return True
+    if raw in ("false", "0", "no", "off"):
+        return False
+
+    raise SystemExit(f"SODEX_DRY_RUN must be a boolean, not {raw!r}")
+
+
+# WARNING: `SODEX_DRY_RUN=false` submits orders to the configured network.
+DRY_RUN = _dry_run_from_env()
 NETWORK = Network.TESTNET
 
 # Which engine to reach. `SODEX_MARKET=perps` switches everything venue-specific below, because
@@ -71,8 +94,8 @@ NETWORK = Network.TESTNET
 # paired with a spot instrument id is rejected rather than routed to the wrong engine, which is the
 # behavior to want but an annoying way to find out you edited only half the configuration.
 #
-# Reading the engine from the environment but not `DRY_RUN`: one selects which venue to watch, the
-# other decides whether real orders are submitted, and that decision should cost an edit.
+# This and `DRY_RUN` both come from the environment, so one command describes a whole run and
+# nothing about the last one is left behind in the file.
 MARKET = Market.PERPS if os.environ.get("SODEX_MARKET", "spot").lower() == "perps" else Market.SPOT
 
 if MARKET == Market.SPOT:
