@@ -64,9 +64,9 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
     messages::execution::{
-        BatchCancelOrders, CancelOrder, GenerateFillReports, GenerateOrderStatusReport,
-        GenerateOrderStatusReports, GeneratePositionStatusReports, ModifyOrder, QueryAccount,
-        SubmitOrder, SubmitOrderList,
+        BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
+        GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
+        ModifyOrder, QueryAccount, SubmitOrder, SubmitOrderList,
     },
 };
 use nautilus_core::{Params, UnixNanos, time::AtomicTime};
@@ -98,7 +98,7 @@ use crate::{
         SodexHttpClient,
         account_reads::OrderRecord,
         align_batch,
-        requests::{CancelItem, ClientOrderId as VenueClientOrderId},
+        requests::{CancelItem, ClientOrderId as VenueClientOrderId, MAX_BATCH},
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
     providers::{
@@ -912,6 +912,67 @@ impl ExecutionClient for SodexExecutionClient {
         Ok(())
     }
 
+    /// Cancels every order the engine holds open on one instrument.
+    ///
+    /// The venue has no cancel-all route. Its only bulk cancel is the dead-man switch, which
+    /// schedules at least five seconds out, counts against a daily limit of ten triggers and
+    /// covers the whole account rather than one instrument - so the set is resolved from the
+    /// cache here and handed to the batch path, the way an order list is handed to `submit_order`.
+    ///
+    /// Every strategy that sets `cancel_orders_on_stop` depends on this. While it was absent the
+    /// command fell through to the trait's default handler, which logs `handler not implemented`:
+    /// two orders stayed resting on the venue, the cache reported them as residual, and the node
+    /// finished its shutdown reporting no failure.
+    fn cancel_all_orders(&self, cmd: CancelAllOrders) -> anyhow::Result<()> {
+        // Each order carries its own strategy id, which need not be the one that asked for the
+        // cancel - a stop cancels what is resting on the instrument, not only what one strategy
+        // placed. Collected into owned commands so the cache borrow ends here.
+        let cancels: Vec<CancelOrder> = self
+            .core
+            .cache()
+            .orders_open(None, Some(&cmd.instrument_id), None, None, cmd.order_side)
+            .iter()
+            .map(|order| {
+                CancelOrder::new(
+                    cmd.trader_id,
+                    cmd.client_id,
+                    order.strategy_id(),
+                    order.instrument_id(),
+                    order.client_order_id(),
+                    order.venue_order_id(),
+                    cmd.command_id,
+                    cmd.ts_init,
+                    cmd.params.clone(),
+                    cmd.correlation_id,
+                )
+            })
+            .collect();
+
+        if cancels.is_empty() {
+            log::debug!("No open {} orders to cancel", cmd.instrument_id);
+            return Ok(());
+        }
+
+        // Chunked because a single request is capped at `MAX_BATCH` items: a book of more resting
+        // orders than that would fail validation as one request and cancel nothing, which is the
+        // same silent residue this method exists to remove.
+        for chunk in cancels.chunks(MAX_BATCH) {
+            self.batch_cancel_orders(BatchCancelOrders::new(
+                cmd.trader_id,
+                cmd.client_id,
+                cmd.strategy_id,
+                cmd.instrument_id,
+                chunk.to_vec(),
+                cmd.command_id,
+                cmd.ts_init,
+                cmd.params.clone(),
+                cmd.correlation_id,
+            ))?;
+        }
+
+        Ok(())
+    }
+
     fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
         let ts_event = self.clock.get_time_ns();
         let mut targets = Vec::with_capacity(cmd.cancels.len());
@@ -1683,6 +1744,71 @@ mod tests {
             submission.client_order_ids(),
             vec!["O-19700101-000000-001".to_string()]
         );
+    }
+
+    #[rstest]
+    fn a_perps_multi_cancel_goes_as_one_request() {
+        // This is the payload the venue accepted when two resting orders were withdrawn
+        // together. One request rather than two is also twentyfold cheaper at forty orders:
+        // the venue charges `1 + floor(N / 40)` for a batch against 1 per separate cancel.
+        let Cancellation::Perps(request) = Cancellation::build_many(
+            Market::Perps,
+            60366,
+            vec![
+                (
+                    1,
+                    CancelTarget::VenueOrderId(2781504277),
+                    VenueClientOrderId::parse("cancel-1").unwrap(),
+                ),
+                (
+                    1,
+                    CancelTarget::VenueOrderId(2781504278),
+                    VenueClientOrderId::parse("cancel-2").unwrap(),
+                ),
+            ],
+        )
+        .unwrap() else {
+            panic!("expected a perps cancellation");
+        };
+
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"accountID":60366,"cancels":[{"symbolID":1,"orderID":2781504277},{"symbolID":1,"orderID":2781504278}]}"#
+        );
+    }
+
+    #[rstest]
+    fn a_spot_multi_cancel_labels_every_cancellation() {
+        // Spot requires each cancellation to carry an id of its own alongside the order it
+        // names, so a batch cannot reuse one label - unlike perps, which identifies by target
+        // alone.
+        let Cancellation::Spot(request) = Cancellation::build_many(
+            Market::Spot,
+            60366,
+            vec![
+                (
+                    1,
+                    CancelTarget::VenueOrderId(11),
+                    VenueClientOrderId::parse("cancel-1").unwrap(),
+                ),
+                (
+                    1,
+                    CancelTarget::VenueOrderId(12),
+                    VenueClientOrderId::parse("cancel-2").unwrap(),
+                ),
+            ],
+        )
+        .unwrap() else {
+            panic!("expected a spot cancellation");
+        };
+
+        let labels: Vec<String> = request
+            .cancels
+            .iter()
+            .map(|cancel| cancel.cl_ord_id.as_str().to_string())
+            .collect();
+        assert_eq!(labels, vec!["cancel-1".to_string(), "cancel-2".to_string()]);
+        assert_eq!(request.cancels.len(), 2);
     }
 
     #[rstest]
