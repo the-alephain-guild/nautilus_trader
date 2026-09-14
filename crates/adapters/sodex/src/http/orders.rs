@@ -13,6 +13,8 @@
 //! all. [`align_batch`] performs the documented fan-out so callers always get exactly one
 //! outcome per submitted order.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Per-order outcome from a batched trading request.
@@ -54,6 +56,47 @@ pub enum AlignError {
     LengthMismatch { submitted: usize, returned: usize },
 }
 
+/// Puts each acknowledgement beside the order that asked for it, when the venue names it.
+///
+/// Callers zip the result against their own list, so the order of this vector decides which order
+/// each verdict lands on. Leaving it as received trusts the venue to answer in the order it was
+/// asked - and a batch answered out of order would report a refused order as cancelled, which is
+/// the worst direction to be wrong in.
+///
+/// The venue does name them: a perps cancel sent with `orderID` alone came back carrying the
+/// original order's `clOrdID`, measured 2026-09-13. So when the ids identify the batch exactly -
+/// every submitted id present once, nothing left over - they decide the pairing.
+///
+/// Otherwise the order received is kept, because there is nothing better to use. A spot cancel
+/// labels each cancellation with an id of its own and what it echoes is unmeasured, so demanding
+/// a match there would turn a correct batch into a wholesale rejection.
+fn pair_with_submitted(submitted: &[String], acks: Vec<OrderAck>) -> Vec<OrderAck> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for ack in &acks {
+        *counts.entry(ack.cl_ord_id.as_str()).or_default() += 1;
+    }
+
+    // Every submitted id named exactly once and nothing named twice or extra. Anything less and
+    // the response does not identify this batch, so its order is all there is to go on.
+    let identifies = counts.len() == submitted.len()
+        && submitted
+            .iter()
+            .all(|id| counts.get(id.as_str()) == Some(&1));
+    drop(counts);
+
+    if !identifies {
+        return acks;
+    }
+
+    let mut by_id: HashMap<String, OrderAck> = acks
+        .into_iter()
+        .map(|ack| (ack.cl_ord_id.clone(), ack))
+        .collect();
+
+    // Nothing is filtered out: the check above established one acknowledgement per submitted id.
+    submitted.iter().filter_map(|id| by_id.remove(id)).collect()
+}
+
 /// Pairs each submitted client order id with its outcome.
 ///
 /// Handles the two shapes the venue can return: one acknowledgement per order, or a single
@@ -75,7 +118,7 @@ pub fn align_batch(
         0 => Err(AlignError::EmptyResponse {
             submitted: submitted.len(),
         }),
-        n if n == submitted.len() => Ok(acks),
+        n if n == submitted.len() => Ok(pair_with_submitted(submitted, acks)),
         1 => {
             // Whole-batch rejection. Fan the single reason out, restoring each order's own
             // client id so callers can still key results by the id they submitted.
@@ -129,6 +172,53 @@ mod tests {
 
     fn ids(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[rstest]
+    fn acknowledgements_follow_the_ids_the_venue_names_not_their_arrival_order() {
+        // A perps cancel echoes the original order's id even when sent with `orderID` alone, so a
+        // response that arrives in another order still says which verdict belongs to which order.
+        // Callers zip positionally, so without this the refusal below would land on order-1 and
+        // order-2 would be reported cancelled while it was still live.
+        let aligned = align_batch(
+            &ids(&["order-1", "order-2"]),
+            vec![rejected("order-2", "too late"), ok("order-1", 11)],
+        )
+        .unwrap();
+
+        assert_eq!(aligned[0].cl_ord_id, "order-1");
+        assert!(aligned[0].is_success());
+        assert_eq!(aligned[1].cl_ord_id, "order-2");
+        assert_eq!(aligned[1].error.as_deref(), Some("too late"));
+    }
+
+    #[rstest]
+    fn acknowledgements_naming_something_else_keep_the_order_they_arrived_in() {
+        // A spot cancellation carries an id of its own beside the order it names, and what the
+        // venue echoes there is unmeasured. Demanding a match would turn a correct batch into a
+        // wholesale rejection, so the arrival order is kept - which is what callers had before.
+        let aligned = align_batch(
+            &ids(&["order-1", "order-2"]),
+            vec![ok("cancel-a", 11), ok("cancel-b", 12)],
+        )
+        .unwrap();
+
+        assert_eq!(aligned[0].cl_ord_id, "cancel-a");
+        assert_eq!(aligned[1].cl_ord_id, "cancel-b");
+    }
+
+    #[rstest]
+    fn a_duplicate_id_is_not_used_to_pair() {
+        // Two acknowledgements naming the same order cannot say which is which, so pairing by id
+        // would be a guess dressed as a fact.
+        let aligned = align_batch(
+            &ids(&["order-1", "order-2"]),
+            vec![ok("order-1", 11), rejected("order-1", "duplicate")],
+        )
+        .unwrap();
+
+        assert_eq!(aligned[0].order_id, Some(11));
+        assert_eq!(aligned[1].error.as_deref(), Some("duplicate"));
     }
 
     #[rstest]
