@@ -44,7 +44,7 @@ use nautilus_sodex::{
         Network, OrderAck, SodexHttpClient, align_batch,
         requests::{
             CancelItem, CancelOrderRequest, ClientOrderId, ModifyOrderRequest, NewOrderRequest,
-            OrderItem,
+            OrderItem, ReplaceItem, ReplaceOrderRequest,
         },
     },
 };
@@ -161,12 +161,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("payload: {}", serde_json::to_string(&modify)?);
 
-    let signed = client.build_signed(
-        Method::POST,
-        ModifyOrderRequest::ENDPOINT,
-        ModifyOrderRequest::ACTION,
-        &modify,
-    )?;
+    // The venue serves two routes for changing a resting order, and they are not the same thing.
+    // `modify` amends in place and is perps only; `replace` carries an id of its own and answers
+    // on both engines, so what the engine knows as one order becomes two at the venue. Which one
+    // is under test is the variable here, because `modify` is refused by this deployment and the
+    // question is whether `replace` is the way to reprice.
+    let signed = if env::var("SODEX_CHANGE_VIA").as_deref() == Ok("replace") {
+        // Whether a replacement may carry the id it replaces decides whether this route can back
+        // an engine amend: Nautilus identifies an order by its client order id, so a replacement
+        // that must take a new one turns one order the engine knows into one it does not.
+        let replacement = if env::var("SODEX_REPLACE_KEEPS_ID").as_deref() == Ok("true") {
+            label.clone()
+        } else {
+            ClientOrderId::parse(format!("repl-{stamp}"))?
+        };
+        let mut item = if by_client_id {
+            ReplaceItem::by_client_order_id(symbol_id, replacement.clone(), label.clone())
+        } else {
+            ReplaceItem::by_order_id(symbol_id, replacement.clone(), order_id)
+        };
+        item = if change_quantity {
+            item.with_quantity("0.0003")
+        } else {
+            item.with_price(amended.clone())
+        };
+
+        let request = ReplaceOrderRequest::new(account_id, vec![item])?;
+        println!("payload: {}", serde_json::to_string(&request)?);
+        println!(
+            "(replacing, so the order rests under {} afterwards)",
+            replacement.as_str()
+        );
+
+        client.build_signed(
+            Method::POST,
+            ReplaceOrderRequest::ENDPOINT,
+            ReplaceOrderRequest::ACTION,
+            &request,
+        )?
+    } else {
+        client.build_signed(
+            Method::POST,
+            ModifyOrderRequest::ENDPOINT,
+            ModifyOrderRequest::ACTION,
+            &modify,
+        )?
+    };
 
     // `send_optional` because the venue answers an amend with an empty body on success, which the
     // execution client reads the same way.
@@ -199,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     format!("amendment refused - code {} : {:?}", ack.code, ack.error).into(),
                 );
             }
-            _ => println!("venue acknowledged the amendment"),
+            _ => println!("venue acknowledged the amendment: {acks:?}"),
         },
         None => println!("venue acknowledged the amendment with an empty body"),
     }

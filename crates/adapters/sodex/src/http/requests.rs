@@ -502,6 +502,149 @@ impl ModifyOrderRequest {
     }
 }
 
+/// One replacement in a batch.
+///
+/// Note the two ids, as a spot cancellation has: `cl_ord_id` labels the replacement, while
+/// `orig_order_id` or `orig_cl_ord_id` names the order being replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplaceItem {
+    #[serde(rename = "symbolID")]
+    pub symbol_id: u64,
+    /// Identifier for the replacing order. Required.
+    #[serde(rename = "clOrdID")]
+    pub cl_ord_id: ClientOrderId,
+    #[serde(rename = "origOrderID", skip_serializing_if = "Option::is_none")]
+    pub orig_order_id: Option<u64>,
+    #[serde(rename = "origClOrdID", skip_serializing_if = "Option::is_none")]
+    pub orig_cl_ord_id: Option<ClientOrderId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<String>,
+}
+
+impl ReplaceItem {
+    /// Replaces an order named by its venue id.
+    #[must_use]
+    pub const fn by_order_id(symbol_id: u64, cl_ord_id: ClientOrderId, order_id: u64) -> Self {
+        Self {
+            symbol_id,
+            cl_ord_id,
+            orig_order_id: Some(order_id),
+            orig_cl_ord_id: None,
+            price: None,
+            quantity: None,
+        }
+    }
+
+    /// Replaces an order named by the client order id it was placed with.
+    #[must_use]
+    pub const fn by_client_order_id(
+        symbol_id: u64,
+        cl_ord_id: ClientOrderId,
+        orig_cl_ord_id: ClientOrderId,
+    ) -> Self {
+        Self {
+            symbol_id,
+            cl_ord_id,
+            orig_order_id: None,
+            orig_cl_ord_id: Some(orig_cl_ord_id),
+            price: None,
+            quantity: None,
+        }
+    }
+
+    /// Sets the replacement's price.
+    #[must_use]
+    pub fn with_price(mut self, price: impl Into<String>) -> Self {
+        self.price = Some(price.into());
+        self
+    }
+
+    /// Sets the replacement's quantity.
+    #[must_use]
+    pub fn with_quantity(mut self, quantity: impl Into<String>) -> Self {
+        self.quantity = Some(quantity.into());
+        self
+    }
+
+    /// Checks the identifiers and that something would change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::UnidentifiedOrder`] unless exactly one original identifier is set,
+    /// [`RequestError::NothingToModify`] when neither price nor quantity is given, or
+    /// [`RequestError::TrailingZero`] for a decimal the venue would refuse by its written form.
+    pub fn validate(&self) -> Result<(), RequestError> {
+        match (self.orig_order_id.is_some(), self.orig_cl_ord_id.is_some()) {
+            (true, false) | (false, true) => {}
+            _ => return Err(RequestError::UnidentifiedOrder),
+        }
+
+        if self.price.is_none() && self.quantity.is_none() {
+            return Err(RequestError::NothingToModify);
+        }
+
+        for (field, value) in [
+            ("price", self.price.as_deref()),
+            ("quantity", self.quantity.as_deref()),
+        ] {
+            if let Some(value) = value
+                && has_trailing_zero(value)
+            {
+                return Err(RequestError::TrailingZero {
+                    field,
+                    value: value.to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Body of `POST /trade/orders/replace`.
+///
+/// Unlike the amend route, this one is served by **both** engines - the route answers on spot as
+/// well as perps, where `/trade/orders/modify` is perps only. The field names and their order come
+/// from the SDK's `common/types/replace_order_request.go`, which places it in `common` rather than
+/// under either engine for the same reason.
+///
+/// A replacement is not an amendment: it carries an id of its own, so what the engine knows as one
+/// order becomes two at the venue. Whether the original ends up cancelled, and under which id the
+/// replacement rests, is the venue's answer to give - see `examples/place_modify_cancel.rs`, which
+/// sends this and reads the account back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplaceOrderRequest {
+    #[serde(rename = "accountID")]
+    pub account_id: u64,
+    pub orders: Vec<ReplaceItem>,
+}
+
+impl ReplaceOrderRequest {
+    /// Path this request must be posted to. Served by both engines.
+    pub const ENDPOINT: &'static str = "/trade/orders/replace";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "replaceOrder";
+
+    /// Builds a replacement batch, validating size and every item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::BatchSize`] outside 1..=[`MAX_BATCH`], or the first item-level
+    /// error from [`ReplaceItem::validate`].
+    pub fn new(account_id: u64, orders: Vec<ReplaceItem>) -> Result<Self, RequestError> {
+        if orders.is_empty() || orders.len() > MAX_BATCH {
+            return Err(RequestError::BatchSize(orders.len()));
+        }
+        for order in &orders {
+            order.validate()?;
+        }
+        Ok(Self { account_id, orders })
+    }
+}
+
 /// Body of `POST /trade/orders`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NewOrderRequest {
@@ -883,6 +1026,55 @@ mod tests {
             ),
             "{error:?}"
         );
+    }
+
+    /// The signing digest is compact JSON in the SDK's declaration order, so this pins the bytes.
+    #[rstest]
+    fn a_replacement_serializes_to_the_sdk_shape() {
+        let request = ReplaceOrderRequest::new(
+            60366,
+            vec![ReplaceItem::by_order_id(1, id("replace-1"), 2781504277).with_price("69000")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"accountID":60366,"orders":[{"symbolID":1,"clOrdID":"replace-1","origOrderID":2781504277,"price":"69000"}]}"#
+        );
+        assert_eq!(ReplaceOrderRequest::ENDPOINT, "/trade/orders/replace");
+        assert_eq!(ReplaceOrderRequest::ACTION, "replaceOrder");
+    }
+
+    #[rstest]
+    fn a_replacement_names_its_target_one_way_only() {
+        // Both identifiers set is the ambiguity a cancel is refused for, and for the same reason.
+        let mut item = ReplaceItem::by_order_id(1, id("replace-1"), 11).with_price("69000");
+        item.orig_cl_ord_id = Some(id("order-1"));
+
+        assert!(matches!(
+            ReplaceOrderRequest::new(60366, vec![item]).unwrap_err(),
+            RequestError::UnidentifiedOrder
+        ));
+    }
+
+    #[rstest]
+    fn a_replacement_that_changes_nothing_is_refused() {
+        let item = ReplaceItem::by_order_id(1, id("replace-1"), 11);
+
+        assert!(matches!(
+            ReplaceOrderRequest::new(60366, vec![item]).unwrap_err(),
+            RequestError::NothingToModify
+        ));
+    }
+
+    #[rstest]
+    fn a_replacement_with_a_trailing_zero_is_refused() {
+        let item = ReplaceItem::by_order_id(1, id("replace-1"), 11).with_price("76562.0");
+
+        assert!(matches!(
+            ReplaceOrderRequest::new(60366, vec![item]).unwrap_err(),
+            RequestError::TrailingZero { field: "price", .. }
+        ));
     }
 
     #[rstest]

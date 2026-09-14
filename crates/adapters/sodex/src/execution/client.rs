@@ -94,11 +94,13 @@ use crate::{
     common::Market,
     config::SodexExecClientConfig,
     http::{
-        BatchCost, CancelOrderRequest, ClientError, ModifyOrderRequest, NewOrderRequest, OrderAck,
-        SodexHttpClient,
+        BatchCost, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
         account_reads::OrderRecord,
         align_batch,
-        requests::{CancelItem, ClientOrderId as VenueClientOrderId, MAX_BATCH},
+        requests::{
+            CancelItem, ClientOrderId as VenueClientOrderId, MAX_BATCH, ReplaceItem,
+            ReplaceOrderRequest,
+        },
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
     providers::{
@@ -1101,13 +1103,17 @@ impl ExecutionClient for SodexExecutionClient {
         Ok(())
     }
 
-    /// Amends a resting order.
+    /// Amends a resting order, through the venue's replace route rather than its amend route.
     ///
-    /// **Every amendment is refused by the testnet deployment** with `OrderCannotBeModified`,
-    /// whatever is changed and however the order is identified - see [`ModifyOrderRequest`] for
-    /// the four runs that established that. The command is still built and sent as the venue's SDK
-    /// defines it, because refusing locally would bake one deployment's behavior into this
-    /// adapter; a strategy that must reprice should cancel and replace meanwhile.
+    /// `/trade/orders/modify` refuses every amendment on this deployment with
+    /// `OrderCannotBeModified` - four runs, varying the order type, the identifier and the field,
+    /// all refused (see [`ModifyOrderRequest`]). `/trade/orders/replace` serves the same purpose
+    /// and works, and it answers on **both** engines where the amend route is perps only.
+    ///
+    /// It is an amend here rather than a swap because of what was measured: the venue accepts a
+    /// replacement whose `clOrdID` is the order being replaced, keeps the venue order id, and
+    /// consumes the original's record instead of leaving it beside the new one. Both identities
+    /// the engine holds therefore survive, which is what its own amend contract requires.
     fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
         let order = self.core.get_order(&cmd.client_order_id)?;
         let ts_event = self.clock.get_time_ns();
@@ -1117,11 +1123,13 @@ impl ExecutionClient for SodexExecutionClient {
                 .emit_order_modify_rejected(&order, cmd.venue_order_id, &reason, ts_event);
         };
 
-        // Perps only. The route answers 404 on spot, so there an amend has to be a cancel and a
-        // replace - said plainly, because a silent rejection would look like a venue refusal.
-        if self.config.market == Market::Spot {
+        // A trigger price cannot be amended through the route this uses: `replaceOrder` carries a
+        // price and a quantity and nothing else. Said plainly rather than sent and refused, so the
+        // caller is not left reading a venue error about a field it never saw.
+        if cmd.trigger_price.is_some() {
             reject(
-                "this venue serves no amend route on spot; cancel and replace instead".to_string(),
+                "this venue's replace route carries no trigger price; cancel and resubmit instead"
+                    .to_string(),
             );
             return Ok(());
         }
@@ -1134,36 +1142,37 @@ impl ExecutionClient for SodexExecutionClient {
             }
         };
 
+        // The replacement keeps the order's own id, which is what makes this an amend rather than
+        // a swap: measured on perps, the venue accepts `clOrdID` equal to the order being replaced,
+        // leaves the venue order id alone, and the original's record is consumed rather than left
+        // beside it. So the engine's order comes back changed under both the ids it already holds.
+        let label = match super::parse::map_client_order_id(&cmd.client_order_id) {
+            Ok(id) => id,
+            Err(e) => {
+                reject(e.to_string());
+                return Ok(());
+            }
+        };
+
         // Prefer the venue's own id for the same reason a cancel does: a client order id is unique
-        // only among live orders, so amending by it after a reuse would target the wrong one.
-        let (order_id, cl_ord_id) = match cmd.venue_order_id {
+        // only among live orders, so naming one after a reuse would target the wrong order.
+        let mut item = match cmd.venue_order_id {
             Some(venue_order_id) => match venue_order_id.as_str().parse::<u64>() {
-                Ok(id) => (Some(id), None),
+                Ok(id) => ReplaceItem::by_order_id(symbol_id, label, id),
                 Err(_) => {
                     reject(format!("venue order id {venue_order_id} is not numeric"));
                     return Ok(());
                 }
             },
-            None => match super::parse::map_client_order_id(&cmd.client_order_id) {
-                Ok(id) => (None, Some(id.as_str().to_string())),
-                Err(e) => {
-                    reject(e.to_string());
-                    return Ok(());
-                }
-            },
+            None => ReplaceItem::by_client_order_id(symbol_id, label.clone(), label),
         };
 
-        let request = match ModifyOrderRequest::new(
-            self.venue_account_id,
-            symbol_id,
-            order_id,
-            cl_ord_id,
-            // Through `for_wire` for the same reason an order's fields are: the venue refuses the
-            // trailing zero that formatting at the instrument's precision produces.
-            wire(cmd.price),
-            wire(cmd.quantity),
-            wire(cmd.trigger_price),
-        ) {
+        // Through `for_wire` for the same reason an order's fields are: the venue refuses the
+        // trailing zero that formatting at the instrument's precision produces.
+        item.price = wire(cmd.price);
+        item.quantity = wire(cmd.quantity);
+
+        let request = match ReplaceOrderRequest::new(self.venue_account_id, vec![item]) {
             Ok(request) => request,
             Err(e) => {
                 reject(e.to_string());
@@ -1191,8 +1200,8 @@ impl ExecutionClient for SodexExecutionClient {
         get_runtime().spawn(async move {
             let signed = match http.build_signed(
                 Method::POST,
-                ModifyOrderRequest::ENDPOINT,
-                ModifyOrderRequest::ACTION,
+                ReplaceOrderRequest::ENDPOINT,
+                ReplaceOrderRequest::ACTION,
                 &request,
             ) {
                 Ok(signed) => signed,
