@@ -8,6 +8,7 @@ pub mod client;
 pub mod history;
 pub mod parse;
 pub mod tickers;
+pub mod trades;
 
 pub use book::{RpcOrderBook, fetch_order_book, parse_order_book};
 pub use client::SodexDataClient;

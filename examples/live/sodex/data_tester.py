@@ -103,6 +103,10 @@ def main() -> None:
             subscribe_trades=True,
             request_instruments=True,
             request_bars=True,
+            # The venue serves the most recent trades and ignores time filters, so this warms up
+            # from the latest page rather than from a window - see `data::trades` for what was
+            # measured.
+            request_trades=True,
             # The venue serves a book snapshot over REST and streams no book at all, so this is a
             # one-shot read rather than a subscription.
             request_book_snapshot=True,

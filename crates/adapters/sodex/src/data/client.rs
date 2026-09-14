@@ -51,10 +51,10 @@ use nautilus_common::{
         data::{
             BarsResponse, BookResponse, DataResponse, FundingRatesResponse, InstrumentResponse,
             InstrumentsResponse, RequestBars, RequestBookSnapshot, RequestFundingRates,
-            RequestInstrument, RequestInstruments, SubscribeBars, SubscribeFundingRates,
-            SubscribeIndexPrices, SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades,
-            UnsubscribeBars, UnsubscribeFundingRates, UnsubscribeIndexPrices,
-            UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
+            RequestInstrument, RequestInstruments, RequestTrades, SubscribeBars,
+            SubscribeFundingRates, SubscribeIndexPrices, SubscribeMarkPrices, SubscribeQuotes,
+            SubscribeTrades, TradesResponse, UnsubscribeBars, UnsubscribeFundingRates,
+            UnsubscribeIndexPrices, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
 };
@@ -77,6 +77,7 @@ use super::{
     history::{BarRequest, fetch_bars},
     parse::{parse_completed_bar, parse_quote, parse_trade, spec_to_interval},
     tickers::{fetch_tickers, parse_funding_rate, parse_index_price, parse_mark_price, ticker_for},
+    trades::{MAX_TRADES, fetch_trades, parse_trades},
 };
 use crate::{
     common::Market,
@@ -823,6 +824,69 @@ impl DataClient for SodexDataClient {
                     }
                 }
                 Err(e) => log::error!("sodex_bars_request_failed bar_type={bar_type} error={e}"),
+            }
+        });
+        Ok(())
+    }
+
+    /// Serves the most recent public trades, which is what warmup needs before a subscription
+    /// starts producing ticks.
+    ///
+    /// The venue ignores time filters on this endpoint - measured, see [`fetch_trades`] - so a
+    /// requested window is applied here. A window entirely in the past therefore comes back empty
+    /// rather than filled with the newest trades, which a caller could not tell from the real
+    /// thing and would compute against the wrong hour.
+    fn request_trades(&self, request: RequestTrades) -> anyhow::Result<()> {
+        let http = Arc::clone(&self.http);
+        let sender = self.data_sender.clone();
+        let clock = self.clock;
+        let client_id = request.client_id.unwrap_or(self.client_id);
+        let instrument_id = request.instrument_id;
+        let start_nanos = datetime_to_unix_nanos(request.start);
+        let end_nanos = datetime_to_unix_nanos(request.end);
+        let params = request.params;
+        let request_id = request.request_id;
+
+        // Resolved before the request goes out, for the reason a bar request resolves it: a
+        // response parsed at a guessed precision is how the engine ends up with ticks whose
+        // fields disagree about scale.
+        let feed = self.tick_feed(&instrument_id)?;
+        let limit = request
+            .limit
+            .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+            .map(|n| n.min(MAX_TRADES));
+
+        get_runtime().spawn(async move {
+            match fetch_trades(&http, instrument_id, limit).await {
+                Ok(rows) => {
+                    let ticks = parse_trades(
+                        rows,
+                        instrument_id,
+                        feed.price_precision,
+                        feed.size_precision,
+                        start_nanos.map(unix_nanos_to_millis),
+                        end_nanos.map(unix_nanos_to_millis),
+                        clock.get_time_ns(),
+                    );
+                    let response = DataResponse::Trades(TradesResponse::new(
+                        request_id,
+                        client_id,
+                        instrument_id,
+                        ticks,
+                        start_nanos,
+                        end_nanos,
+                        clock.get_time_ns(),
+                        params,
+                    ));
+                    if let Err(e) = sender.send(DataEvent::Response(response)) {
+                        log::error!("sodex_trades_response_undeliverable error={e}");
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "sodex_trades_request_failed instrument_id={instrument_id} error={e}"
+                    );
+                }
             }
         });
         Ok(())
