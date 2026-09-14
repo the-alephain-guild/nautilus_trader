@@ -98,8 +98,8 @@ use crate::{
         account_reads::OrderRecord,
         align_batch,
         requests::{
-            CancelItem, ClientOrderId as VenueClientOrderId, MAX_BATCH, ReplaceItem,
-            ReplaceOrderRequest,
+            CancelItem, ClientOrderId as VenueClientOrderId, MAX_BATCH, ModifyOrderRequest,
+            ReplaceItem, ReplaceOrderRequest, RequestError,
         },
         spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest},
     },
@@ -467,6 +467,72 @@ impl Cancellation {
         // scale with how many are cancelled at once.
         http.send_weighted(signed, BatchCost::for_batch(self.item_count()).ip_weight, 0)
             .await
+    }
+}
+
+/// An amendment, built for whichever route serves the order being amended.
+///
+/// The venue splits this in two and says which is which: `/trade/orders/modify` amends "an
+/// existing TP/SL order", `/trade/orders/replace` amends ordinary limit orders. Choosing wrongly
+/// is answered with `OrderCannotBeModified`, which names the order rather than the route and cost
+/// this integration four probes before the route's own description settled it.
+///
+/// They differ in more than the path. A replacement carries an id of its own and applies to a
+/// batch; a modification names one order and is the only one of the two that can move a trigger
+/// price. Keeping them in one type keeps that difference at the single point where it matters.
+#[derive(Debug, Clone)]
+enum Amendment {
+    /// Ordinary limit orders, on either engine.
+    Limit(ReplaceOrderRequest),
+    /// Take-profit and stop-loss orders. Perps only - spot serves no modify route.
+    Stop(ModifyOrderRequest),
+}
+
+impl Amendment {
+    /// Builds an amendment of an ordinary limit order.
+    fn limit(account_id: u64, item: ReplaceItem) -> Result<Self, RequestError> {
+        ReplaceOrderRequest::new(account_id, vec![item]).map(Self::Limit)
+    }
+
+    /// Builds an amendment of a take-profit or stop-loss order.
+    fn stop(
+        account_id: u64,
+        symbol_id: u64,
+        order_id: Option<u64>,
+        cl_ord_id: Option<String>,
+        price: Option<String>,
+        quantity: Option<String>,
+        trigger_price: Option<String>,
+    ) -> Result<Self, RequestError> {
+        ModifyOrderRequest::new(
+            account_id,
+            symbol_id,
+            order_id,
+            cl_ord_id,
+            price,
+            quantity,
+            trigger_price,
+        )
+        .map(Self::Stop)
+    }
+
+    async fn send(&self, http: &SodexHttpClient) -> Result<Option<Vec<OrderAck>>, ClientError> {
+        let signed = match self {
+            Self::Limit(request) => http.build_signed(
+                Method::POST,
+                ReplaceOrderRequest::ENDPOINT,
+                ReplaceOrderRequest::ACTION,
+                request,
+            )?,
+            Self::Stop(request) => http.build_signed(
+                Method::POST,
+                ModifyOrderRequest::ENDPOINT,
+                ModifyOrderRequest::ACTION,
+                request,
+            )?,
+        };
+
+        http.send_optional(signed).await
     }
 }
 
@@ -1123,13 +1189,19 @@ impl ExecutionClient for SodexExecutionClient {
                 .emit_order_modify_rejected(&order, cmd.venue_order_id, &reason, ts_event);
         };
 
-        // A trigger price cannot be amended through the route this uses: `replaceOrder` carries a
-        // price and a quantity and nothing else. Said plainly rather than sent and refused, so the
-        // caller is not left reading a venue error about a field it never saw.
-        if cmd.trigger_price.is_some() {
+        // Two routes, and the venue documents which serves what: `/trade/orders/modify` amends
+        // "an existing TP/SL order", `/trade/orders/replace` amends ordinary limit orders. An
+        // order carrying a trigger price is the former, anything else the latter.
+        //
+        // Getting this backwards is what `OrderCannotBeModified` means here - four probes sent
+        // plain limit orders to the modify route and were refused, which read as a deployment
+        // that refuses every amendment until the route's own description settled it.
+        let amends_a_stop = order.trigger_price().is_some();
+
+        // Spot has no modify route at all, so a stop amend there has no path.
+        if amends_a_stop && self.config.market == Market::Spot {
             reject(
-                "this venue's replace route carries no trigger price; cancel and resubmit instead"
-                    .to_string(),
+                "this venue serves no amend route on spot; cancel and resubmit instead".to_string(),
             );
             return Ok(());
         }
@@ -1172,11 +1244,33 @@ impl ExecutionClient for SodexExecutionClient {
         item.price = wire(cmd.price);
         item.quantity = wire(cmd.quantity);
 
-        let request = match ReplaceOrderRequest::new(self.venue_account_id, vec![item]) {
-            Ok(request) => request,
-            Err(e) => {
-                reject(e.to_string());
-                return Ok(());
+        // Built as one or the other, so the send site below carries no second branch: what differs
+        // between the two routes is the body, the path and the action, and those travel together.
+        let amendment = if amends_a_stop {
+            match Amendment::stop(
+                self.venue_account_id,
+                symbol_id,
+                item.orig_order_id,
+                item.orig_cl_ord_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string()),
+                item.price.clone(),
+                item.quantity,
+                wire(cmd.trigger_price),
+            ) {
+                Ok(amendment) => amendment,
+                Err(e) => {
+                    reject(e.to_string());
+                    return Ok(());
+                }
+            }
+        } else {
+            match Amendment::limit(self.venue_account_id, item) {
+                Ok(amendment) => amendment,
+                Err(e) => {
+                    reject(e.to_string());
+                    return Ok(());
+                }
             }
         };
 
@@ -1198,24 +1292,6 @@ impl ExecutionClient for SodexExecutionClient {
         let clock = self.clock;
 
         get_runtime().spawn(async move {
-            let signed = match http.build_signed(
-                Method::POST,
-                ReplaceOrderRequest::ENDPOINT,
-                ReplaceOrderRequest::ACTION,
-                &request,
-            ) {
-                Ok(signed) => signed,
-                Err(e) => {
-                    emitter.emit_order_modify_rejected(
-                        &order,
-                        Some(venue_order_id),
-                        &e.to_string(),
-                        clock.get_time_ns(),
-                    );
-                    return;
-                }
-            };
-
             let ts_event = clock.get_time_ns();
             let accepted = |emitter: &ExecutionEventEmitter| {
                 emitter.emit_order_updated(
@@ -1232,7 +1308,7 @@ impl ExecutionClient for SodexExecutionClient {
             // The response shape is unobserved: the official SDK ships the request type but no
             // client, and this venue answers some endpoints with no `data` at all. So success
             // without a payload is taken as accepted rather than read as a malformed reply.
-            match http.send_optional::<Vec<OrderAck>>(signed).await {
+            match amendment.send(&http).await {
                 Ok(Some(acks)) => match acks.first() {
                     Some(ack) if ack.is_success() => accepted(&emitter),
                     Some(ack) => emitter.emit_order_modify_rejected(
