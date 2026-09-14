@@ -54,7 +54,7 @@ pub enum RequestError {
 /// Whether a decimal string has a fractional part ending in zero.
 ///
 /// Integers are left alone: `"70000"` is what the venue wants, while `"0.00020"` is not.
-fn has_trailing_zero(value: &str) -> bool {
+pub(crate) fn has_trailing_zero(value: &str) -> bool {
     value
         .split_once('.')
         .is_some_and(|(_, fraction)| fraction.ends_with('0'))

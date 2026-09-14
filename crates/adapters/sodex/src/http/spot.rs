@@ -134,6 +134,26 @@ impl SpotOrderItem {
         {
             return Err(RequestError::FundsOnMarketBuyOnly);
         }
+
+        // The same backstop a perps order item carries, missing here until the venue refused
+        // `"2513.0"` as `price is invalid` on the first mainnet order. Engine-formatted prices
+        // look exactly like that whenever the value lands on a whole tick, so without this every
+        // such spot order is refused - and the error names the price rather than its written form.
+        for (field, value) in [
+            ("price", self.price.as_deref()),
+            ("quantity", self.quantity.as_deref()),
+            ("funds", self.funds.as_deref()),
+        ] {
+            if let Some(value) = value
+                && crate::http::requests::has_trailing_zero(value)
+            {
+                return Err(RequestError::TrailingZero {
+                    field,
+                    value: value.to_string(),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -460,5 +480,28 @@ mod tests {
         assert_eq!(NewOrderRequest::ENDPOINT, "/trade/orders");
         assert_eq!(CancelOrderRequest::ENDPOINT, "/trade/orders");
         assert_ne!(SpotNewOrderRequest::ENDPOINT, NewOrderRequest::ENDPOINT);
+    }
+
+    /// Measured on the first mainnet order: `"2513.0"` came back `price is invalid`, while the
+    /// same order priced `"2513"` was accepted and filled. An engine-formatted price looks like
+    /// the former whenever the value lands on a whole tick, so every such spot order was refused.
+    #[rstest]
+    fn a_spot_price_with_a_trailing_zero_is_refused() {
+        let item = SpotOrderItem::limit(
+            2,
+            ClientOrderId::parse("probe-1").unwrap(),
+            OrderSide::Buy,
+            TimeInForce::Gtc,
+            "2513.0",
+            "0.002",
+        )
+        .unwrap();
+
+        // Asserted where the check lives: the item constructor only screens the time in force,
+        // and every field is validated when the request is assembled.
+        assert!(matches!(
+            SpotNewOrderRequest::new(227674, vec![item]).unwrap_err(),
+            RequestError::TrailingZero { field: "price", .. }
+        ));
     }
 }
