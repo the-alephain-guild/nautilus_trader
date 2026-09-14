@@ -502,6 +502,210 @@ impl ModifyOrderRequest {
     }
 }
 
+/// Body of `POST /trade/twaps`, served by both engines.
+///
+/// A venue-native execution algorithm: the venue slices the quantity over `minutes` itself, which
+/// is a different thing from Nautilus's own TWAP algorithm slicing it and submitting each child
+/// order. Neither is wrong; they differ in who holds the schedule when the process stops.
+///
+/// Field names and their order come from the SDK's `common/types/twap_order_request.go`, where
+/// only `reduceOnly` is optional.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NewTwapOrderRequest {
+    #[serde(rename = "accountID")]
+    pub account_id: u64,
+    #[serde(rename = "symbolID")]
+    pub symbol_id: u64,
+    pub side: OrderSide,
+    pub quantity: String,
+    pub minutes: u64,
+    /// Whether the venue varies the slice sizes rather than cutting them evenly.
+    pub randomize: bool,
+    #[serde(rename = "reduceOnly", skip_serializing_if = "Option::is_none")]
+    pub reduce_only: Option<bool>,
+}
+
+impl NewTwapOrderRequest {
+    /// Path this request must be posted to.
+    pub const ENDPOINT: &'static str = "/trade/twaps";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "newTwapOrder";
+
+    /// Builds a TWAP order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::TrailingZero`] for a quantity the venue refuses by its written
+    /// form, or [`RequestError::ZeroMargin`] for a duration of zero minutes - which would ask the
+    /// venue to spread an order over no time at all.
+    pub fn new(
+        account_id: u64,
+        symbol_id: u64,
+        side: OrderSide,
+        quantity: impl Into<String>,
+        minutes: u64,
+        randomize: bool,
+        reduce_only: Option<bool>,
+    ) -> Result<Self, RequestError> {
+        if minutes == 0 {
+            return Err(RequestError::ZeroMargin);
+        }
+
+        let quantity = quantity.into();
+        if has_trailing_zero(&quantity) {
+            return Err(RequestError::TrailingZero {
+                field: "quantity",
+                value: quantity,
+            });
+        }
+
+        Ok(Self {
+            account_id,
+            symbol_id,
+            side,
+            quantity,
+            minutes,
+            randomize,
+            reduce_only,
+        })
+    }
+}
+
+/// Body of `DELETE /trade/twaps`, served by both engines.
+///
+/// A running TWAP is identified by the venue's own id, which the account's `/twaps` read carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CancelTwapOrderRequest {
+    #[serde(rename = "accountID")]
+    pub account_id: u64,
+    #[serde(rename = "symbolID")]
+    pub symbol_id: u64,
+    #[serde(rename = "orderID")]
+    pub order_id: u64,
+}
+
+impl CancelTwapOrderRequest {
+    /// Path this request must be sent to, with `DELETE`.
+    pub const ENDPOINT: &'static str = "/trade/twaps";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "cancelTwapOrder";
+
+    /// Builds a TWAP cancellation.
+    #[must_use]
+    pub const fn new(account_id: u64, symbol_id: u64, order_id: u64) -> Self {
+        Self {
+            account_id,
+            symbol_id,
+            order_id,
+        }
+    }
+}
+
+/// Which movement a transfer is, as the venue numbers them.
+///
+/// Values come from the SDK's `common/enums/transfer_asset_type.go`, where they are positions in
+/// an `iota` run rather than names on the wire. The pair that matters for a running system is
+/// `PerpsDeposit` and `PerpsWithdraw`: collateral moving between the two engines of one account.
+///
+/// Serialized as the number, not the name: the SDK declares `type TransferAssetType int` with no
+/// `MarshalJSON`, so Go emits the integer - and this value is inside the signing digest, where a
+/// quoted name would produce `API key not found`, an error naming credentials for a payload fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(into = "u8")]
+#[repr(u8)]
+pub enum TransferAssetType {
+    EvmDeposit = 0,
+    PerpsDeposit = 1,
+    EvmWithdraw = 2,
+    PerpsWithdraw = 3,
+    Internal = 4,
+    SpotWithdraw = 5,
+    SpotDeposit = 6,
+}
+
+/// Body of `POST /accounts/transfers`, served by both engines.
+///
+/// **This moves funds.** An API key registered without a mask carries the permission to do it -
+/// the mask that would withhold it does not bind at this venue - so nothing but the caller stands
+/// between a mistake here and moved money.
+///
+/// Field names and their order come from the SDK's `common/types/transfer_asset_request.go`, and
+/// none of them is optional there. `id` is the caller's own idempotency handle: the venue is given
+/// a value it can recognize on a retry rather than one this adapter invents per attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TransferAssetRequest {
+    pub id: u64,
+    #[serde(rename = "fromAccountID")]
+    pub from_account_id: u64,
+    #[serde(rename = "toAccountID")]
+    pub to_account_id: u64,
+    #[serde(rename = "coinID")]
+    pub coin_id: u64,
+    pub amount: String,
+    #[serde(rename = "type")]
+    pub transfer_type: TransferAssetType,
+}
+
+impl From<TransferAssetType> for u8 {
+    fn from(value: TransferAssetType) -> Self {
+        value as Self
+    }
+}
+
+impl TransferAssetRequest {
+    /// Path this request must be posted to.
+    pub const ENDPOINT: &'static str = "/accounts/transfers";
+
+    /// Action name for the signing payload.
+    pub const ACTION: &'static str = "transferAsset";
+
+    /// Builds a transfer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::ZeroMargin`] for an amount that parses to zero - a signed request
+    /// and a rate-limit slot spent moving nothing - [`RequestError::InvalidMargin`] for one that is
+    /// not a decimal, or [`RequestError::TrailingZero`] for a written form the venue refuses.
+    pub fn new(
+        id: u64,
+        from_account_id: u64,
+        to_account_id: u64,
+        coin_id: u64,
+        amount: impl Into<String>,
+        transfer_type: TransferAssetType,
+    ) -> Result<Self, RequestError> {
+        let amount = amount.into();
+        match amount.parse::<rust_decimal::Decimal>() {
+            Ok(value) if value.is_zero() => return Err(RequestError::ZeroMargin),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(RequestError::InvalidMargin {
+                    value: amount,
+                    reason: e.to_string(),
+                });
+            }
+        }
+
+        if has_trailing_zero(&amount) {
+            return Err(RequestError::TrailingZero {
+                field: "amount",
+                value: amount,
+            });
+        }
+
+        Ok(Self {
+            id,
+            from_account_id,
+            to_account_id,
+            coin_id,
+            amount,
+            transfer_type,
+        })
+    }
+}
+
 /// One replacement in a batch.
 ///
 /// Note the two ids, as a spot cancellation has: `cl_ord_id` labels the replacement, while
@@ -1075,6 +1279,88 @@ mod tests {
             ReplaceOrderRequest::new(60366, vec![item]).unwrap_err(),
             RequestError::TrailingZero { field: "price", .. }
         ));
+    }
+
+    /// The signing digest is compact JSON in the SDK's declaration order, so this pins the bytes.
+    #[rstest]
+    fn a_transfer_serializes_to_the_sdk_shape() {
+        let request =
+            TransferAssetRequest::new(7, 60366, 60366, 1, "25.5", TransferAssetType::PerpsDeposit)
+                .unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"id":7,"fromAccountID":60366,"toAccountID":60366,"coinID":1,"amount":"25.5","type":1}"#
+        );
+        assert_eq!(TransferAssetRequest::ENDPOINT, "/accounts/transfers");
+        assert_eq!(TransferAssetRequest::ACTION, "transferAsset");
+    }
+
+    #[rstest]
+    fn a_transfer_of_nothing_is_refused() {
+        let error = TransferAssetRequest::new(7, 1, 2, 1, "0", TransferAssetType::PerpsWithdraw)
+            .unwrap_err();
+
+        assert!(matches!(error, RequestError::ZeroMargin));
+    }
+
+    #[rstest]
+    fn a_transfer_amount_with_a_trailing_zero_is_refused() {
+        let error = TransferAssetRequest::new(7, 1, 2, 1, "25.50", TransferAssetType::Internal)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::TrailingZero {
+                field: "amount",
+                ..
+            }
+        ));
+    }
+
+    #[rstest]
+    fn a_twap_serializes_to_the_sdk_shape() {
+        let request =
+            NewTwapOrderRequest::new(60366, 1, OrderSide::Buy, "0.5", 30, true, Some(false))
+                .unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"accountID":60366,"symbolID":1,"side":1,"quantity":"0.5","minutes":30,"randomize":true,"reduceOnly":false}"#
+        );
+        assert_eq!(NewTwapOrderRequest::ENDPOINT, "/trade/twaps");
+        assert_eq!(NewTwapOrderRequest::ACTION, "newTwapOrder");
+    }
+
+    #[rstest]
+    fn a_twap_omits_reduce_only_when_unset() {
+        let request =
+            NewTwapOrderRequest::new(60366, 1, OrderSide::Sell, "0.5", 30, false, None).unwrap();
+
+        assert!(
+            !serde_json::to_string(&request)
+                .unwrap()
+                .contains("reduceOnly")
+        );
+    }
+
+    #[rstest]
+    fn a_twap_over_no_time_is_refused() {
+        let error =
+            NewTwapOrderRequest::new(60366, 1, OrderSide::Buy, "0.5", 0, false, None).unwrap_err();
+
+        assert!(matches!(error, RequestError::ZeroMargin));
+    }
+
+    #[rstest]
+    fn a_twap_cancellation_serializes_to_the_sdk_shape() {
+        let request = CancelTwapOrderRequest::new(60366, 1, 2788624123);
+
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"accountID":60366,"symbolID":1,"orderID":2788624123}"#
+        );
+        assert_eq!(CancelTwapOrderRequest::ACTION, "cancelTwapOrder");
     }
 
     #[rstest]

@@ -32,7 +32,10 @@ use serde::Deserialize;
 
 use super::{
     ClientError, SodexHttpClient,
-    requests::{UpdateLeverageRequest, UpdateMarginRequest},
+    requests::{
+        CancelTwapOrderRequest, NewTwapOrderRequest, TransferAssetRequest, UpdateLeverageRequest,
+        UpdateMarginRequest,
+    },
 };
 use crate::common::enums::{OrderSide, OrderStatus, OrderType, TimeInForce};
 
@@ -337,6 +340,69 @@ impl SodexHttpClient {
     ///
     /// Returns [`ClientError`] on transport, status or decoding failure. The venue may also refuse
     /// the change itself - reducing leverage under an open position, for one - and that arrives as a
+    /// Moves assets between accounts, including between this account's two engines.
+    ///
+    /// **This moves funds.** The permission mask that would withhold it does not bind at this
+    /// venue, so an API key registered without one carries this authority whether or not anyone
+    /// meant it to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on signing, transport or venue rejection.
+    pub async fn transfer_asset(&self, request: &TransferAssetRequest) -> Result<(), ClientError> {
+        let signed = self.build_signed(
+            Method::POST,
+            TransferAssetRequest::ENDPOINT,
+            TransferAssetRequest::ACTION,
+            request,
+        )?;
+
+        let _: Option<serde_json::Value> = self.send_optional(signed).await?;
+        Ok(())
+    }
+
+    /// Places a TWAP order, which the venue slices over the given minutes itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on signing, transport or venue rejection.
+    pub async fn new_twap_order(
+        &self,
+        request: &NewTwapOrderRequest,
+    ) -> Result<Option<serde_json::Value>, ClientError> {
+        let signed = self.build_signed(
+            Method::POST,
+            NewTwapOrderRequest::ENDPOINT,
+            NewTwapOrderRequest::ACTION,
+            request,
+        )?;
+
+        // Returned rather than discarded, unlike the leverage and margin actions: a TWAP has an
+        // id that must be known to cancel it, and nothing has observed where the venue puts it.
+        // Whoever runs this first should record the shape.
+        self.send_optional(signed).await
+    }
+
+    /// Cancels a running TWAP order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on signing, transport or venue rejection.
+    pub async fn cancel_twap_order(
+        &self,
+        request: &CancelTwapOrderRequest,
+    ) -> Result<(), ClientError> {
+        let signed = self.build_signed(
+            Method::DELETE,
+            CancelTwapOrderRequest::ENDPOINT,
+            CancelTwapOrderRequest::ACTION,
+            request,
+        )?;
+
+        let _: Option<serde_json::Value> = self.send_optional(signed).await?;
+        Ok(())
+    }
+
     /// status or envelope error rather than as a local validation failure.
     pub async fn update_leverage(
         &self,
