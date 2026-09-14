@@ -329,17 +329,43 @@ impl SodexHttpClient {
         self.get_public(&format!("/accounts/{wallet}/positions"), None)
             .await
     }
+}
 
-    /// Sets leverage and margin mode for one perps instrument.
+/// The account's own fee rates, which need not be the instrument's defaults.
+///
+/// Measured 2026-09-14: at tier 0 they matched the instrument exactly - perps `0.00012`/`0.0004`,
+/// spot `0.00035`/`0.00065`. The three tier fields are why this endpoint exists anyway: an account
+/// that trades volume, stakes, or earns a maker rebate stops matching, and a commission computed
+/// from the instrument's default would then be wrong in the direction that compounds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FeeRates {
+    #[serde(rename = "makerFeeRate")]
+    pub maker: String,
+    #[serde(rename = "takerFeeRate")]
+    pub taker: String,
+    #[serde(rename = "feeTier")]
+    pub fee_tier: u32,
+    #[serde(rename = "stakingTier")]
+    pub staking_tier: u32,
+    #[serde(rename = "makerRebateTier")]
+    pub maker_rebate_tier: u32,
+}
+
+impl SodexHttpClient {
+    /// Reads the account's maker and taker fee rates.
     ///
-    /// Signed with the trading domain, like an order - not the universal domain the API key actions
-    /// use. The route answers `404` on spot, so calling this on a spot client is a configuration
-    /// error rather than a venue refusal.
+    /// Unsigned, like the other account reads.
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] on transport, status or decoding failure. The venue may also refuse
-    /// the change itself - reducing leverage under an open position, for one - and that arrives as a
+    /// Returns [`ClientError`] on transport, status or decoding failure.
+    pub async fn fee_rate(&self, wallet: &str) -> Result<FeeRates, ClientError> {
+        self.get_public(&format!("/accounts/{wallet}/fee-rate"), None)
+            .await
+    }
+}
+
+impl SodexHttpClient {
     /// Moves assets between accounts, including between this account's two engines.
     ///
     /// **This moves funds.** The permission mask that would withhold it does not bind at this
@@ -403,7 +429,17 @@ impl SodexHttpClient {
         Ok(())
     }
 
-    /// status or envelope error rather than as a local validation failure.
+    /// Sets leverage and margin mode for one perps instrument.
+    ///
+    /// Signed with the trading domain, like an order - not the universal domain the API key actions
+    /// use. The route answers `404` on spot, so calling this on a spot client is a configuration
+    /// error rather than a venue refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] on transport, status or decoding failure. The venue may also refuse
+    /// the change itself - reducing leverage under an open position, for one - and that arrives as
+    /// a status or envelope error rather than as a local validation failure.
     pub async fn update_leverage(
         &self,
         request: &UpdateLeverageRequest,

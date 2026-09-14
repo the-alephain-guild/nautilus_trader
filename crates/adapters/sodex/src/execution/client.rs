@@ -84,6 +84,7 @@ use nautilus_model::{
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
 use nautilus_network::http::Method;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -95,7 +96,7 @@ use crate::{
     config::SodexExecClientConfig,
     http::{
         BatchCost, CancelOrderRequest, ClientError, NewOrderRequest, OrderAck, SodexHttpClient,
-        account_reads::OrderRecord,
+        account_reads::{FeeRates, OrderRecord},
         align_batch,
         requests::{
             CancelItem, ClientOrderId as VenueClientOrderId, MAX_BATCH, ModifyOrderRequest,
@@ -118,6 +119,11 @@ pub struct SodexExecutionClient {
     http: Arc<SodexHttpClient>,
     /// The published instrument set, which is where an order's numeric symbol id comes from.
     catalog: Arc<InstrumentCatalog>,
+    /// The account's own fee rates, read at connect.
+    ///
+    /// `None` until that read succeeds, and the instrument's defaults stand in - they agreed at
+    /// tier 0 when measured, so standing in is a reasonable failure rather than a guess.
+    fee_rates: Arc<Mutex<Option<FeeRates>>>,
     /// Venue account id, resolved once at construction.
     venue_account_id: u64,
     /// The account's wallet address, which is what the account reads are keyed by.
@@ -182,6 +188,7 @@ impl SodexExecutionClient {
             emitter,
             http: Arc::new(http),
             catalog: Arc::new(InstrumentCatalog::new()),
+            fee_rates: Arc::new(Mutex::new(None)),
             venue_account_id,
             wallet,
             tasks: TaskHandles::default(),
@@ -643,6 +650,27 @@ impl ExecutionClient for SodexExecutionClient {
         // absent from the cache, logging `account not found in cache` per event and leaving
         // positions and P&L silently unbuilt. Published and awaited here rather than left to
         // `query_account`: the engine calls that on its own schedule, and it spawns, so it races.
+        // Read here and not refreshed: a fee tier moves on the venue's own schedule, not within a
+        // session, and a failure is survivable because the instrument's defaults stand in - they
+        // agreed at tier 0 when measured. Logged either way, because a commission computed from
+        // the wrong rates is wrong quietly.
+        match self.http.fee_rate(&self.wallet).await {
+            Ok(rates) => {
+                log::info!(
+                    "sodex_fee_rates maker={} taker={} fee_tier={} staking_tier={} rebate_tier={}",
+                    rates.maker,
+                    rates.taker,
+                    rates.fee_tier,
+                    rates.staking_tier,
+                    rates.maker_rebate_tier
+                );
+                *self.fee_rates.lock() = Some(rates);
+            }
+            Err(e) => log::warn!(
+                "sodex_fee_rates_unavailable error={e} - commissions will use instrument defaults"
+            ),
+        }
+
         self.clone_for_task().publish_account_state().await?;
         self.await_account_registered(ACCOUNT_REGISTERED_TIMEOUT_SECS)
             .await?;
@@ -689,14 +717,32 @@ impl ExecutionClient for SodexExecutionClient {
         // reconciliation *infers* a fill from the order record, and the trait's default supplies
         // no commission - so reconciled P&L would omit fees entirely. On a strategy that adds to
         // positions, omitted fees compound into a position larger than the risk model intended.
+        // The account's own rates where they are known, the instrument's defaults otherwise. The
+        // two agreed at tier 0 when measured, and the endpoint exists because they need not: an
+        // account that trades volume, stakes, or earns a maker rebate stops matching, and then a
+        // commission from the instrument's default is wrong in the direction that compounds.
+        let (maker, taker) = match self.fee_rates.lock().as_ref() {
+            Some(rates) => (
+                rates
+                    .maker
+                    .parse()
+                    .unwrap_or_else(|_| instrument.maker_fee()),
+                rates
+                    .taker
+                    .parse()
+                    .unwrap_or_else(|_| instrument.taker_fee()),
+            ),
+            None => (instrument.maker_fee(), instrument.taker_fee()),
+        };
+
         let rate = match liquidity_side {
-            LiquiditySide::Maker => instrument.maker_fee(),
-            LiquiditySide::Taker => instrument.taker_fee(),
+            LiquiditySide::Maker => maker,
+            LiquiditySide::Taker => taker,
             // An inferred fill on a limit order that is not post-only has no known liquidity
             // side. Taking the larger rate is deliberate: understating fees is the error that
             // compounds, and `max` stays conservative even where a maker rebate makes the maker
             // rate the larger one.
-            LiquiditySide::NoLiquiditySide => instrument.maker_fee().max(instrument.taker_fee()),
+            LiquiditySide::NoLiquiditySide => maker.max(taker),
         };
 
         // Fees are charged on notional in the quote asset on both engines, and the arithmetic
