@@ -1,7 +1,10 @@
 //! Registers a fresh SoDEX API key using the master wallet.
 //!
-//! The venue's UI exposes no API key management, so registration goes through the
-//! `addAPIKey` endpoint, which the master wallet must sign. This runs that once.
+//! The venue's mainnet UI does manage keys, at `/apikeys` behind More -> API: it lists them and
+//! creates them, with a cap of five. The testnet UI has no such page at all, and neither offers a
+//! permission choice - the only bound its dialog accepts is a validity of 1 to 180 days. So an
+//! expiry is what the venue itself uses to bound a key, and registration through `addAPIKey`,
+//! signed by the master wallet, is what this runs.
 //!
 //! # Usage
 //!
