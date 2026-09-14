@@ -156,6 +156,13 @@ impl UniversalSigner {
     ///
     /// `permissions` is a mask whose set bits **disable** the corresponding permission.
     ///
+    /// **The venue rejects this structure.** A registration signed with it comes back as
+    /// `API key not found`, while the same body signed over [`Self::sign_add_api_key`]'s
+    /// seven-field structure is accepted (measured 2026-09-14, testnet perps). So this is not the
+    /// shape the venue commits to, and nothing calls it: the eight fields below are what the field
+    /// names imply, not what was observed to work. Kept as the nearest guess at whatever the real
+    /// permissioned action is, for whoever next gets the venue's own schema.
+    ///
     /// # Errors
     ///
     /// Returns [`SigningError::Sign`] if the digest cannot be signed.

@@ -181,12 +181,23 @@ impl AccountClient {
         expires_at: u64,
         permissions: Option<DisabledPermissions>,
     ) -> Result<SignedRequest, ClientError> {
-        if let Some(mask) = permissions
-            && !mask.is_disabled(DisabledPermissions::TRADE)
-            && !mask.is_disabled(DisabledPermissions::CANCEL)
-        {
+        // Measured against the live venue on 2026-09-14, on testnet perps: a registration signed
+        // over the eight-field structure is refused as `API key not found`, which is how this
+        // venue reports a digest it did not expect. The same body signed over the seven-field
+        // structure is accepted - and the key then placed an order despite a mask withholding
+        // TRADE. Consistent, and the only self-consistent reading: `permissions` is not covered by
+        // the signature the venue verifies, so it is correctly ignored.
+        //
+        // So a mask cannot narrow a key here through this route. Refusing locally rather than
+        // sending one keeps the caller from reading `API key not found` as a credential problem,
+        // and from believing a key is narrower than it is - which is the worse of the two.
+        if permissions.is_some() {
             return Err(ClientError::Transport(
-                "a permissioned key must disable TRADE, CANCEL, or both".to_string(),
+                "a permission mask does not bind at this venue: the signature it verifies does \
+                 not cover the field, and a key registered with TRADE withheld placed an order \
+                 anyway (measured 2026-09-14). Register without a mask and bound the key with an \
+                 expiry and revocation instead"
+                    .to_string(),
             ));
         }
 
@@ -416,40 +427,33 @@ mod tests {
     }
 
     #[rstest]
-    fn permissions_are_omitted_unless_requested() {
+    fn a_registration_carries_no_permissions_field() {
         let plain = client()
             .build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, None)
             .unwrap();
-        assert!(!plain.body_str().contains("permissions"));
 
-        let restricted = client()
-            .build_add_api_key(
-                60366,
-                &name(),
-                Address::ZERO,
-                NO_EXPIRY,
-                Some(DisabledPermissions::cancel_only()),
-            )
-            .unwrap();
-        assert!(restricted.body_str().contains(r#""permissions":13"#));
+        assert!(!plain.body_str().contains("permissions"));
     }
 
+    /// Every mask, not only the combinations once thought unsupported.
+    ///
+    /// This replaces an assertion that a `cancel_only` registration is built with
+    /// `"permissions":13` in its body. The venue accepted exactly that body on 2026-09-14 - once
+    /// it was signed over the seven-field structure - and the key it created then placed an order
+    /// despite the mask withholding `TRADE`. A field the verified signature does not cover cannot
+    /// bind, so building the request at all would hand the caller a key narrower in name only.
     #[rstest]
-    fn permissioned_key_leaving_trade_and_cancel_enabled_is_refused() {
-        // The venue does not support this combination; failing here saves a round trip and
-        // gives a reason instead of a gateway error code.
-        let only_withdraw_disabled =
-            DisabledPermissions::none().disabling(DisabledPermissions::WITHDRAW);
+    fn any_permission_mask_is_refused() {
+        for mask in [
+            DisabledPermissions::cancel_only(),
+            DisabledPermissions::none().disabling(DisabledPermissions::WITHDRAW),
+            DisabledPermissions::none().disabling(DisabledPermissions::TRADE),
+        ] {
+            let result =
+                client().build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, Some(mask));
 
-        let result = client().build_add_api_key(
-            60366,
-            &name(),
-            Address::ZERO,
-            NO_EXPIRY,
-            Some(only_withdraw_disabled),
-        );
-
-        assert!(result.is_err());
+            assert!(result.is_err(), "mask {} was built", mask.as_mask());
+        }
     }
 
     #[rstest]

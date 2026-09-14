@@ -268,6 +268,20 @@ wire_enum! {
 /// permission is **disabled**, and omitting the field enables everything. A caller that reads
 /// the mask as "bits I am granting" would build a key with precisely the permissions it meant
 /// to withhold, so the type is named for what it actually expresses.
+///
+/// # This mask does not bind
+///
+/// Measured on 2026-09-14 against testnet perps. A registration signed over the structure that
+/// includes `permissions` is refused as `API key not found` - this venue's way of reporting a
+/// digest it did not expect. The same body signed over the structure *without* it is accepted, and
+/// the key that registration created then placed an order although the mask withheld `TRADE`.
+///
+/// Both observations have one reading: the signature the venue verifies does not cover this field,
+/// so the field is ignored, as an unsigned field must be. Whatever shape a permissioned key takes
+/// at this venue, it is not this one - and until that shape is known, a key here cannot be narrowed
+/// at all. [`AccountClient::build_add_api_key`](crate::http::account::AccountClient::build_add_api_key)
+/// therefore refuses any mask rather than producing a key that is narrower only in name; a delegated
+/// key is bounded by its expiry and by revocation instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DisabledPermissions(u64);
 
@@ -308,8 +322,9 @@ impl DisabledPermissions {
 
     /// A signing key that may only cancel and nothing else.
     ///
-    /// The natural credential for a process that must be able to wind down exposure without
-    /// being able to open any.
+    /// It would be the natural credential for a process that must wind down exposure without
+    /// being able to open any - except that this mask does not bind at this venue, so no such
+    /// credential exists today. See the type's own documentation for what was measured.
     #[must_use]
     pub const fn cancel_only() -> Self {
         Self::none()
