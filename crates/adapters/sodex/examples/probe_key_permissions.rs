@@ -11,18 +11,26 @@
 //!   any key that can trade can also withdraw, so the only controls left are expiry, revocation and
 //!   keeping the key out of the process that trades.
 //!
-//! # Why this does not go through `build_add_api_key`
+//! # Three steps, because a refusal on its own means nothing here
 //!
-//! Relaxing the local guard on a hunch would weaken a deliberate constraint and force a rewrite of
-//! the test asserting it, with no evidence either way. So the request is assembled here from the
-//! same public pieces the library uses, and the guard and its test are left alone.
+//! The venue recovers a signer address from the digest and looks it up, so **a payload it did not
+//! expect comes back as `API key not found`** - an error naming credentials for what is really a
+//! mismatch. A refused mask and an unrecognized action type are therefore indistinguishable from
+//! the message alone, and this venue has already charged once for that confusion.
 //!
-//! That raises an obvious objection: if this program signs the request itself, a refusal might mean
-//! the signature is wrong rather than the mask. So it first builds a request the guard *does* allow,
-//! through the library, and checks its own assembly of that same request matches byte for byte -
-//! body and signature both, using the nonce the library chose. Only then is the mask swapped. A
-//! refusal after that is the venue answering about permissions, not about signing. Getting this
-//! backwards is how `API key not found` once came to mean "your payload was malformed".
+//! So:
+//!
+//! 1. **Control.** A mask the adapter considers supported (`cancel_only`, 13) is built by the
+//!    library and actually sent. No permissioned key has ever been registered on this account, so
+//!    this path is unproven - if it fails, the adapter's permissioned action type does not match
+//!    the venue's, every permissioned registration is broken, and nothing below can be read as
+//!    being about permissions.
+//! 2. **Mirror.** Only then is the hand assembly used here compared with the library's, byte for
+//!    byte, on that same supported mask and with the nonce the library chose. Relaxing the local
+//!    guard on a hunch would have meant rewriting a test with no evidence either way, so the guard
+//!    and its test are left alone and the request is assembled from public pieces instead.
+//! 3. **Under test.** The combination the guard refuses locally is sent. After the first two
+//!    steps, its answer is the venue speaking about the mask.
 //!
 //! **This registers a real key if the venue accepts it**, and revokes it immediately afterwards so
 //! nothing is left behind. The keypair is generated here and its private half is never printed:
@@ -146,16 +154,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
-    let name = ApiKeyName::parse(&format!("permprobe-{stamp}"))?;
+    let control_name = ApiKeyName::parse(&format!("permprobe-{stamp}-a"))?;
+    let name = ApiKeyName::parse(&format!("permprobe-{stamp}-b"))?;
     let generated = generate_api_key()?;
 
     println!("network {network:?}  {market:?}  account {account_id}");
-    println!("probe key name:   {}", name.as_str());
     println!("probe key address {:?}", generated.public_key);
     println!();
 
-    // Step one: a mask the guard allows, built by the library.
+    // Step one: does a permissioned registration work at all? Nothing has ever sent one.
     let supported = DisabledPermissions::cancel_only();
+    let control = account.build_add_api_key(
+        account_id,
+        &control_name,
+        generated.public_key,
+        NO_EXPIRY,
+        Some(supported),
+    )?;
+    println!(
+        "control: registering {} with mask {} (cancel only)",
+        control_name.as_str(),
+        supported.as_mask()
+    );
+    println!("body: {}", control.body_str());
+
+    match account.send::<serde_json::Value>(control).await {
+        Ok(response) => {
+            println!("control ACCEPTED: {response:?}");
+            let revoke = account.build_revoke_api_key(account_id, &control_name)?;
+            let _: Option<serde_json::Value> = account.send(revoke).await?;
+            println!("control key revoked; the permissioned path works, so read the test below");
+        }
+        Err(e) => {
+            println!("control REFUSED: {e}");
+            println!();
+            println!(
+                "A mask this adapter considers supported was refused, so the fault is not the"
+            );
+            println!("mask under test. Either the permissioned action type signed here does not");
+            println!("match the venue's, or permissioned registration lives somewhere other than");
+            println!("this path - and `DisabledPermissions` is unusable until that is settled.");
+            println!("Nothing about withdrawal permissions can be concluded from this run.");
+            return Ok(());
+        }
+    }
+    println!();
+
+    // Step two: the same supported mask, assembled here, must match the library byte for byte.
     let template = account.build_add_api_key(
         account_id,
         &name,
@@ -188,8 +233,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
-    println!("assembly matches the library byte for byte on a supported mask (mask 13)");
-    println!("so a refusal below is the venue answering about permissions, not about signing");
+    println!("assembly matches the library byte for byte on the supported mask");
+    println!("and the venue accepted that mask above, so what follows is about the mask alone");
     println!();
 
     // Step three: the combination the guard refuses locally.
@@ -222,11 +267,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             println!("REFUSED: {e}");
             println!();
-            println!("If the message names permissions or the mask, the local guard is right and");
-            println!("this venue offers no key that trades without also being able to withdraw -");
-            println!("record that, because it decides what a delegated key can be narrowed to.");
-            println!("If it names a signature or a key, stop: step two says otherwise, so read it");
-            println!("again before concluding anything.");
+            println!("The control registered a key on this same path, with the same signing and");
+            println!("the same key type, differing only in the mask - so this is the venue");
+            println!("refusing this mask, whatever the message says. `API key not found` is how");
+            println!("it reports a payload it did not expect, because it recovers a signer from");
+            println!("the digest and looks that address up.");
+            println!();
+            println!("Meaning: either only certain masks are accepted, or none that leaves TRADE");
+            println!("enabled is. Both come to the same thing for a delegated key - it cannot be");
+            println!("narrowed to trade-without-withdraw, and expiry and revocation are the only");
+            println!("controls left.");
         }
     }
 
