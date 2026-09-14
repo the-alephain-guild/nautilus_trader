@@ -32,6 +32,17 @@
 //! 3. **Under test.** The combination the guard refuses locally is sent. After the first two
 //!    steps, its answer is the venue speaking about the mask.
 //!
+//! If the permissioned path turns out not to work at all, one hypothesis fits the symptom exactly
+//! and is tested in the same run: a venue that knows only the seven-field structure computes the
+//! digest over those fields whatever the body carries, recovers a different address, and reports a
+//! missing key. Signing the plain structure while carrying the mask in the body separates "this
+//! adapter signs a type the venue never had" from "the venue refuses the mask".
+//!
+//! Acceptance is still not the end of it. The key listing carries no permission field, so a stored
+//! mask cannot be read back, and a mask that is stored but ignored would look identical to one
+//! that binds. The only way to tell is to use the key: `cancel_only` withholds `TRADE`, so an
+//! order placed with it must be refused.
+//!
 //! **This registers a real key if the venue accepts it**, and revokes it immediately afterwards so
 //! nothing is left behind. The keypair is generated here and its private half is never printed:
 //! the point is the venue's answer, not a usable credential.
@@ -49,19 +60,22 @@
 
 use std::{collections::HashMap, env};
 
+use nautilus_network::http::Method;
 use nautilus_sodex::{
     common::{
         Market,
-        credential::{ApiKeyName, MasterPrivateKey},
-        enums::DisabledPermissions,
+        credential::{ApiKeyName, ApiPrivateKey, MasterPrivateKey},
+        enums::{DisabledPermissions, OrderSide, PositionSide, TimeInForce},
     },
     http::{
-        Network, SignedRequest,
+        Network, OrderAck, SignedRequest, SodexHttpClient,
         account::{
             API_KEY_TYPE_EVM, AccountClient, AddApiKeyRequest, HEADER_API_CHAIN, NO_EXPIRY,
             generate_api_key,
         },
+        align_batch,
         client::{HEADER_API_NONCE, HEADER_API_SIGN},
+        requests::{CancelItem, CancelOrderRequest, ClientOrderId, NewOrderRequest, OrderItem},
     },
     signing::{NonceGenerator, UniversalSigner},
 };
@@ -73,12 +87,27 @@ use nautilus_sodex::{
 /// meaningless.
 struct Registration<'a> {
     signer: &'a UniversalSigner,
-    template: &'a SignedRequest,
+    /// Taken from a request the library built, so neither is restated here - and held by value
+    /// because that request is consumed by sending it.
+    method: Method,
+    url: String,
     network: Network,
     account_id: u64,
     name: &'a ApiKeyName,
     public_key: alloy_primitives::Address,
     expires_at: u64,
+}
+
+/// Which typed structure the signature commits to.
+///
+/// The venue recovers a signer from the digest, so this is what it compares against - and the
+/// whole question is which of the two it knows.
+#[derive(Debug, Clone, Copy)]
+enum SignedAs {
+    /// The eight-field structure carrying `permissions`, which this adapter uses for a masked key.
+    Permissioned,
+    /// The seven-field structure used for an ordinary key, with the mask present in the body only.
+    Plain,
 }
 
 impl Registration<'_> {
@@ -87,17 +116,29 @@ impl Registration<'_> {
         &self,
         nonce: u64,
         mask: DisabledPermissions,
+        signed_as: SignedAs,
     ) -> Result<SignedRequest, Box<dyn std::error::Error>> {
-        let signature = self.signer.sign_add_permissioned_api_key(
-            self.network.chain_id(),
-            nonce,
-            self.account_id,
-            self.name.as_str(),
-            API_KEY_TYPE_EVM,
-            self.public_key,
-            self.expires_at,
-            mask.as_mask(),
-        )?;
+        let signature = match signed_as {
+            SignedAs::Permissioned => self.signer.sign_add_permissioned_api_key(
+                self.network.chain_id(),
+                nonce,
+                self.account_id,
+                self.name.as_str(),
+                API_KEY_TYPE_EVM,
+                self.public_key,
+                self.expires_at,
+                mask.as_mask(),
+            )?,
+            SignedAs::Plain => self.signer.sign_add_api_key(
+                self.network.chain_id(),
+                nonce,
+                self.account_id,
+                self.name.as_str(),
+                API_KEY_TYPE_EVM,
+                self.public_key,
+                self.expires_at,
+            )?,
+        };
 
         let body = AddApiKeyRequest {
             account_id: self.account_id,
@@ -109,9 +150,8 @@ impl Registration<'_> {
         };
 
         Ok(SignedRequest {
-            // Method and url come from the library's own request, so neither is restated here.
-            method: self.template.method.clone(),
-            url: self.template.url.clone(),
+            method: self.method.clone(),
+            url: self.url.clone(),
             headers: HashMap::from([
                 ("Content-Type".to_string(), "application/json".to_string()),
                 ("Accept".to_string(), "application/json".to_string()),
@@ -130,6 +170,86 @@ impl Registration<'_> {
     }
 }
 
+/// Tries to place one order with a key, to see whether a mask that withholds `TRADE` is honored.
+///
+/// Registration being accepted says the venue stored the key; it does not say the mask means
+/// anything, and the key listing carries no permissions field to check. Only using the key answers
+/// that. The order rests far below the market and is withdrawn if it is somehow accepted.
+async fn trade_is_allowed(
+    network: Network,
+    market: Market,
+    name: &ApiKeyName,
+    key: &ApiPrivateKey,
+    account_id: u64,
+    symbol_id: u64,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let client = SodexHttpClient::with_credentials(network, market, name.clone(), key)?;
+    let label = ClientOrderId::parse(format!(
+        "permtrade-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis()
+    ))?;
+
+    let mut item = OrderItem::limit(
+        label.clone(),
+        OrderSide::Buy,
+        TimeInForce::Gtx,
+        "70000".to_string(),
+        "0.0002".to_string(),
+    )?;
+    item.position_side = PositionSide::Both;
+
+    let request = NewOrderRequest::new(account_id, symbol_id, vec![item])?;
+    let submitted = request.client_order_ids();
+    let signed = client.build_signed(
+        Method::POST,
+        NewOrderRequest::ENDPOINT,
+        NewOrderRequest::ACTION,
+        &request,
+    )?;
+
+    let acks: Vec<OrderAck> = match client.send(signed).await {
+        Ok(acks) => acks,
+        Err(e) => {
+            println!("  the key was refused when it tried to trade: {e}");
+            return Ok(false);
+        }
+    };
+
+    match align_batch(&submitted, acks)?.first() {
+        Some(ack) if ack.is_success() => {
+            println!(
+                "  the key placed an order: venue order id {:?}",
+                ack.order_id
+            );
+            if let Some(order_id) = ack.order_id {
+                let cancel = CancelOrderRequest::new(
+                    account_id,
+                    vec![CancelItem::by_order_id(symbol_id, order_id)],
+                )?;
+                let signed = client.build_signed(
+                    Method::DELETE,
+                    CancelOrderRequest::ENDPOINT,
+                    CancelOrderRequest::ACTION,
+                    &cancel,
+                )?;
+                let _: Vec<OrderAck> = client.send(signed).await?;
+                println!("  cancelled it again");
+            }
+            Ok(true)
+        }
+        Some(ack) => {
+            println!(
+                "  the order was rejected: code {} {:?}",
+                ack.code, ack.error
+            );
+            Ok(false)
+        }
+        None => Ok(false),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let master_hex =
@@ -145,6 +265,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("spot") => Market::Spot,
         _ => Market::Perps,
     };
+    // Only reached if a masked key registers: the mask is then tested by trying to trade with it.
+    let symbol_id: u64 = env::var("SODEX_SYMBOL_ID")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse()?;
 
     let master = MasterPrivateKey::parse(&master_hex)?;
     let account = AccountClient::new(network, market, &master)?;
@@ -162,7 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("probe key address {:?}", generated.public_key);
     println!();
 
-    // Step one: does a permissioned registration work at all? Nothing has ever sent one.
+    // Step one: does a permissioned registration work at all? Nothing had ever sent one.
     let supported = DisabledPermissions::cancel_only();
     let control = account.build_add_api_key(
         account_id,
@@ -178,26 +302,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("body: {}", control.body_str());
 
-    match account.send::<serde_json::Value>(control).await {
-        Ok(response) => {
-            println!("control ACCEPTED: {response:?}");
-            let revoke = account.build_revoke_api_key(account_id, &control_name)?;
-            let _: Option<serde_json::Value> = account.send(revoke).await?;
-            println!("control key revoked; the permissioned path works, so read the test below");
+    // Kept before sending, because sending consumes the request and both are needed to assemble
+    // one by hand afterwards.
+    let control_registration = Registration {
+        signer: &signer,
+        method: control.method.clone(),
+        url: control.url.clone(),
+        network,
+        account_id,
+        name: &control_name,
+        public_key: generated.public_key,
+        expires_at: NO_EXPIRY,
+    };
+
+    if let Err(e) = account.send::<serde_json::Value>(control).await {
+        println!("control REFUSED: {e}");
+        println!();
+        println!("A mask this adapter considers supported was refused, so nothing about");
+        println!("withdrawals follows from the run that prompted this: the permissioned path");
+        println!("itself is unproven, and `DisabledPermissions` has never registered anything.");
+        println!();
+
+        // One hypothesis fits the symptom exactly. If the venue knows only the seven-field
+        // structure, it computes the digest over those fields whatever the body carries, recovers
+        // a different address, and reports a missing key - which is what both runs saw. Then the
+        // fault is that this adapter signs a type the venue never had, not that the mask is
+        // refused.
+        let plain = control_registration.request(nonces.next(), supported, SignedAs::Plain)?;
+        println!("retrying the same body, signed over the seven-field structure instead:");
+        println!("body: {}", plain.body_str());
+
+        match account.send::<serde_json::Value>(plain).await {
+            Ok(response) => {
+                println!("ACCEPTED: {response:?}");
+                println!();
+                println!("So the venue verifies the seven-field structure and this adapter has");
+                println!("been signing one the venue does not have. That is a defect in");
+                println!("`sign_add_permissioned_api_key`, not a limit on what a key may be.");
+                println!();
+                println!("But acceptance does not mean the mask took effect: the key listing");
+                println!("carries no permissions field, so the only way to tell is to use the");
+                println!("key. This mask withholds TRADE, so an order must be refused:");
+
+                let traded = trade_is_allowed(
+                    network,
+                    market,
+                    &control_name,
+                    &generated.private_key,
+                    account_id,
+                    symbol_id,
+                )
+                .await?;
+
+                println!();
+                if traded {
+                    println!("The key traded, so the mask was stored and ignored - or not stored");
+                    println!("at all. A permission mask that does not bind is worse than none,");
+                    println!("because it invites exactly the trust this design was avoiding.");
+                } else {
+                    println!("The key could not trade, so the mask binds. A delegated key can");
+                    println!("then be narrowed at the venue, and the next question - whether");
+                    println!("WITHDRAW alone can be withheld - is worth asking on this path.");
+                }
+
+                let revoke = account.build_revoke_api_key(account_id, &control_name)?;
+                let _: Option<serde_json::Value> = account.send(revoke).await?;
+                println!();
+                println!("Probe key revoked; nothing left registered.");
+            }
+            Err(e) => {
+                println!("REFUSED: {e}");
+                println!();
+                println!("Both structures are refused with a `permissions` field present, so this");
+                println!("path does not take one at all. Until the venue's own schema says");
+                println!("otherwise, treat `DisabledPermissions` as unreachable: a key here is");
+                println!("bounded by expiry and revocation, not by a narrower authority.");
+            }
         }
-        Err(e) => {
-            println!("control REFUSED: {e}");
-            println!();
-            println!(
-                "A mask this adapter considers supported was refused, so the fault is not the"
-            );
-            println!("mask under test. Either the permissioned action type signed here does not");
-            println!("match the venue's, or permissioned registration lives somewhere other than");
-            println!("this path - and `DisabledPermissions` is unusable until that is settled.");
-            println!("Nothing about withdrawal permissions can be concluded from this run.");
-            return Ok(());
-        }
+
+        return Ok(());
     }
+
+    println!("control ACCEPTED");
+    let revoke = account.build_revoke_api_key(account_id, &control_name)?;
+    let _: Option<serde_json::Value> = account.send(revoke).await?;
+    println!("control key revoked; the permissioned path works, so read the test below");
     println!();
 
     // Step two: the same supported mask, assembled here, must match the library byte for byte.
@@ -213,14 +402,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step two: the same request, assembled here, must match it exactly.
     let registration = Registration {
         signer: &signer,
-        template: &template,
+        method: template.method.clone(),
+        url: template.url.clone(),
         network,
         account_id,
         name: &name,
         public_key: generated.public_key,
         expires_at: NO_EXPIRY,
     };
-    let mirror = registration.request(nonce, supported)?;
+    let mirror = registration.request(nonce, supported, SignedAs::Permissioned)?;
 
     if mirror.body != template.body
         || mirror.headers[HEADER_API_SIGN] != template.headers[HEADER_API_SIGN]
@@ -242,7 +432,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .disabling(DisabledPermissions::WITHDRAW)
         .disabling(DisabledPermissions::TRANSFER);
 
-    let request = registration.request(nonces.next(), under_test)?;
+    let request = registration.request(nonces.next(), under_test, SignedAs::Permissioned)?;
 
     println!(
         "mask under test: {} (WITHDRAW | TRANSFER withheld)",
