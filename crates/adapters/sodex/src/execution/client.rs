@@ -1080,8 +1080,10 @@ impl ExecutionClient for SodexExecutionClient {
 
     fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
         let ts_event = self.clock.get_time_ns();
+        let market = self.config.market;
         let mut targets = Vec::with_capacity(cmd.cancels.len());
         let mut orders = Vec::with_capacity(cmd.cancels.len());
+        let mut named = Vec::with_capacity(cmd.cancels.len());
 
         // One bad cancel rejects itself and the rest of the batch still goes: dropping the whole
         // request because one order had no numeric id would leave the others resting.
@@ -1129,6 +1131,15 @@ impl ExecutionClient for SodexExecutionClient {
                 }
             };
 
+            // What the venue will name this cancellation in its answer, which differs by engine:
+            // spot echoes the cancellation's own label, perps echoes the order being cancelled.
+            // Both measured 2026-09-14. Collected here so the acknowledgements can be paired by id
+            // rather than by the order they arrive in - on a partly refused batch, pairing by
+            // arrival would report a refused order as cancelled.
+            named.push(match market {
+                Market::Spot => label.as_str().to_string(),
+                Market::Perps => order.client_order_id().to_string(),
+            });
             targets.push((symbol_id, target, label));
             orders.push((order, cancel.venue_order_id));
         }
@@ -1163,12 +1174,7 @@ impl ExecutionClient for SodexExecutionClient {
                 Ok(acks) => {
                     // Acknowledged per order, so the verdicts are matched to the orders that asked
                     // for them rather than assumed uniform: a batch can be half accepted.
-                    let submitted: Vec<String> = orders
-                        .iter()
-                        .map(|(order, _)| order.client_order_id().to_string())
-                        .collect();
-
-                    match align_batch(&submitted, acks) {
+                    match align_batch(&named, acks) {
                         Ok(aligned) => {
                             for ((order, venue_order_id), ack) in orders.iter().zip(aligned) {
                                 if ack.is_success() {

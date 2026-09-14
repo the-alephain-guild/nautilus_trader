@@ -119,6 +119,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // program must not produce.
     println!();
     let cancel_label = ClientOrderId::parse(format!("cancel-{stamp}"))?;
+    // Leaving it resting is how a batch gets assembled: two runs, then one cancel request
+    // carrying both, which is the only way to see what the venue's per-order acknowledgement
+    // names on this engine.
+    if env::var("SODEX_LEAVE_RESTING").as_deref() == Ok("true") {
+        println!();
+        println!("left resting by request - withdraw it with the cancel_open_orders example");
+        return Ok(());
+    }
+
     let cancel = SpotCancelOrderRequest::new(
         account_id,
         vec![SpotCancelItem::by_order_id(

@@ -67,9 +67,13 @@ pub enum AlignError {
 /// original order's `clOrdID`, measured 2026-09-13. So when the ids identify the batch exactly -
 /// every submitted id present once, nothing left over - they decide the pairing.
 ///
-/// Otherwise the order received is kept, because there is nothing better to use. A spot cancel
-/// labels each cancellation with an id of its own and what it echoes is unmeasured, so demanding
-/// a match there would turn a correct batch into a wholesale rejection.
+/// The two engines name different things, both measured 2026-09-14: a perps cancel echoes the
+/// order being cancelled, a spot cancel echoes the cancellation's own label. Callers pass whichever
+/// their engine will name, so both pair here.
+///
+/// Otherwise the order received is kept, because there is nothing better to use - a response that
+/// names something else identifies nothing, and demanding a match would turn it into a wholesale
+/// rejection.
 fn pair_with_submitted(submitted: &[String], acks: Vec<OrderAck>) -> Vec<OrderAck> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for ack in &acks {
@@ -193,10 +197,23 @@ mod tests {
     }
 
     #[rstest]
+    fn a_spot_cancel_pairs_by_the_label_it_was_sent_with() {
+        // Measured: a spot cancellation is answered under its own label, not under the order it
+        // names. The caller passes the labels, so the pairing still holds.
+        let aligned = align_batch(
+            &ids(&["cancel-a", "cancel-b"]),
+            vec![ok("cancel-b", 12), ok("cancel-a", 11)],
+        )
+        .unwrap();
+
+        assert_eq!(aligned[0].cl_ord_id, "cancel-a");
+        assert_eq!(aligned[1].cl_ord_id, "cancel-b");
+    }
+
+    #[rstest]
     fn acknowledgements_naming_something_else_keep_the_order_they_arrived_in() {
-        // A spot cancellation carries an id of its own beside the order it names, and what the
-        // venue echoes there is unmeasured. Demanding a match would turn a correct batch into a
-        // wholesale rejection, so the arrival order is kept - which is what callers had before.
+        // A response that names neither what was sent nor anything recognizable identifies
+        // nothing, and refusing the whole batch over it would be worse than trusting its order.
         let aligned = align_batch(
             &ids(&["order-1", "order-2"]),
             vec![ok("cancel-a", 11), ok("cancel-b", 12)],
