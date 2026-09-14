@@ -66,7 +66,7 @@ use nautilus_common::{
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
-        ModifyOrder, QueryAccount, SubmitOrder, SubmitOrderList,
+        ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
     },
 };
 use nautilus_core::{Params, UnixNanos, time::AtomicTime};
@@ -657,25 +657,16 @@ impl ExecutionClient for SodexExecutionClient {
         &self,
         _cmd: &GenerateOrderStatusReports,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
-        self.collect_order_reports().await
+        self.clone_for_task().collect_order_reports().await
     }
 
     async fn generate_order_status_report(
         &self,
         cmd: &GenerateOrderStatusReport,
     ) -> anyhow::Result<Option<OrderStatusReport>> {
-        // The venue offers no single-order read, so one order is found within the account's own
-        // two lists. Matching on either identifier because the engine may hold only one of them:
-        // a reconciled external order has no client order id it recognizes.
-        let reports = self.collect_order_reports().await?;
-
-        Ok(reports.into_iter().find(|report| {
-            cmd.venue_order_id
-                .is_some_and(|wanted| wanted == report.venue_order_id)
-                || cmd
-                    .client_order_id
-                    .is_some_and(|wanted| Some(wanted) == report.client_order_id)
-        }))
+        self.clone_for_task()
+            .find_order_report(cmd.client_order_id, cmd.venue_order_id)
+            .await
     }
 
     async fn generate_fill_reports(
@@ -1256,6 +1247,45 @@ impl ExecutionClient for SodexExecutionClient {
         Ok(())
     }
 
+    /// Asks the venue what became of one order.
+    ///
+    /// The engine sends this when an order's fate is uncertain - a submit or a cancel that went out
+    /// and was never acknowledged, which surfaces as an in-flight timeout. Left to the trait's
+    /// default it logs `handler not implemented` and returns, so the question is never asked: the
+    /// order stays in limbo and every later decision is taken against a position the engine is not
+    /// sure of. That is the same silence `cancel_all_orders` produced at shutdown.
+    ///
+    /// The venue offers no single-order read, so the answer comes from the account's own lists via
+    /// [`Self::generate_order_status_report`], which matches on either identifier - and either is
+    /// what there is, since an order that was never acknowledged has no venue id yet.
+    fn query_order(&self, cmd: QueryOrder) -> anyhow::Result<()> {
+        let client = self.clone_for_task();
+        let emitter = self.emitter.clone();
+
+        get_runtime().spawn(async move {
+            match client
+                .find_order_report(Some(cmd.client_order_id), cmd.venue_order_id)
+                .await
+            {
+                Ok(Some(report)) => emitter.send_order_status_report(report),
+                // Reported rather than passed over: an order the venue has never heard of is the
+                // answer to an in-flight timeout, not the absence of one, and reconciliation is
+                // what resolves it from here.
+                Ok(None) => log::warn!(
+                    "sodex_query_order_unknown client_order_id={} venue_order_id={:?}",
+                    cmd.client_order_id,
+                    cmd.venue_order_id
+                ),
+                Err(e) => log::error!(
+                    "sodex_query_order_failed client_order_id={} error={e}",
+                    cmd.client_order_id
+                ),
+            }
+        });
+
+        Ok(())
+    }
+
     fn cancel_order(&self, cmd: CancelOrder) -> anyhow::Result<()> {
         let order = self.core.get_order(&cmd.client_order_id)?;
 
@@ -1385,11 +1415,25 @@ impl SodexExecutionClient {
             wallet: self.wallet.clone(),
             catalog: Arc::clone(&self.catalog),
             account_id: self.core.account_id,
+            venue: self.core.venue,
             emitter: self.emitter.clone(),
             clock: self.clock,
         }
     }
+}
 
+/// What a spawned account read needs, without the engine-bound parts of the client.
+struct AccountReader {
+    http: Arc<SodexHttpClient>,
+    wallet: String,
+    catalog: Arc<InstrumentCatalog>,
+    account_id: AccountId,
+    venue: Venue,
+    emitter: ExecutionEventEmitter,
+    clock: &'static AtomicTime,
+}
+
+impl AccountReader {
     /// Reads every order the account has, open and terminal alike, as reports.
     ///
     /// Both endpoints are consulted because an order's state is split across them: `/orders`
@@ -1433,33 +1477,40 @@ impl SodexExecutionClient {
         record: &OrderRecord,
         ts_init: UnixNanos,
     ) -> anyhow::Result<OrderStatusReport> {
-        let instrument_id = instrument_id_for(&record.symbol, self.core.venue);
+        let instrument_id = instrument_id_for(&record.symbol, self.venue);
         let instrument = self.catalog.find(&instrument_id).ok_or_else(|| {
             anyhow::anyhow!("{instrument_id} is not in the loaded instrument set")
         })?;
 
         Ok(order_status_report(
             record,
-            self.core.account_id,
+            self.account_id,
             instrument_id,
             instrument.price_precision(),
             instrument.size_precision(),
             ts_init,
         )?)
     }
-}
 
-/// What a spawned account read needs, without the engine-bound parts of the client.
-struct AccountReader {
-    http: Arc<SodexHttpClient>,
-    wallet: String,
-    catalog: Arc<InstrumentCatalog>,
-    account_id: AccountId,
-    emitter: ExecutionEventEmitter,
-    clock: &'static AtomicTime,
-}
+    /// Finds one order among the account's own lists.
+    ///
+    /// The venue offers no single-order read, so the answer comes from the same two lists a
+    /// reconciliation uses. Either identifier matches, because either is what the caller may hold:
+    /// an order that was never acknowledged has no venue id, and a reconciled external order has
+    /// no client order id the engine recognizes.
+    async fn find_order_report(
+        &self,
+        client_order_id: Option<NautilusClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+    ) -> anyhow::Result<Option<OrderStatusReport>> {
+        let reports = self.collect_order_reports().await?;
 
-impl AccountReader {
+        Ok(reports.into_iter().find(|report| {
+            venue_order_id.is_some_and(|wanted| wanted == report.venue_order_id)
+                || client_order_id.is_some_and(|wanted| Some(wanted) == report.client_order_id)
+        }))
+    }
+
     /// Reads the account's balances and emits them as account state.
     async fn publish_account_state(&self) -> anyhow::Result<()> {
         let snapshot = self
