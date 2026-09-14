@@ -46,6 +46,7 @@ use nautilus_sodex::{
             CancelItem, CancelOrderRequest, ClientOrderId, ModifyOrderRequest, NewOrderRequest,
             OrderItem, ReplaceItem, ReplaceOrderRequest,
         },
+        spot::{SpotCancelItem, SpotCancelOrderRequest, SpotNewOrderRequest, SpotOrderItem},
     },
 };
 
@@ -85,7 +86,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let key = ApiPrivateKey::parse(&key_hex)?;
     let name = ApiKeyName::parse(&key_name)?;
-    let client = SodexHttpClient::with_credentials(network, Market::Perps, name, &key)?;
+    // Both routes under test answer on both engines - `replace` does, and `modify` is perps only -
+    // so the engine is a variable here rather than a constant. It was a constant, and a spot run
+    // silently exercised perps instead, which the venue order id gave away only afterwards.
+    let market = match env::var("SODEX_MARKET").as_deref() {
+        Ok("spot") => Market::Spot,
+        _ => Market::Perps,
+    };
+    let client = SodexHttpClient::with_credentials(network, market, name, &key)?;
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -100,27 +108,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => TimeInForce::Gtx,
     };
 
-    println!("{network:?} Perps  account {account_id}  symbol {symbol_id}  {time_in_force:?}");
+    println!("{network:?} {market:?}  account {account_id}  symbol {symbol_id}  {time_in_force:?}");
     println!("placing {quantity} @ {price}, to be amended to {amended}");
     println!();
 
-    let mut item = OrderItem::limit(
-        label.clone(),
-        OrderSide::Buy,
-        time_in_force,
-        price.clone(),
-        quantity,
-    )?;
-    item.position_side = PositionSide::Both;
+    if market == Market::Spot && env::var("SODEX_CHANGE_VIA").as_deref() != Ok("replace") {
+        return Err("spot serves no modify route; run this with SODEX_CHANGE_VIA=replace".into());
+    }
 
-    let request = NewOrderRequest::new(account_id, symbol_id, vec![item])?;
-    let submitted = request.client_order_ids();
-    let signed = client.build_signed(
-        Method::POST,
-        NewOrderRequest::ENDPOINT,
-        NewOrderRequest::ACTION,
-        &request,
-    )?;
+    // The two engines do not share an order body: spot carries `symbolID` on each item and no
+    // position side, perps carries it once on the request. Crossing them is refused as a missing
+    // required field, which is how a first spot run here failed.
+    let (signed, submitted) = if market == Market::Spot {
+        let item = SpotOrderItem::limit(
+            symbol_id,
+            label.clone(),
+            OrderSide::Buy,
+            time_in_force,
+            &price,
+            &quantity,
+        )?;
+        let request = SpotNewOrderRequest::new(account_id, vec![item])?;
+        let submitted = request.client_order_ids();
+        (
+            client.build_signed(
+                Method::POST,
+                SpotNewOrderRequest::ENDPOINT,
+                SpotNewOrderRequest::ACTION,
+                &request,
+            )?,
+            submitted,
+        )
+    } else {
+        let mut item = OrderItem::limit(
+            label.clone(),
+            OrderSide::Buy,
+            time_in_force,
+            price.clone(),
+            quantity.clone(),
+        )?;
+        item.position_side = PositionSide::Both;
+
+        let request = NewOrderRequest::new(account_id, symbol_id, vec![item])?;
+        let submitted = request.client_order_ids();
+        (
+            client.build_signed(
+                Method::POST,
+                NewOrderRequest::ENDPOINT,
+                NewOrderRequest::ACTION,
+                &request,
+            )?,
+            submitted,
+        )
+    };
 
     let acks: Vec<OrderAck> = client.send(signed).await?;
     let ack = align_batch(&submitted, acks)?
@@ -218,16 +258,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Cancelled before the verdict is reported, so a failed amendment does not leave the order
     // resting while the program exits.
-    let cancel = CancelOrderRequest::new(
-        account_id,
-        vec![CancelItem::by_order_id(symbol_id, order_id)],
-    )?;
-    let signed = client.build_signed(
-        Method::DELETE,
-        CancelOrderRequest::ENDPOINT,
-        CancelOrderRequest::ACTION,
-        &cancel,
-    )?;
+    // Cancellation is asymmetric too: spot names the cancellation itself and goes to the batch
+    // route, perps names only its target. Sending one shape to the other engine is refused for a
+    // missing required field, which is how the first spot run here ended - after the replacement
+    // had already gone through, leaving an order resting while the program reported an error
+    // about something else.
+    let signed = if market == Market::Spot {
+        let request = SpotCancelOrderRequest::new(
+            account_id,
+            vec![SpotCancelItem::by_order_id(
+                symbol_id,
+                ClientOrderId::parse(format!("cancel-{stamp}"))?,
+                order_id,
+            )],
+        )?;
+        client.build_signed(
+            Method::DELETE,
+            SpotCancelOrderRequest::ENDPOINT,
+            SpotCancelOrderRequest::ACTION,
+            &request,
+        )?
+    } else {
+        let request = CancelOrderRequest::new(
+            account_id,
+            vec![CancelItem::by_order_id(symbol_id, order_id)],
+        )?;
+        client.build_signed(
+            Method::DELETE,
+            CancelOrderRequest::ENDPOINT,
+            CancelOrderRequest::ACTION,
+            &request,
+        )?
+    };
     let _: Vec<OrderAck> = client.send(signed).await?;
     println!("cancelled, nothing left resting");
     println!();
