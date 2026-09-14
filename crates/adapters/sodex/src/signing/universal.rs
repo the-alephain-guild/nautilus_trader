@@ -156,12 +156,16 @@ impl UniversalSigner {
     ///
     /// `permissions` is a mask whose set bits **disable** the corresponding permission.
     ///
-    /// **The venue rejects this structure.** A registration signed with it comes back as
-    /// `API key not found`, while the same body signed over [`Self::sign_add_api_key`]'s
-    /// seven-field structure is accepted (measured 2026-09-14, testnet perps). So this is not the
-    /// shape the venue commits to, and nothing calls it: the eight fields below are what the field
-    /// names imply, not what was observed to work. Kept as the nearest guess at whatever the real
-    /// permissioned action is, for whoever next gets the venue's own schema.
+    /// The structure is the SDK's, verbatim in name, field order and types - the venue documents
+    /// `addPermissionedAPIKey` as signing this rather than [`Self::sign_add_api_key`]'s
+    /// seven-field form.
+    ///
+    /// **The testnet gateway refused it** on 2026-09-14, answering `API key not found` while
+    /// accepting the same body signed over the seven-field structure. The action name never
+    /// reaches the wire, so a gateway that has not implemented this branch can only verify the
+    /// structure it knows, which is what that pair of results looks like. Kept and used as the SDK
+    /// defines it; whether a given deployment honors the mask is a question for
+    /// `examples/probe_key_permissions.rs`, not for this function.
     ///
     /// # Errors
     ///

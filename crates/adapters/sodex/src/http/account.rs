@@ -181,25 +181,25 @@ impl AccountClient {
         expires_at: u64,
         permissions: Option<DisabledPermissions>,
     ) -> Result<SignedRequest, ClientError> {
-        // Measured against the live venue on 2026-09-14, on testnet perps: a registration signed
-        // over the eight-field structure is refused as `API key not found`, which is how this
-        // venue reports a digest it did not expect. The same body signed over the seven-field
-        // structure is accepted - and the key then placed an order despite a mask withholding
-        // TRADE. Consistent, and the only self-consistent reading: `permissions` is not covered by
-        // the signature the venue verifies, so it is correctly ignored.
+        // A mask is sent as the SDK defines it, and no combination is refused here. An earlier
+        // guard refused any mask leaving TRADE and CANCEL enabled, on the grounds that "the venue
+        // does not support this combination" - a claim with no source, and one the SDK contradicts:
+        // `permissions` is a plain uint64 whose set bits disable, with no documented restriction on
+        // which bits may be set.
         //
-        // So a mask cannot narrow a key here through this route. Refusing locally rather than
-        // sending one keeps the caller from reading `API key not found` as a credential problem,
-        // and from believing a key is narrower than it is - which is the worse of the two.
-        if permissions.is_some() {
-            return Err(ClientError::Transport(
-                "a permission mask does not bind at this venue: the signature it verifies does \
-                 not cover the field, and a key registered with TRADE withheld placed an order \
-                 anyway (measured 2026-09-14). Register without a mask and bound the key with an \
-                 expiry and revocation instead"
-                    .to_string(),
-            ));
-        }
+        // **The testnet gateway does not honor it.** On 2026-09-14 a registration signed over
+        // `UserSignedAddPermissionedAPIKeyAction` - byte-identical in name, field order and types
+        // to the SDK's - was refused as `API key not found`, while the same body signed over the
+        // seven-field structure was accepted and the key it created placed an order despite a mask
+        // withholding TRADE. Since the action name never reaches the wire and the gateway can only
+        // pick a typed-data structure from the body's shape, that reads as a deployment that does
+        // not implement the permissioned branch rather than a client at fault.
+        //
+        // So a mask may be requested, and must not be trusted until it has been shown to bind on
+        // the deployment in use: `examples/probe_key_permissions.rs` registers a key withholding
+        // TRADE and then tries to trade with it. Acceptance alone proves nothing, because the key
+        // listing carries no permission field and an ignored mask is indistinguishable from an
+        // enforced one from the outside.
 
         let nonce = self.nonces.next();
         let network_chain_id = self.network.chain_id();
@@ -435,24 +435,31 @@ mod tests {
         assert!(!plain.body_str().contains("permissions"));
     }
 
-    /// Every mask, not only the combinations once thought unsupported.
+    /// Any mask is sent, including ones an earlier guard refused as unsupported.
     ///
-    /// This replaces an assertion that a `cancel_only` registration is built with
-    /// `"permissions":13` in its body. The venue accepted exactly that body on 2026-09-14 - once
-    /// it was signed over the seven-field structure - and the key it created then placed an order
-    /// despite the mask withholding `TRADE`. A field the verified signature does not cover cannot
-    /// bind, so building the request at all would hand the caller a key narrower in name only.
+    /// The SDK types `permissions` as a plain uint64 whose set bits disable, and documents no
+    /// restriction on which bits may be set - so the combination that guard rejected, withholding
+    /// only `WITHDRAW`, is exactly the one a delegated key would want.
     #[rstest]
-    fn any_permission_mask_is_refused() {
+    fn any_permission_mask_is_sent() {
         for mask in [
             DisabledPermissions::cancel_only(),
             DisabledPermissions::none().disabling(DisabledPermissions::WITHDRAW),
-            DisabledPermissions::none().disabling(DisabledPermissions::TRADE),
+            DisabledPermissions::none()
+                .disabling(DisabledPermissions::WITHDRAW)
+                .disabling(DisabledPermissions::TRANSFER),
         ] {
-            let result =
-                client().build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, Some(mask));
+            let request = client()
+                .build_add_api_key(60366, &name(), Address::ZERO, NO_EXPIRY, Some(mask))
+                .unwrap();
 
-            assert!(result.is_err(), "mask {} was built", mask.as_mask());
+            assert!(
+                request
+                    .body_str()
+                    .contains(&format!(r#""permissions":{}"#, mask.as_mask())),
+                "{}",
+                request.body_str()
+            );
         }
     }
 

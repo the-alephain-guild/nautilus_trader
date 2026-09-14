@@ -269,19 +269,27 @@ wire_enum! {
 /// the mask as "bits I am granting" would build a key with precisely the permissions it meant
 /// to withhold, so the type is named for what it actually expresses.
 ///
-/// # This mask does not bind
+/// # The mask is defined by the venue, and unhonored by the testnet gateway
 ///
-/// Measured on 2026-09-14 against testnet perps. A registration signed over the structure that
-/// includes `permissions` is refused as `API key not found` - this venue's way of reporting a
-/// digest it did not expect. The same body signed over the structure *without* it is accepted, and
-/// the key that registration created then placed an order although the mask withheld `TRADE`.
+/// The bits and their meaning come from the official SDK, which stores them as positions and
+/// shifts: trade 0, cancel 1, withdraw 2, transfer 3, so the masks below are what reaches the
+/// wire. The permissioned registration is a documented action with its own typed-data structure.
 ///
-/// Both observations have one reading: the signature the venue verifies does not cover this field,
-/// so the field is ignored, as an unsigned field must be. Whatever shape a permissioned key takes
-/// at this venue, it is not this one - and until that shape is known, a key here cannot be narrowed
-/// at all. [`AccountClient::build_add_api_key`](crate::http::account::AccountClient::build_add_api_key)
-/// therefore refuses any mask rather than producing a key that is narrower only in name; a delegated
-/// key is bounded by its expiry and by revocation instead.
+/// Measured on 2026-09-14 against testnet perps, and it did not work there. A registration signed
+/// over that structure - byte-identical in name, field order and types to the SDK's - was refused
+/// as `API key not found`, this venue's way of reporting a digest it did not expect. The same body
+/// signed over the ordinary seven-field structure was accepted, and the key it created then placed
+/// an order although this mask withheld `TRADE`.
+///
+/// The action name never reaches the wire, so the gateway can only choose a structure from the
+/// body's shape. A deployment that has not implemented the permissioned branch would behave
+/// exactly as observed, which is the reading the SDK supports - not that the client's shape is
+/// wrong, since it matches.
+///
+/// **So a mask may be requested and must not be trusted until shown to bind here.** The key
+/// listing carries no permission field, so an ignored mask and an enforced one look identical from
+/// outside; only using the key tells them apart, which is what `examples/probe_key_permissions.rs`
+/// does. Until then a key's bounds are its expiry and its revocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DisabledPermissions(u64);
 
@@ -322,9 +330,9 @@ impl DisabledPermissions {
 
     /// A signing key that may only cancel and nothing else.
     ///
-    /// It would be the natural credential for a process that must wind down exposure without
-    /// being able to open any - except that this mask does not bind at this venue, so no such
-    /// credential exists today. See the type's own documentation for what was measured.
+    /// The natural credential for a process that must wind down exposure without being able to
+    /// open any - where the mask binds. It did not on testnet perps in 2026-09; see the type's own
+    /// documentation.
     #[must_use]
     pub const fn cancel_only() -> Self {
         Self::none()
