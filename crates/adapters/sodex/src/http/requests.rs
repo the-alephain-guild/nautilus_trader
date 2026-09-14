@@ -402,6 +402,18 @@ impl UpdateMarginRequest {
 /// the engine has to cancel and replace. Worth knowing before reaching for it, because on a venue
 /// that settles on-chain a cancel-replace costs a second round trip and gives up queue position.
 ///
+/// # The testnet deployment refuses every amendment
+///
+/// Measured 2026-09-14 on perps, against a resting order this account had just placed. Four runs
+/// varying one thing each: post-only or not, identified by `orderID` or by `clOrdID`, changing the
+/// price or the quantity. All four came back `order rejected: OrderCannotBeModified` - a business
+/// error, so the request was understood and declined rather than misread.
+///
+/// The venue's documented trading-action list does not include `modifyOrder` either, while the
+/// SDK carries this request type. Same shape as its permissioned API key: defined in the SDK,
+/// absent from the deployment. So an amend is built and sent as the SDK defines it, and a strategy
+/// that needs to reprice has to cancel and replace until that changes.
+///
 /// Field names and their order come from the official SDK's `ModifyOrderRequest`, not from this
 /// adapter's reading of the documentation. The signing digest is compact JSON in declaration order,
 /// so one renamed or reordered key produces `API key not found` - an error naming credentials for a

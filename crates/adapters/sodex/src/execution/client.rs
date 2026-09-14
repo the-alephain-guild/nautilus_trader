@@ -1110,6 +1110,13 @@ impl ExecutionClient for SodexExecutionClient {
         Ok(())
     }
 
+    /// Amends a resting order.
+    ///
+    /// **Every amendment is refused by the testnet deployment** with `OrderCannotBeModified`,
+    /// whatever is changed and however the order is identified - see [`ModifyOrderRequest`] for
+    /// the four runs that established that. The command is still built and sent as the venue's SDK
+    /// defines it, because refusing locally would bake one deployment's behavior into this
+    /// adapter; a strategy that must reprice should cancel and replace meanwhile.
     fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
         let order = self.core.get_order(&cmd.client_order_id)?;
         let ts_event = self.clock.get_time_ns();

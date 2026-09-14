@@ -92,14 +92,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_millis();
     let label = ClientOrderId::parse(format!("modprobe-{stamp}"))?;
 
-    println!("{network:?} Perps  account {account_id}  symbol {symbol_id}");
+    // Single variable between runs. The venue refused to amend a post-only order with
+    // `OrderCannotBeModified` - a business error, so the request was understood and declined -
+    // and post-only is the one thing that distinguishes it from an ordinary resting limit order.
+    let time_in_force = match env::var("SODEX_TIME_IN_FORCE").as_deref() {
+        Ok("gtc") => TimeInForce::Gtc,
+        _ => TimeInForce::Gtx,
+    };
+
+    println!("{network:?} Perps  account {account_id}  symbol {symbol_id}  {time_in_force:?}");
     println!("placing {quantity} @ {price}, to be amended to {amended}");
     println!();
 
     let mut item = OrderItem::limit(
         label.clone(),
         OrderSide::Buy,
-        TimeInForce::Gtx,
+        time_in_force,
         price.clone(),
         quantity,
     )?;
@@ -134,13 +142,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Quantity is left alone: amending one field at a time keeps the reading unambiguous when the
     // venue refuses, since only the price can be at fault.
+    // Two more single variables, because the venue refuses with `OrderCannotBeModified` - a
+    // business error, so the request is understood and declined. The SDK's only stated rules are
+    // that exactly one identifier and at least one changed field must be present, and both hold
+    // either way here.
+    let by_client_id = env::var("SODEX_MODIFY_BY").as_deref() == Ok("cl_ord_id");
+    let change_quantity = env::var("SODEX_MODIFY_FIELD").as_deref() == Ok("quantity");
+
     let modify = ModifyOrderRequest::new(
         account_id,
         symbol_id,
-        Some(order_id),
-        None,
-        Some(amended.clone()),
-        None,
+        if by_client_id { None } else { Some(order_id) },
+        by_client_id.then(|| label.as_str().to_string()),
+        (!change_quantity).then(|| amended.clone()),
+        // A quantity change needs a value that differs from the resting one, or nothing is asked.
+        change_quantity.then(|| "0.0003".to_string()),
         None,
     )?;
     println!("payload: {}", serde_json::to_string(&modify)?);
@@ -156,6 +172,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // execution client reads the same way.
     let outcome = client.send_optional::<Vec<OrderAck>>(signed).await;
     let after = resting_price(&client, &wallet, order_id).await?;
+    if change_quantity {
+        println!("(amending quantity, so the price read back is expected to be unchanged)");
+    }
 
     // Cancelled before the verdict is reported, so a failed amendment does not leave the order
     // resting while the program exits.
