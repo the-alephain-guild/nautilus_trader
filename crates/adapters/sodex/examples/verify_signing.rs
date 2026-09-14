@@ -31,6 +31,7 @@ use nautilus_sodex::{
         credential::{ApiKeyName, ApiPrivateKey},
     },
     http::{Network, SodexHttpClient, requests::ScheduleCancelRequest},
+    signing::ExchangeSigner,
 };
 
 #[tokio::main]
@@ -56,6 +57,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let key = ApiPrivateKey::parse(&key_hex)?;
     let name = ApiKeyName::parse(&key_name)?;
     let client = SodexHttpClient::with_credentials(network, market, name, &key)?;
+
+    // Before signing anything: does this key exist under this name, on this engine? The account's
+    // key list is unsigned, so the question can be answered without spending a signed request - and
+    // the venue's answer to all three ways of getting it wrong is the same misleading sentence.
+    if let Ok(wallet) = env::var("SODEX_WALLET_ADDRESS") {
+        let address = ExchangeSigner::new(&key, market, network.chain_id())?.address();
+        let registered = client.api_keys(&wallet).await?;
+
+        match registered.iter().find(|entry| entry.name == key_name) {
+            Some(entry)
+                if entry
+                    .public_key
+                    .eq_ignore_ascii_case(&format!("{address:#x}")) =>
+            {
+                println!("key {key_name} is registered on {market:?} as {address:?}");
+            }
+            Some(entry) => {
+                println!(
+                    "key {key_name} is registered on {market:?}, but as {}",
+                    entry.public_key
+                );
+                println!("the key held here derives to {address:?} - a different key by that name");
+                return Err("the stored key is not the one registered under this name".into());
+            }
+            None => {
+                println!("no key named {key_name} on {market:?}. Registered there:");
+                for entry in &registered {
+                    println!("  {:<28} {}", entry.name, entry.public_key);
+                }
+                println!("this key derives to {address:?}");
+                return Err("that name is not registered on this engine".into());
+            }
+        }
+        println!();
+    }
 
     let body = ScheduleCancelRequest::clear(account_id);
     let request = client.build_signed(
