@@ -12,6 +12,12 @@
 //! `SODEX_NETWORK` takes `testnet` or `mainnet`, `SODEX_MARKET` takes `perps` or `spot`, and the
 //! account id is the `aid` from `/accounts/{address}/state`.
 //!
+//! `SODEX_KEY_TTL_HOURS` bounds the key in time, and a key meant for an unattended process should
+//! carry one. A permission mask cannot narrow a key at this venue - the signature the venue
+//! verifies does not cover that field - so an expiry and revocation are the only two bounds a key
+//! has, and revocation requires bringing the master key back online. Left unset, the key never
+//! expires.
+//!
 //! ```text
 //!  env SODEX_MASTER_PRIVATE_KEY=<exported from Settings -> Export Email Wallet> \
 //!      SODEX_ACCOUNT_ID=60366 \
@@ -98,9 +104,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // A permission mask cannot narrow a key here - the venue's signature does not cover the
+    // field, and a key registered with TRADE withheld placed an order anyway (measured
+    // 2026-09-14). So an expiry is one of only two bounds a key has, the other being revocation,
+    // and a key that never expires has one. `expiresAt` is Unix milliseconds, read off the
+    // venue's own web-registered key rather than assumed.
+    let expires_at = match env::var("SODEX_KEY_TTL_HOURS") {
+        Ok(hours) => {
+            let hours: u64 = hours.parse()?;
+            let now_ms = u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_millis(),
+            )?;
+            let expires_at = now_ms + hours * 3_600_000;
+            println!("expires:        in {hours}h ({expires_at})");
+            expires_at
+        }
+        Err(_) => {
+            println!("expires:        never - set SODEX_KEY_TTL_HOURS to bound it");
+            NO_EXPIRY
+        }
+    };
+
     let request = client.build_add_api_key(
-        account_id, &name, public_key, NO_EXPIRY,
-        None, // all permissions enabled; pass a DisabledPermissions mask to restrict
+        account_id, &name, public_key, expires_at,
+        // Refused by the builder: see `DisabledPermissions`, whose mask the venue ignores.
+        None,
     )?;
 
     println!("submitting to {} ...", request.url);
