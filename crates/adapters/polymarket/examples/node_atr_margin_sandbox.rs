@@ -30,6 +30,7 @@ mod atr_margin;
 use atr_margin::{AtrMarginBinary, AtrMarginBinaryConfig};
 use log::LevelFilter;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_core::string::secret::SecretString;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::{AccountType, BookType, OmsType},
@@ -88,6 +89,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let trader_id = TraderId::from(TRADER_ID);
     let account_id = AccountId::from(ACCOUNT_ID);
 
+    // Hosts that reach the venue only through a forward proxy must pass it explicitly:
+    // the adapter's transports do not consult the environment themselves, and without it
+    // the failure surfaces as a TLS handshake error rather than as a routing problem.
+    let proxy_url = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok())
+        .filter(|value| value.starts_with("http"))
+        .map(SecretString::from);
+    if proxy_url.is_some() {
+        println!("Routing venue traffic through the proxy named in the environment");
+    }
+
     // The adapter builds the rolling up/down slugs itself, so each new five-minute
     // market is discovered without the strategy enumerating them.
     let event_slug_builder = PolymarketUpDownEventSlugConfig {
@@ -104,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_config = PolymarketDataClientConfig {
         instrument_config: Some(instrument_config),
         update_instruments_interval_mins: Some(1),
+        proxy_url,
         ..Default::default()
     };
 
@@ -159,6 +173,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     let log_config = LoggerConfig {
+        // Raise to Debug to trace how the adapter routes the reference-feed
+        // subscription; at Info those lines are invisible.
         stdout_level: LevelFilter::Info,
         ..Default::default()
     };

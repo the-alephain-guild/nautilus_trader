@@ -105,3 +105,22 @@ rule is *reachable* would pass even if two domains overlapped or left a hole.
 The suite was mutation-checked before being relied on. Swapping the upside and downside ATR,
 weakening the thick-lead comparison from `>=` to `>`, and removing the square-root scaling
 each turn it red; all pass again once reverted.
+
+## Two defects only a live run exposed
+
+Both compiled and passed the unit suite; neither is visible without starting the node.
+
+**The reference subscription never reached the adapter.** A custom `DataType` carries no
+venue, so the engine cannot infer which client should receive it. Subscribing with no
+client id registers a handler on the message bus and stops there — the adapter is never
+told, and the strategy receives nothing while appearing healthy. Passing the client id
+explicitly fixes it. Worth noting that the two log lines that would have shown this are
+at `debug` level, so at `info` the failure is entirely silent.
+
+**Instrument re-publication reset the legs.** The adapter re-publishes definitions
+periodically. The original registration path rebuilt the leg each time, discarding quotes
+already received. Registration is now idempotent per instrument.
+
+A third symptom turned out not to be a defect: a `1013` websocket close on the market
+stream is the venue asking for a retry, and the client reconnects and restores its
+subscriptions on its own.

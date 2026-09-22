@@ -38,7 +38,7 @@ use super::{
         break_even_win_rate, directional_atr, evaluate,
     },
 };
-use nautilus_polymarket::data_types::PolymarketRtdsCryptoTwap;
+use nautilus_polymarket::{common::consts::POLYMARKET_CLIENT_ID, data_types::PolymarketRtdsCryptoTwap};
 use nautilus_trading::{
     nautilus_strategy,
     strategy::{Strategy, StrategyCore},
@@ -448,6 +448,20 @@ impl AtrMarginBinary {
             );
             return;
         }
+        let lower = outcome.to_lowercase();
+        // The adapter re-publishes instrument definitions periodically. Re-registering
+        // would reset the leg and discard quotes already received, so a leg that is
+        // already present is left untouched.
+        if let Some(window) = self.windows.get(&event_id) {
+            let known = match lower.as_str() {
+                "up" | "yes" => window.up.as_ref(),
+                "down" | "no" => window.down.as_ref(),
+                _ => None,
+            };
+            if known.is_some_and(|leg| leg.instrument_id == binary.id) {
+                return;
+            }
+        }
         let leg = Leg {
             instrument_id: binary.id,
             price_precision: binary.price_precision,
@@ -455,7 +469,6 @@ impl AtrMarginBinary {
             bid: None,
             ask: None,
         };
-        let lower = outcome.to_lowercase();
         let window = self.windows.entry(event_id).or_insert_with(|| Window {
             up: None,
             down: None,
@@ -509,7 +522,10 @@ impl DataActor for AtrMarginBinary {
         );
         let data_type = DataType::new("PolymarketRtdsCryptoTwap", Some(metadata), None);
         self.reference_data_type = Some(data_type.clone());
-        self.subscribe_data(data_type, None, None);
+        // A custom DataType carries no venue, so the engine cannot infer which client
+        // should receive the subscription: without an explicit client id it is registered
+        // on the message bus and never reaches the adapter.
+        self.subscribe_data(data_type, Some(*POLYMARKET_CLIENT_ID), None);
         self.subscribe_instruments(Venue::from("POLYMARKET"), None, None);
         log::info!(
             "Started: reference={} window={}s decide at T-{}s (+/-{}s)",
@@ -523,7 +539,7 @@ impl DataActor for AtrMarginBinary {
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         if let Some(data_type) = self.reference_data_type.take() {
-            self.unsubscribe_data(data_type, None, None);
+            self.unsubscribe_data(data_type, Some(*POLYMARKET_CLIENT_ID), None);
         }
         let d = self.declines().clone();
         log::info!(
