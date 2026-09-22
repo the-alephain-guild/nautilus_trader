@@ -205,3 +205,4 @@ atr_margin_decisions.jsonl
 longrun_logs/
 longrun_supervisor.log
 longrun_nohup.log
+longrun_caffeinate.err
