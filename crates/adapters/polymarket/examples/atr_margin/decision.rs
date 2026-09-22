@@ -32,6 +32,17 @@ pub(crate) enum Vote {
     Down,
 }
 
+impl Vote {
+    /// Returns a stable label for logging and journalling.
+    #[must_use]
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+}
+
 /// The rule that produced a vote, or why no vote was produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {

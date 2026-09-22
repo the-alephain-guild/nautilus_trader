@@ -124,4 +124,27 @@ pub(crate) struct AtrMarginBinaryConfig {
 
     /// Order time-in-force expiry in seconds. `None` leaves the order resting.
     pub(crate) order_expire_secs: Option<u64>,
+
+    /// Path of the JSONL journal. `None` disables journalling.
+    ///
+    /// Every evaluation is recorded, not only those that order: the trigger rate and the
+    /// distribution of refusals are part of the result. Settlements are appended as their
+    /// markets expire, which is what the failure-rate statistic is computed from.
+    pub(crate) journal_path: Option<String>,
+
+    /// Market interval in seconds, used to derive the open from the expiration.
+    ///
+    /// The venue's `activation` field carries the instant the *market* was created,
+    /// which for a recurring series precedes the interval it trades by weeks. The
+    /// settlement baseline is the reference level at the interval's open, so the open is
+    /// derived as `expiration - interval` rather than read from that field.
+    #[builder(default = 300)]
+    pub(crate) interval_secs: u64,
+
+    /// Grace period after expiration before settling, in seconds.
+    ///
+    /// The reference observation at expiration may arrive slightly after it, so settling
+    /// the instant the clock passes expiration would read a level from before the close.
+    #[builder(default = 10)]
+    pub(crate) settle_grace_secs: u64,
 }

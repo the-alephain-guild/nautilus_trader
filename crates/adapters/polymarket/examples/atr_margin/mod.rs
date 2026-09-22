@@ -22,6 +22,7 @@
 
 pub(crate) mod config;
 pub(crate) mod decision;
+pub(crate) mod journal;
 pub(crate) mod strategy;
 
 pub(crate) use config::AtrMarginBinaryConfig;

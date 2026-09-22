@@ -82,6 +82,9 @@ const DECIDE_BEFORE_EXPIRY_SECS: u64 = 75;
 /// 95% of the time merely to break even. Anything above this bound is refused.
 const MAX_ENTRY_PRICE: f64 = 0.95;
 
+/// Journal path. Every evaluation and every settlement is appended here.
+const JOURNAL_PATH: &str = "atr_margin_decisions.jsonl";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
@@ -153,6 +156,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         price_protection_points: 0,
     };
 
+    // Verification mode shortens the ATR bar so the indicator is ready within a minute,
+    // which is what makes the decision path reachable in a short run. It changes what the
+    // ratio means — the thresholds were calibrated against one-minute excursions — so it
+    // is for exercising the code path, never for judging the strategy.
+    let verify = std::env::var("ATR_VERIFY").is_ok();
+    let (atr_bar_secs, atr_min_bars, decide_tolerance_secs) =
+        if verify { (10, 3, 60) } else { (60, 5, 20) };
+    if verify {
+        println!(
+            "VERIFICATION MODE: atr_bar_secs={atr_bar_secs} atr_min_bars={atr_min_bars} \
+             decide_tolerance_secs={decide_tolerance_secs} - results are not comparable \
+             to a production run"
+        );
+    }
+
     let strategy_config = AtrMarginBinaryConfig::builder()
         .base(StrategyConfig {
             strategy_id: Some(StrategyId::from(STRATEGY_ID)),
@@ -164,7 +182,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .reference_window_seconds(REFERENCE_WINDOW_SECONDS)
         .trade_size(Quantity::from(ORDER_QTY))
         .decide_before_expiry_secs(DECIDE_BEFORE_EXPIRY_SECS)
+        .decide_tolerance_secs(decide_tolerance_secs)
+        .atr_bar_secs(atr_bar_secs)
+        .atr_min_bars(atr_min_bars)
         .max_entry_price(MAX_ENTRY_PRICE)
+        .journal_path(JOURNAL_PATH.to_string())
         // Of the four rules only the thick-lead one had a positive point estimate; the
         // others were negative or indistinguishable, so they stay off by default.
         .thick_lead_only(true)

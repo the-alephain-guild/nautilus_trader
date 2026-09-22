@@ -124,3 +124,40 @@ already received. Registration is now idempotent per instrument.
 A third symptom turned out not to be a defect: a `1013` websocket close on the market
 stream is the venue asking for a retry, and the client reconnects and restores its
 subscriptions on its own.
+
+## What the short verification runs changed
+
+Four defects and one trade-off, none of which the unit suite could reach.
+
+**The venue's activation field is not the interval's open.** It carries the instant the
+*market* was created, which for a recurring series precedes the interval it trades by
+weeks. Every baseline lookup therefore landed outside any observation and every market was
+refused. The open is now derived as `expiration - interval_secs`. Before the fix all four
+tracked markets reported an unavailable baseline; after it, only the one already open when
+the strategy started — which is correct, since its open cannot be observed.
+
+**A market refused for want of a baseline left no record at all.** Both the decision path
+and the settlement path returned early before journalling, so a run that refused
+everything produced an empty file, indistinguishable from a run whose feed never started.
+Settlements are now written whether or not a baseline existed, carrying a `skip_reason`.
+
+**Counters lived only in memory.** A run ended by a signal never reaches its stop handler,
+so the counters vanished exactly when the run needed explaining. A `heartbeat` record now
+snapshots them into the journal every minute; it doubles as proof the journal is live.
+
+**Decisions fired at the early edge of the window rather than at the target.** The
+eligibility test admitted `target ± tolerance`, so the first observation to enter the band
+triggered it: with a 75-second target the first evaluations landed at 128 seconds. The
+upper bound is now the target itself and the tolerance only extends backwards, which puts
+the first evaluation at 74.9 seconds.
+
+**The trade-off:** in one verification window the thick-lead rule fired 32 times while the
+market sat at 0.98, and every one was refused by the 0.95 entry bound. That is the bound
+working as intended — a 0.98 entry needs a 98% win rate to break even — but it means a
+meaningful share of signals will not convert, and the order rate will run below the
+trigger rate.
+
+Note that one market can produce many decision records: a refusal leaves it open to
+re-evaluation, and one verification window was evaluated 58 times across its decision
+window. Records carry `evaluation_index` so a consumer can collapse them; the settlement
+records, one per market, are what statistics should be computed from.
