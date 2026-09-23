@@ -34,7 +34,10 @@ use ustr::Ustr;
 
 use super::{
     config::AtrMarginBinaryConfig,
-    journal::{DecisionJournal, DecisionRecord, FillRecord, HeartbeatRecord, SettlementRecord},
+    journal::{
+        DecisionJournal, DecisionRecord, FillRecord, HeartbeatRecord, LegRecord, QuoteRecord,
+        ReferenceRecord, SettlementRecord,
+    },
     decision::{
         BarAccumulator, DirectionalBar, Thresholds, Verdict, Vote, atr_scale,
         break_even_win_rate, directional_atr, evaluate,
@@ -153,6 +156,9 @@ pub(crate) struct AtrMarginBinary {
     leg_index: HashMap<InstrumentId, Ustr>,
     /// Fill events received, for the heartbeat.
     fills: u64,
+    /// Raw records written, for the heartbeat.
+    references_written: u64,
+    quotes_written: u64,
     /// Reference observations accepted, for the heartbeat.
     observations: u64,
     /// Engine clock at the last heartbeat.
@@ -186,6 +192,8 @@ impl AtrMarginBinary {
             windows: HashMap::new(),
             leg_index: HashMap::new(),
             fills: 0,
+            references_written: 0,
+            quotes_written: 0,
             observations: 0,
             last_heartbeat_ns: 0,
             submitted: 0,
@@ -227,6 +235,14 @@ impl AtrMarginBinary {
         }
         self.observations += 1;
         self.reference_history.push_back((ts_event_ns, value));
+        if let Some(journal) = self.journal.as_mut() {
+            journal.write(&ReferenceRecord {
+                kind: "reference",
+                ts_ns: ts_event_ns,
+                value,
+            });
+            self.references_written += 1;
+        }
         while self.reference_history.len() > REFERENCE_HISTORY_CAP {
             self.reference_history.pop_front();
         }
@@ -374,6 +390,13 @@ impl AtrMarginBinary {
         };
         let expiration_ns = window.expiration_ns;
         let evaluation_index = window.evaluations + 1;
+        let q = |leg: &Option<Leg>| {
+            leg.as_ref().map_or((None, None), |l| {
+                (l.bid.map(|p| p.as_f64()), l.ask.map(|p| p.as_f64()))
+            })
+        };
+        let (up_bid, up_ask) = q(&window.up);
+        let (down_bid, down_ask) = q(&window.down);
         let remaining_secs = (expiration_ns.saturating_sub(now_ns)) as f64 / 1e9;
         let scale = atr_scale(
             remaining_secs,
@@ -542,6 +565,10 @@ impl AtrMarginBinary {
                 break_even_win_rate: entry_price.map(break_even_win_rate),
                 trade_size: Some(self.config.trade_size.as_f64()),
                 post_only: self.config.post_only,
+                up_bid,
+                up_ask,
+                down_bid,
+                down_ask,
             });
         }
 
@@ -684,6 +711,8 @@ impl AtrMarginBinary {
         let out_of_order = self.bars.out_of_order();
         let submitted = self.submitted;
         let fills = self.fills;
+        let references_written = self.references_written;
+        let quotes_written = self.quotes_written;
         let arm = self.config.arm_label.clone();
         let d = self.declines.clone();
         if let Some(journal) = self.journal.as_mut() {
@@ -692,6 +721,8 @@ impl AtrMarginBinary {
                 ts_ns: now_ns,
                 arm,
                 fills,
+                references_written,
+                quotes_written,
                 reference_observations: observations,
                 out_of_order,
                 atr_bars,
@@ -804,6 +835,18 @@ impl AtrMarginBinary {
             }
         }
         self.leg_index.insert(binary.id, event_id);
+        let leg_label: &'static str = if matches!(lower.as_str(), "up" | "yes") { "up" } else { "down" };
+        if let Some(journal) = self.journal.as_mut() {
+            journal.write(&LegRecord {
+                kind: "leg",
+                ts_ns: now_ns,
+                event_id: event_id.as_str(),
+                leg: leg_label,
+                instrument_id: binary.id.to_string(),
+                activation_ns,
+                expiration_ns,
+            });
+        }
         self.subscribe_quotes(binary.id, None, None);
         // Trades feed the simulated exchange's matching engine: a resting bid is only
         // filled when a sell-side trade prints at or through it, and without trade data the
@@ -957,14 +1000,39 @@ impl DataActor for AtrMarginBinary {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        for window in self.windows.values_mut() {
-            for leg in [window.up.as_mut(), window.down.as_mut()].into_iter().flatten() {
+        // Update the leg, and note whether the top of book actually moved: quotes repeat
+        // when only depth changes, and journalling every repeat would multiply the file
+        // for no replay value.
+        let mut changed: Option<(Ustr, &'static str)> = None;
+        'outer: for (event_id, window) in &mut self.windows {
+            for (leg, label) in [(window.up.as_mut(), "up"), (window.down.as_mut(), "down")] {
+                let Some(leg) = leg else { continue };
                 if leg.instrument_id == quote.instrument_id {
+                    let moved = leg.bid != Some(quote.bid_price) || leg.ask != Some(quote.ask_price);
                     leg.bid = Some(quote.bid_price);
                     leg.ask = Some(quote.ask_price);
-                    return Ok(());
+                    if moved {
+                        changed = Some((*event_id, label));
+                    }
+                    break 'outer;
                 }
             }
+        }
+        if let Some((event_id, leg)) = changed
+            && let Some(journal) = self.journal.as_mut()
+        {
+            journal.write(&QuoteRecord {
+                kind: "quote",
+                ts_ns: quote.ts_event.as_u64(),
+                event_id: event_id.as_str(),
+                leg,
+                instrument_id: quote.instrument_id.to_string(),
+                bid: quote.bid_price.as_f64(),
+                ask: quote.ask_price.as_f64(),
+                bid_size: quote.bid_size.as_f64(),
+                ask_size: quote.ask_size.as_f64(),
+            });
+            self.quotes_written += 1;
         }
         Ok(())
     }
@@ -997,6 +1065,8 @@ impl DataActor for AtrMarginBinary {
         self.windows.clear();
         self.submitted = 0;
         self.fills = 0;
+        self.references_written = 0;
+        self.quotes_written = 0;
         self.leg_index.clear();
         self.observations = 0;
         self.last_heartbeat_ns = 0;

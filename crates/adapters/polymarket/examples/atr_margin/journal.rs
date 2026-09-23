@@ -79,6 +79,64 @@ pub(crate) struct DecisionRecord<'a> {
     pub trade_size: Option<f64>,
     /// Whether the order rested as post-only rather than crossing.
     pub post_only: bool,
+    /// Both legs' top of book at evaluation, whatever the verdict.
+    ///
+    /// Recorded for every evaluation so a rule that did not trade — filtered, or on the
+    /// other side — can still be priced when its threshold is replayed offline. The first
+    /// paper run recorded quotes only for the leg it voted on, which made three of the
+    /// four rules unreplayable.
+    pub up_bid: Option<f64>,
+    pub up_ask: Option<f64>,
+    pub down_bid: Option<f64>,
+    pub down_ask: Option<f64>,
+}
+
+/// One observation of the reference feed, journalled as it arrives.
+///
+/// The raw stream is what makes offline replay possible at all: the ATR can be recomputed
+/// at any bar length and the rules re-evaluated at any point before expiry, neither of
+/// which a record taken only at the decision actually used can support.
+#[derive(Debug, Serialize)]
+pub(crate) struct ReferenceRecord {
+    /// Always `"reference"`.
+    pub kind: &'static str,
+    pub ts_ns: u64,
+    pub value: Decimal,
+}
+
+/// A change to one leg's top of book, journalled on change only.
+///
+/// Needed to price a hypothetical entry at a time other than the one the strategy used,
+/// and to model fills against displayed size.
+#[derive(Debug, Serialize)]
+pub(crate) struct QuoteRecord<'a> {
+    /// Always `"quote"`.
+    pub kind: &'static str,
+    pub ts_ns: u64,
+    pub event_id: &'a str,
+    /// `"up"` or `"down"`.
+    pub leg: &'static str,
+    pub instrument_id: String,
+    pub bid: f64,
+    pub ask: f64,
+    pub bid_size: f64,
+    pub ask_size: f64,
+}
+
+/// Registration of one leg of a market, so replay can join events, legs and times
+/// without parsing the run log.
+#[derive(Debug, Serialize)]
+pub(crate) struct LegRecord<'a> {
+    /// Always `"leg"`.
+    pub kind: &'static str,
+    pub ts_ns: u64,
+    pub event_id: &'a str,
+    /// `"up"` or `"down"`.
+    pub leg: &'static str,
+    pub instrument_id: String,
+    /// Derived open of the interval (expiration less one interval).
+    pub activation_ns: u64,
+    pub expiration_ns: u64,
 }
 
 /// One fill reported by the execution venue (here, the simulated exchange).
@@ -170,6 +228,10 @@ pub(crate) struct HeartbeatRecord {
     pub arm: String,
     /// Fill events received so far.
     pub fills: u64,
+    /// Reference observations written to the journal.
+    pub references_written: u64,
+    /// Quote changes written to the journal.
+    pub quotes_written: u64,
     /// Reference observations accepted so far.
     pub reference_observations: u64,
     /// Observations rejected for arriving out of order.
@@ -307,6 +369,10 @@ mod tests {
             break_even_win_rate: Some(0.93),
             trade_size: Some(5.0),
             post_only: true,
+            up_bid: Some(0.93),
+            up_ask: Some(0.94),
+            down_bid: Some(0.06),
+            down_ask: Some(0.07),
         }
     }
 
