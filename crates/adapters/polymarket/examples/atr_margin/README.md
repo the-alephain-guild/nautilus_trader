@@ -84,6 +84,17 @@ Live market data drives a simulated matching engine: no orders reach the venue a
 are at risk. `queue_position` and `liquidity_consumption` are enabled so a resting order's
 fill stays contingent on the flow ahead of it — the assumption a replay cannot check.
 
+Two environment switches select the configuration:
+
+| Variable | Values | Effect |
+|---|---|---|
+| `ATR_ARM` | `maker` (default) / `taker` | rest post-only at the bid, or cross to the ask |
+| `ATR_RULES` | `thick` (default) / `all` | thick-lead rule only, or all four rules |
+
+Each combination gets its own node, trader, strategy and account ids and its own journal
+(`atr_margin_v2_{arm}_{rules}.jsonl`), so runs with different settings never interleave and
+can be run side by side. `ATR_JOURNAL` overrides the journal path.
+
 The default configuration restricts trading to the thick-lead rule. In the exploratory
 study that preceded this implementation it was the only rule with a positive point
 estimate; the other three were negative or statistically indistinguishable from zero.
