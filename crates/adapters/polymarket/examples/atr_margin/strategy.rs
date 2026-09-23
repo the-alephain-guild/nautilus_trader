@@ -23,7 +23,8 @@ use std::{
 use nautilus_common::actor::DataActor;
 use nautilus_model::{
     data::{CustomData, DataType, QuoteTick},
-    enums::{OrderSide, TimeInForce},
+    enums::{LiquiditySide, OrderSide, TimeInForce},
+    events::{OrderFilled, PositionClosed, PositionOpened},
     identifiers::{InstrumentId, Venue},
     instruments::InstrumentAny,
     types::{Price, Quantity},
@@ -33,7 +34,7 @@ use ustr::Ustr;
 
 use super::{
     config::AtrMarginBinaryConfig,
-    journal::{DecisionJournal, DecisionRecord, HeartbeatRecord, SettlementRecord},
+    journal::{DecisionJournal, DecisionRecord, FillRecord, HeartbeatRecord, SettlementRecord},
     decision::{
         BarAccumulator, DirectionalBar, Thresholds, Verdict, Vote, atr_scale,
         break_even_win_rate, directional_atr, evaluate,
@@ -94,6 +95,8 @@ struct Window {
     entry_price: Option<f64>,
     /// Guards against journalling the same market's settlement twice.
     settled: bool,
+    /// Fills the venue reported on this market's legs, as `(px, qty, commission)`.
+    fills: Vec<(f64, f64, f64)>,
 }
 
 impl Window {
@@ -146,6 +149,10 @@ pub(crate) struct AtrMarginBinary {
     /// Bars of the reference feed, bucketed on absolute time.
     bars: BarAccumulator,
     windows: HashMap<Ustr, Window>,
+    /// Maps each subscribed leg back to its market, so a fill can be attributed.
+    leg_index: HashMap<InstrumentId, Ustr>,
+    /// Fill events received, for the heartbeat.
+    fills: u64,
     /// Reference observations accepted, for the heartbeat.
     observations: u64,
     /// Engine clock at the last heartbeat.
@@ -177,6 +184,8 @@ impl AtrMarginBinary {
             reference_history: VecDeque::new(),
             bars: BarAccumulator::new(config_bar_secs, config_atr_bars),
             windows: HashMap::new(),
+            leg_index: HashMap::new(),
+            fills: 0,
             observations: 0,
             last_heartbeat_ns: 0,
             submitted: 0,
@@ -574,6 +583,7 @@ impl AtrMarginBinary {
         let evaluations = window.evaluations;
         let ordered_vote = window.ordered_vote;
         let entry_price = window.entry_price;
+        let fills = window.fills.clone();
 
         let nearest = self.nearest_reference(expiration_ns);
         let settled_reference = nearest.map(|(_, value)| value);
@@ -594,6 +604,23 @@ impl AtrMarginBinary {
             (Some(won), Some(price)) => Some(if won { 1.0 - price } else { -price }),
             _ => None,
         };
+        // Account profit from what actually filled. The venue cannot settle a binary
+        // outcome at expiry itself, so it is derived here from the fills and the reference
+        // outcome — the same outcome the per-share figure uses, applied to real quantity.
+        let filled_qty: f64 = fills.iter().map(|f| f.1).sum();
+        let commission_total: f64 = fills.iter().map(|f| f.2).sum();
+        let avg_fill_px = if filled_qty > 0.0 {
+            Some(fills.iter().map(|f| f.0 * f.1).sum::<f64>() / filled_qty)
+        } else {
+            None
+        };
+        let realized_pnl = match (won, avg_fill_px) {
+            (Some(won), Some(px)) if filled_qty > 0.0 => {
+                let payoff = if won { 1.0 } else { 0.0 };
+                Some(filled_qty * (payoff - px) - commission_total)
+            }
+            _ => None,
+        };
 
         if let Some(journal) = self.journal.as_mut() {
             journal.write(&SettlementRecord {
@@ -612,15 +639,21 @@ impl AtrMarginBinary {
                 entry_price,
                 won,
                 pnl_per_share,
+                filled_qty,
+                avg_fill_px,
+                commission_total,
+                realized_pnl,
             });
         }
         if let Some(window) = self.windows.get_mut(&event_id) {
             window.settled = true;
         }
+        // Legs of a settled market will not fill again.
+        self.leg_index.retain(|_, ev| *ev != event_id);
         if ordered {
             log::info!(
                 "Settled event {event_id}: up_won={:?} ordered={:?} entry={:?} won={:?} \
-                 pnl_per_share={:?}",
+                 pnl_per_share={:?} filled_qty={filled_qty} realized_pnl={realized_pnl:?}",
                 up_won,
                 ordered_vote.map(Vote::label),
                 entry_price,
@@ -650,11 +683,15 @@ impl AtrMarginBinary {
         let observations = self.observations;
         let out_of_order = self.bars.out_of_order();
         let submitted = self.submitted;
+        let fills = self.fills;
+        let arm = self.config.arm_label.clone();
         let d = self.declines.clone();
         if let Some(journal) = self.journal.as_mut() {
             journal.write(&HeartbeatRecord {
                 kind: "heartbeat",
                 ts_ns: now_ns,
+                arm,
+                fills,
                 reference_observations: observations,
                 out_of_order,
                 atr_bars,
@@ -693,6 +730,13 @@ impl AtrMarginBinary {
             return;
         };
         let expiration_ns = binary.expiration_ns.as_u64();
+        // The adapter re-publishes definitions of markets that have already expired. Left
+        // unchecked, an expired market re-enters as a fresh window with no baseline, is
+        // settled again as soon as it is seen, and leaves a duplicate record each time.
+        let now_ns = self.clock().timestamp_ns().as_u64();
+        if expiration_ns <= now_ns {
+            return;
+        }
         let interval_ns = self.config.interval_secs.max(1) * 1_000_000_000;
         if expiration_ns <= interval_ns {
             log::warn!(
@@ -749,6 +793,7 @@ impl AtrMarginBinary {
             ordered_vote: None,
             entry_price: None,
             settled: false,
+            fills: Vec::new(),
         });
         match lower.as_str() {
             "up" | "yes" => window.up = Some(leg),
@@ -758,7 +803,12 @@ impl AtrMarginBinary {
                 return;
             }
         }
+        self.leg_index.insert(binary.id, event_id);
         self.subscribe_quotes(binary.id, None, None);
+        // Trades feed the simulated exchange's matching engine: a resting bid is only
+        // filled when a sell-side trade prints at or through it, and without trade data the
+        // engine can only fill on a quote crossing, which a resting order almost never sees.
+        self.subscribe_trades(binary.id, None, None);
         log::info!(
             "Registered {instrument_id} as '{lower}' leg of event {event_id}, \
              expires at {expiration_ns}",
@@ -767,7 +817,68 @@ impl AtrMarginBinary {
     }
 }
 
-nautilus_strategy!(AtrMarginBinary);
+nautilus_strategy!(AtrMarginBinary, {
+    fn on_order_filled(&mut self, event: &OrderFilled) {
+        self.fills += 1;
+        let Some(event_id) = self.leg_index.get(&event.instrument_id).copied() else {
+            log::warn!(
+                "Fill on {} could not be attributed to a tracked market",
+                event.instrument_id
+            );
+            return;
+        };
+        let px = event.last_px.as_f64();
+        let qty = event.last_qty.as_f64();
+        let commission = event.commission.map_or(0.0, |m| m.as_f64());
+        let side = match event.order_side {
+            OrderSide::Buy => "buy",
+            OrderSide::Sell => "sell",
+        };
+        let liquidity = match event.liquidity_side {
+            LiquiditySide::Maker => "maker",
+            LiquiditySide::Taker => "taker",
+            LiquiditySide::NoLiquiditySide => "none",
+        };
+        if let Some(window) = self.windows.get_mut(&event_id) {
+            window.fills.push((px, qty, commission));
+        }
+        let ts_ns = event.ts_event.as_u64();
+        if let Some(journal) = self.journal.as_mut() {
+            journal.write(&FillRecord {
+                kind: "fill",
+                ts_ns,
+                event_id: event_id.as_str(),
+                instrument_id: event.instrument_id.to_string(),
+                side,
+                px,
+                qty,
+                liquidity_side: liquidity,
+                commission,
+            });
+        }
+        log::info!(
+            "Filled {} {qty} @ {px} ({liquidity}) on event {event_id}, commission={commission}",
+            event.instrument_id
+        );
+    }
+
+    fn on_position_opened(&mut self, event: PositionOpened) {
+        log::info!(
+            "Position opened {} qty={} avg_px={}",
+            event.instrument_id,
+            event.quantity,
+            event.avg_px_open
+        );
+    }
+
+    fn on_position_closed(&mut self, event: PositionClosed) {
+        log::info!(
+            "Position closed {} realized={:?}",
+            event.instrument_id,
+            event.realized_pnl
+        );
+    }
+});
 
 impl Debug for AtrMarginBinary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -823,9 +934,10 @@ impl DataActor for AtrMarginBinary {
         }
         let d = self.declines().clone();
         log::info!(
-            "Stopped: submitted={} bars={} declines[no_atr={} no_baseline={} no_leg={} \
-             no_quote={} price_bounds={} undecided={} rule_filtered={} unpaired={}]",
+            "Stopped: submitted={} fills={} bars={} declines[no_atr={} no_baseline={} \
+             no_leg={} no_quote={} price_bounds={} undecided={} rule_filtered={} unpaired={}]",
             self.submitted(),
+            self.fills,
             self.bars().len(),
             d.no_atr,
             d.no_baseline,
@@ -884,6 +996,8 @@ impl DataActor for AtrMarginBinary {
         self.bars.clear();
         self.windows.clear();
         self.submitted = 0;
+        self.fills = 0;
+        self.leg_index.clear();
         self.observations = 0;
         self.last_heartbeat_ns = 0;
         self.declines = DeclineCounts::default();

@@ -141,6 +141,10 @@ pub(crate) struct AtrMarginBinaryConfig {
     #[builder(default = 300)]
     pub(crate) interval_secs: u64,
 
+    /// Label of the execution arm, recorded in heartbeats so a journal is self-describing.
+    #[builder(default = "maker".to_string())]
+    pub(crate) arm_label: String,
+
     /// Grace period after expiration before settling, in seconds.
     ///
     /// The reference observation at expiration may arrive slightly after it, so settling

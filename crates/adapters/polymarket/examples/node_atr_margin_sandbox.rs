@@ -49,10 +49,15 @@ use nautilus_sandbox::{SandboxExecutionClientConfig, SandboxExecutionClientFacto
 use nautilus_trading::strategy::StrategyConfig;
 use rust_decimal::Decimal;
 
-const TRADER_ID: &str = "ATR-MARGIN-PAPER-001";
-const ACCOUNT_ID: &str = "POLYMARKET-PAPER-001";
-const NODE_NAME: &str = "ATR-MARGIN-SANDBOX";
-const STRATEGY_ID: &str = "ATR-MARGIN-BINARY-001";
+/// Execution arm, selected by `ATR_ARM`: `maker` rests post-only at the near touch,
+/// `taker` crosses the spread. Each arm runs as its own process with its own account
+/// and journal so the two can be compared without sharing a simulated book.
+fn arm() -> &'static str {
+    match std::env::var("ATR_ARM").as_deref() {
+        Ok("taker") => "taker",
+        _ => "maker",
+    }
+}
 
 /// Settlement feed symbol. Must match the feed the markets resolve against.
 const REFERENCE_SYMBOL: &str = "btc/usd";
@@ -82,15 +87,24 @@ const DECIDE_BEFORE_EXPIRY_SECS: u64 = 75;
 /// 95% of the time merely to break even. Anything above this bound is refused.
 const MAX_ENTRY_PRICE: f64 = 0.95;
 
-/// Journal path. Every evaluation and every settlement is appended here.
-const JOURNAL_PATH: &str = "atr_margin_decisions.jsonl";
+/// Journal path, distinct per arm and distinct from the first paper run's file so the
+/// two never interleave. Overridable with `ATR_JOURNAL`.
+fn journal_path(arm: &str) -> String {
+    std::env::var("ATR_JOURNAL").unwrap_or_else(|_| format!("atr_margin_v2_{arm}.jsonl"))
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
-    let trader_id = TraderId::from(TRADER_ID);
-    let account_id = AccountId::from(ACCOUNT_ID);
+    let arm = arm();
+    let arm_upper = arm.to_uppercase();
+    let trader_id = TraderId::from(format!("ATR-MARGIN-V2-{arm_upper}-001").as_str());
+    let account_id = AccountId::from(format!("POLYMARKET-V2-{arm_upper}-001").as_str());
+    let node_name = format!("ATR-MARGIN-V2-{arm_upper}");
+    let strategy_id = format!("ATR-MARGIN-V2-{arm_upper}-001");
+    let journal = journal_path(arm);
+    println!("ARM={arm}  journal={journal}");
 
     // Hosts that reach the venue only through a forward proxy must pass it explicitly:
     // the adapter's transports do not consult the environment themselves, and without it
@@ -173,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let strategy_config = AtrMarginBinaryConfig::builder()
         .base(StrategyConfig {
-            strategy_id: Some(StrategyId::from(STRATEGY_ID)),
+            strategy_id: Some(StrategyId::from(strategy_id.as_str())),
             order_id_tag: Some("001".to_string()),
             use_uuid_client_order_ids: true,
             ..Default::default()
@@ -186,11 +200,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .atr_bar_secs(atr_bar_secs)
         .atr_min_bars(atr_min_bars)
         .max_entry_price(MAX_ENTRY_PRICE)
-        .journal_path(JOURNAL_PATH.to_string())
+        .journal_path(journal)
+        .arm_label(arm.to_string())
         // Of the four rules only the thick-lead one had a positive point estimate; the
         // others were negative or indistinguishable, so they stay off by default.
         .thick_lead_only(true)
-        .post_only(true)
+        // The maker arm rests at the bid and pays no spread but may never fill; the taker
+        // arm crosses to the ask, fills at once and pays the spread. Both are journalled.
+        .post_only(arm == "maker")
         .scale_atr_by_remaining(true)
         .build();
 
@@ -202,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut node = LiveNode::builder(trader_id, Environment::Sandbox)?
-        .with_name(NODE_NAME.to_string())
+        .with_name(node_name)
         .with_logging(log_config)
         .with_load_state(false)
         .with_save_state(false)

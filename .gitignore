@@ -206,3 +206,6 @@ longrun_logs/
 longrun_supervisor.log
 longrun_nohup.log
 longrun_caffeinate.err
+target-v2/
+v2_logs/
+atr_margin_v2_*.jsonl

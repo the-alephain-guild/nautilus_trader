@@ -81,6 +81,29 @@ pub(crate) struct DecisionRecord<'a> {
     pub post_only: bool,
 }
 
+/// One fill reported by the execution venue (here, the simulated exchange).
+///
+/// Journalled separately from decisions because a decision is a submission, and a
+/// submission is not a fill: the gap between the two is exactly what a paper run has to
+/// measure. Every field is copied from the venue event rather than from the strategy's
+/// own intent, so the record reflects what happened, not what was asked for.
+#[derive(Debug, Serialize)]
+pub(crate) struct FillRecord<'a> {
+    /// Always `"fill"`.
+    pub kind: &'static str,
+    pub ts_ns: u64,
+    pub event_id: &'a str,
+    pub instrument_id: String,
+    /// `"buy"` or `"sell"`.
+    pub side: &'static str,
+    pub px: f64,
+    pub qty: f64,
+    /// `"maker"`, `"taker"` or `"none"` as classified by the venue.
+    pub liquidity_side: &'static str,
+    /// Commission charged on this fill, in account currency; `0.0` when none was reported.
+    pub commission: f64,
+}
+
 /// The outcome of a market this strategy evaluated.
 ///
 /// `settled_reference` is the reference feed's own value at expiration. For a sixty-second
@@ -114,8 +137,22 @@ pub(crate) struct SettlementRecord<'a> {
     pub entry_price: Option<f64>,
     /// Whether the ordered side won. `None` when nothing was ordered.
     pub won: Option<bool>,
-    /// Realized profit per share: `(won ? 1 : 0) - entry_price`.
+    /// Profit per share **assuming the submission filled**: `(won ? 1 : 0) - entry_price`.
+    ///
+    /// Retained as the signal-direction statistic. It is not account profit.
     pub pnl_per_share: Option<f64>,
+    /// Quantity actually filled on this market, from venue fill events.
+    pub filled_qty: f64,
+    /// Volume-weighted average fill price, when anything filled.
+    pub avg_fill_px: Option<f64>,
+    /// Total commission charged across the market's fills.
+    pub commission_total: f64,
+    /// Realized profit from **actual fills** at expiry:
+    /// `filled_qty * ((won ? 1 : 0) - avg_fill_px) - commission_total`.
+    ///
+    /// The venue cannot settle a binary outcome at expiry itself, so this is computed here
+    /// from the fills and the reference outcome. `None` when nothing filled.
+    pub realized_pnl: Option<f64>,
 }
 
 /// Periodic snapshot of the run's counters.
@@ -129,6 +166,10 @@ pub(crate) struct HeartbeatRecord {
     /// Always `"heartbeat"`.
     pub kind: &'static str,
     pub ts_ns: u64,
+    /// Which execution arm this process runs: `"maker"` rests at the bid, `"taker"` crosses.
+    pub arm: String,
+    /// Fill events received so far.
+    pub fills: u64,
     /// Reference observations accepted so far.
     pub reference_observations: u64,
     /// Observations rejected for arriving out of order.
@@ -344,6 +385,10 @@ mod tests {
             entry_price: Some(0.93),
             won: Some(true),
             pnl_per_share: Some(0.07),
+            filled_qty: 5.0,
+            avg_fill_px: Some(0.93),
+            commission_total: 0.0,
+            realized_pnl: Some(0.35),
         };
         let parsed: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&record).expect("serialize"))
@@ -353,5 +398,28 @@ mod tests {
         assert_eq!(parsed["won"], true);
         // 1 - 0.93; the journal is what the failure-rate statistic is computed from.
         assert!((parsed["pnl_per_share"].as_f64().expect("pnl") - 0.07).abs() < 1e-9);
+        // 5 * (1 - 0.93) - 0: account profit is a different number from the per-share one.
+        assert!((parsed["realized_pnl"].as_f64().expect("realized") - 0.35).abs() < 1e-9);
+    }
+
+    #[rstest]
+    fn fill_record_serializes_venue_fields() {
+        let record = FillRecord {
+            kind: "fill",
+            ts_ns: 1,
+            event_id: "e1",
+            instrument_id: "tok.POLYMARKET".to_string(),
+            side: "buy",
+            px: 0.93,
+            qty: 5.0,
+            liquidity_side: "maker",
+            commission: 0.0,
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&record).expect("serialize"))
+                .expect("valid json");
+        assert_eq!(parsed["kind"], "fill");
+        assert_eq!(parsed["liquidity_side"], "maker");
+        assert!((parsed["qty"].as_f64().expect("qty") - 5.0).abs() < 1e-9);
     }
 }
