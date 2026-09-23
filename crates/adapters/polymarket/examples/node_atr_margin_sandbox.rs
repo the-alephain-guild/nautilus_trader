@@ -87,10 +87,20 @@ const DECIDE_BEFORE_EXPIRY_SECS: u64 = 75;
 /// 95% of the time merely to break even. Anything above this bound is refused.
 const MAX_ENTRY_PRICE: f64 = 0.95;
 
-/// Journal path, distinct per arm and distinct from the first paper run's file so the
-/// two never interleave. Overridable with `ATR_JOURNAL`.
-fn journal_path(arm: &str) -> String {
-    std::env::var("ATR_JOURNAL").unwrap_or_else(|_| format!("atr_margin_v2_{arm}.jsonl"))
+/// Rule set, selected by `ATR_RULES`: `thick` (default) trades the thick-lead rule only,
+/// the one rule with a positive point estimate in the exploratory study; `all` enables
+/// the other three as well, which had negative or indistinguishable estimates there.
+fn rules() -> &'static str {
+    match std::env::var("ATR_RULES").as_deref() {
+        Ok("all") => "all",
+        _ => "thick",
+    }
+}
+
+/// Journal path, distinct per arm and rule set, and distinct from the first paper run's
+/// file so runs never interleave. Overridable with `ATR_JOURNAL`.
+fn journal_path(arm: &str, rules: &str) -> String {
+    std::env::var("ATR_JOURNAL").unwrap_or_else(|_| format!("atr_margin_v2_{arm}_{rules}.jsonl"))
 }
 
 #[tokio::main]
@@ -98,13 +108,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
     let arm = arm();
-    let arm_upper = arm.to_uppercase();
-    let trader_id = TraderId::from(format!("ATR-MARGIN-V2-{arm_upper}-001").as_str());
-    let account_id = AccountId::from(format!("POLYMARKET-V2-{arm_upper}-001").as_str());
-    let node_name = format!("ATR-MARGIN-V2-{arm_upper}");
-    let strategy_id = format!("ATR-MARGIN-V2-{arm_upper}-001");
-    let journal = journal_path(arm);
-    println!("ARM={arm}  journal={journal}");
+    let rules = rules();
+    let tag = format!("{}-{}", arm.to_uppercase(), rules.to_uppercase());
+    let trader_id = TraderId::from(format!("ATR-MARGIN-V2-{tag}-001").as_str());
+    let account_id = AccountId::from(format!("POLYMARKET-V2-{tag}-001").as_str());
+    let node_name = format!("ATR-MARGIN-V2-{tag}");
+    let strategy_id = format!("ATR-MARGIN-V2-{tag}-001");
+    let journal = journal_path(arm, rules);
+    println!("ARM={arm}  RULES={rules}  journal={journal}");
 
     // Hosts that reach the venue only through a forward proxy must pass it explicitly:
     // the adapter's transports do not consult the environment themselves, and without it
@@ -201,10 +212,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .atr_min_bars(atr_min_bars)
         .max_entry_price(MAX_ENTRY_PRICE)
         .journal_path(journal)
-        .arm_label(arm.to_string())
+        .arm_label(format!("{arm}/{rules}"))
         // Of the four rules only the thick-lead one had a positive point estimate; the
         // others were negative or indistinguishable, so they stay off by default.
-        .thick_lead_only(true)
+        .thick_lead_only(rules == "thick")
         // The maker arm rests at the bid and pays no spread but may never fill; the taker
         // arm crosses to the ask, fills at once and pays the spread. Both are journalled.
         .post_only(arm == "maker")
