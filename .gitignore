@@ -210,3 +210,5 @@ target-v2/
 v2_logs/
 atr_margin_v2_*.jsonl
 v2_archive/
+# 第二版纸上运行的看护脚本：相对路径、无凭据，应随仓库走
+!atr_v2_run.sh
