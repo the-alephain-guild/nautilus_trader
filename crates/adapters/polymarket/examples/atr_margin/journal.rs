@@ -100,7 +100,12 @@ pub(crate) struct DecisionRecord<'a> {
 pub(crate) struct ReferenceRecord {
     /// Always `"reference"`.
     pub kind: &'static str,
+    /// Observation time reported by the feed.
     pub ts_ns: u64,
+    /// Arrival time at the strategy. Decisions are taken on what has arrived, and the
+    /// feed runs a second or two behind its own observation times, so a replay that
+    /// selects ticks by `ts_ns` alone picks later ticks than the strategy could see.
+    pub ts_init: u64,
     pub value: Decimal,
 }
 
@@ -112,7 +117,10 @@ pub(crate) struct ReferenceRecord {
 pub(crate) struct QuoteRecord<'a> {
     /// Always `"quote"`.
     pub kind: &'static str,
+    /// Quote time reported by the venue.
     pub ts_ns: u64,
+    /// Arrival time at the strategy; see [`ReferenceRecord::ts_init`].
+    pub ts_init: u64,
     pub event_id: &'a str,
     /// `"up"` or `"down"`.
     pub leg: &'static str,
@@ -238,6 +246,8 @@ pub(crate) struct HeartbeatRecord {
     pub out_of_order: u64,
     /// Completed bars behind the ATR.
     pub atr_bars: usize,
+    /// Completed bars dropped for holding too few observations.
+    pub sparse_bars_dropped: u64,
     /// Markets currently tracked.
     pub windows_tracked: usize,
     /// Markets whose baseline could never be established.

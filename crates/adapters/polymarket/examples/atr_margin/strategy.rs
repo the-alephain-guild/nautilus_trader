@@ -29,21 +29,23 @@ use nautilus_model::{
     instruments::InstrumentAny,
     types::{Price, Quantity},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use ustr::Ustr;
 
 use super::{
     config::AtrMarginBinaryConfig,
+    decision::{
+        BarAccumulator, DirectionalBar, Thresholds, Verdict, Vote, atr_scale, break_even_win_rate,
+        directional_atr, evaluate,
+    },
     journal::{
         DecisionJournal, DecisionRecord, FillRecord, HeartbeatRecord, LegRecord, QuoteRecord,
         ReferenceRecord, SettlementRecord,
     },
-    decision::{
-        BarAccumulator, DirectionalBar, Thresholds, Verdict, Vote, atr_scale,
-        break_even_win_rate, directional_atr, evaluate,
-    },
 };
-use nautilus_polymarket::{common::consts::POLYMARKET_CLIENT_ID, data_types::PolymarketRtdsCryptoTwap};
+use nautilus_polymarket::{
+    common::consts::POLYMARKET_CLIENT_ID, data_types::PolymarketRtdsCryptoTwap,
+};
 use nautilus_trading::{
     nautilus_strategy,
     strategy::{Strategy, StrategyCore},
@@ -99,7 +101,10 @@ struct Window {
     /// Guards against journalling the same market's settlement twice.
     settled: bool,
     /// Fills the venue reported on this market's legs, as `(px, qty, commission)`.
-    fills: Vec<(f64, f64, f64)>,
+    ///
+    /// Kept as decimals so summing many partial fills does not drift; the journal
+    /// converts to floats only at the point of writing.
+    fills: Vec<(Decimal, Decimal, Decimal)>,
 }
 
 impl Window {
@@ -174,6 +179,7 @@ impl AtrMarginBinary {
     #[must_use]
     pub(crate) fn from_config(config: AtrMarginBinaryConfig) -> Self {
         let config_bar_secs = config.atr_bar_secs;
+        let config_min_observations = config.atr_min_observations;
         let config_atr_bars = config.atr_bars;
         let journal_path = config.journal_path.clone();
         let thresholds = Thresholds {
@@ -188,7 +194,7 @@ impl AtrMarginBinary {
             thresholds,
             reference_data_type: None,
             reference_history: VecDeque::new(),
-            bars: BarAccumulator::new(config_bar_secs, config_atr_bars),
+            bars: BarAccumulator::new(config_bar_secs, config_atr_bars, config_min_observations),
             windows: HashMap::new(),
             leg_index: HashMap::new(),
             fills: 0,
@@ -224,7 +230,7 @@ impl AtrMarginBinary {
     ///
     /// Bars are bucketed on absolute time so their boundaries line up with the venue's
     /// own minute boundaries rather than with whenever this strategy happened to start.
-    pub(crate) fn ingest_reference(&mut self, ts_event_ns: u64, value: Decimal) {
+    pub(crate) fn ingest_reference(&mut self, ts_event_ns: u64, ts_init_ns: u64, value: Decimal) {
         if !self.bars.push(ts_event_ns, value) {
             log::warn!(
                 "Discarding out-of-order reference observation at ts={ts_event_ns}; \
@@ -239,6 +245,7 @@ impl AtrMarginBinary {
             journal.write(&ReferenceRecord {
                 kind: "reference",
                 ts_ns: ts_event_ns,
+                ts_init: ts_init_ns,
                 value,
             });
             self.references_written += 1;
@@ -283,6 +290,12 @@ impl AtrMarginBinary {
     }
 
     /// Resolves pending baselines and drops markets that have expired.
+    ///
+    /// A baseline is taken only once the match window around the activation instant
+    /// can no longer gain a closer observation: either an observation at or after the
+    /// instant has arrived, or the wall clock has left the tolerance. Resolving on the
+    /// first observation to enter the tolerance locked in a level several seconds
+    /// early, which for a lead of a few dollars moved the ratio by a fifth or more.
     fn refresh_windows(&mut self, now_ns: u64) {
         let mut resolved: Vec<(Ustr, Decimal)> = Vec::new();
         let mut unavailable: Vec<Ustr> = Vec::new();
@@ -297,9 +310,17 @@ impl AtrMarginBinary {
             if window.baseline.is_some() || window.baseline_unavailable {
                 continue;
             }
+            let covered = self
+                .reference_history
+                .back()
+                .is_some_and(|&(ts, _)| ts >= window.activation_ns);
+            let tolerance_elapsed = now_ns > window.activation_ns + BASELINE_MATCH_TOLERANCE_NS;
+            if !covered && !tolerance_elapsed {
+                continue;
+            }
             if let Some(value) = self.reference_at(window.activation_ns) {
                 resolved.push((*event_id, value));
-            } else if now_ns > window.activation_ns + BASELINE_MATCH_TOLERANCE_NS {
+            } else {
                 // The activation instant is now outside the tolerance and no observation
                 // covered it, so this market's baseline can never be established. Trading
                 // it would require inferring the level the outcome resolves against.
@@ -332,7 +353,9 @@ impl AtrMarginBinary {
 
     /// Evaluates every market that has reached its decision point.
     fn evaluate_due(&mut self, now_ns: u64) -> anyhow::Result<()> {
-        let Some((up_atr, down_atr)) = directional_atr(self.bars.completed(), self.config.atr_min_bars) else {
+        let Some((up_atr, down_atr)) =
+            directional_atr(self.bars.completed(), self.config.atr_min_bars)
+        else {
             self.declines.no_atr += 1;
             return Ok(());
         };
@@ -448,7 +471,11 @@ impl AtrMarginBinary {
                     ask_f = leg.ask.map(|p| p.as_f64());
                     // Resting at the near touch pays no spread but is not guaranteed to
                     // fill; crossing fills at once and pays it.
-                    let quote = if self.config.post_only { leg.bid } else { leg.ask };
+                    let quote = if self.config.post_only {
+                        leg.bid
+                    } else {
+                        leg.ask
+                    };
                     match quote {
                         None => {
                             self.declines.no_quote += 1;
@@ -614,8 +641,7 @@ impl AtrMarginBinary {
 
         let nearest = self.nearest_reference(expiration_ns);
         let settled_reference = nearest.map(|(_, value)| value);
-        let settle_offset_secs = nearest
-            .map(|(ts, _)| (ts.abs_diff(expiration_ns)) as f64 / 1e9);
+        let settle_offset_secs = nearest.map(|(ts, _)| (ts.abs_diff(expiration_ns)) as f64 / 1e9);
         let up_won = match (settled_reference, baseline) {
             (Some(settled), Some(base)) => Some(u8::from(settled > base)),
             _ => None,
@@ -634,20 +660,24 @@ impl AtrMarginBinary {
         // Account profit from what actually filled. The venue cannot settle a binary
         // outcome at expiry itself, so it is derived here from the fills and the reference
         // outcome — the same outcome the per-share figure uses, applied to real quantity.
-        let filled_qty: f64 = fills.iter().map(|f| f.1).sum();
-        let commission_total: f64 = fills.iter().map(|f| f.2).sum();
-        let avg_fill_px = if filled_qty > 0.0 {
-            Some(fills.iter().map(|f| f.0 * f.1).sum::<f64>() / filled_qty)
+        let filled_qty_dec: Decimal = fills.iter().map(|f| f.1).sum();
+        let commission_dec: Decimal = fills.iter().map(|f| f.2).sum();
+        let avg_fill_dec = if filled_qty_dec > Decimal::ZERO {
+            Some(fills.iter().map(|f| f.0 * f.1).sum::<Decimal>() / filled_qty_dec)
         } else {
             None
         };
-        let realized_pnl = match (won, avg_fill_px) {
-            (Some(won), Some(px)) if filled_qty > 0.0 => {
-                let payoff = if won { 1.0 } else { 0.0 };
-                Some(filled_qty * (payoff - px) - commission_total)
+        let realized_dec = match (won, avg_fill_dec) {
+            (Some(won), Some(px)) => {
+                let payoff = if won { Decimal::ONE } else { Decimal::ZERO };
+                Some(filled_qty_dec * (payoff - px) - commission_dec)
             }
             _ => None,
         };
+        let filled_qty = filled_qty_dec.to_f64().unwrap_or_default();
+        let commission_total = commission_dec.to_f64().unwrap_or_default();
+        let avg_fill_px = avg_fill_dec.and_then(|d| d.to_f64());
+        let realized_pnl = realized_dec.and_then(|d| d.to_f64());
 
         if let Some(journal) = self.journal.as_mut() {
             journal.write(&SettlementRecord {
@@ -695,7 +725,8 @@ impl AtrMarginBinary {
     /// Writes a counter snapshot when the heartbeat interval has elapsed.
     fn maybe_heartbeat(&mut self, now_ns: u64) {
         let interval_ns = HEARTBEAT_INTERVAL_NS;
-        if self.last_heartbeat_ns != 0 && now_ns.saturating_sub(self.last_heartbeat_ns) < interval_ns
+        if self.last_heartbeat_ns != 0
+            && now_ns.saturating_sub(self.last_heartbeat_ns) < interval_ns
         {
             return;
         }
@@ -709,6 +740,7 @@ impl AtrMarginBinary {
         let atr_bars = self.bars.completed().len();
         let observations = self.observations;
         let out_of_order = self.bars.out_of_order();
+        let sparse_bars_dropped = self.bars.sparse_dropped();
         let submitted = self.submitted;
         let fills = self.fills;
         let references_written = self.references_written;
@@ -726,6 +758,7 @@ impl AtrMarginBinary {
                 reference_observations: observations,
                 out_of_order,
                 atr_bars,
+                sparse_bars_dropped,
                 windows_tracked,
                 windows_without_baseline,
                 submitted,
@@ -750,10 +783,7 @@ impl AtrMarginBinary {
             // Without an event identifier the up and down legs of the same market cannot
             // be paired, and a vote could be filled on the wrong side.
             self.declines.unpaired += 1;
-            log::warn!(
-                "Skipping {}: no event_id, legs cannot be paired",
-                binary.id
-            );
+            log::warn!("Skipping {}: no event_id, legs cannot be paired", binary.id);
             return;
         };
         let Some(outcome) = binary.outcome else {
@@ -835,7 +865,11 @@ impl AtrMarginBinary {
             }
         }
         self.leg_index.insert(binary.id, event_id);
-        let leg_label: &'static str = if matches!(lower.as_str(), "up" | "yes") { "up" } else { "down" };
+        let leg_label: &'static str = if matches!(lower.as_str(), "up" | "yes") {
+            "up"
+        } else {
+            "down"
+        };
         if let Some(journal) = self.journal.as_mut() {
             journal.write(&LegRecord {
                 kind: "leg",
@@ -870,9 +904,9 @@ nautilus_strategy!(AtrMarginBinary, {
             );
             return;
         };
-        let px = event.last_px.as_f64();
-        let qty = event.last_qty.as_f64();
-        let commission = event.commission.map_or(0.0, |m| m.as_f64());
+        let px = event.last_px.as_decimal();
+        let qty = event.last_qty.as_decimal();
+        let commission = event.commission.map_or(Decimal::ZERO, |m| m.as_decimal());
         let side = match event.order_side {
             OrderSide::Buy => "buy",
             OrderSide::Sell => "sell",
@@ -893,10 +927,10 @@ nautilus_strategy!(AtrMarginBinary, {
                 event_id: event_id.as_str(),
                 instrument_id: event.instrument_id.to_string(),
                 side,
-                px,
-                qty,
+                px: px.to_f64().unwrap_or_default(),
+                qty: qty.to_f64().unwrap_or_default(),
                 liquidity_side: liquidity,
-                commission,
+                commission: commission.to_f64().unwrap_or_default(),
             });
         }
         log::info!(
@@ -927,7 +961,10 @@ impl Debug for AtrMarginBinary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(AtrMarginBinary))
             .field("reference_symbol", &self.config.reference_symbol)
-            .field("decide_before_expiry_secs", &self.config.decide_before_expiry_secs)
+            .field(
+                "decide_before_expiry_secs",
+                &self.config.decide_before_expiry_secs,
+            )
             .field("windows", &self.windows.len())
             .field("bars", &self.bars.completed().len())
             .field("submitted", &self.submitted)
@@ -1008,7 +1045,8 @@ impl DataActor for AtrMarginBinary {
             for (leg, label) in [(window.up.as_mut(), "up"), (window.down.as_mut(), "down")] {
                 let Some(leg) = leg else { continue };
                 if leg.instrument_id == quote.instrument_id {
-                    let moved = leg.bid != Some(quote.bid_price) || leg.ask != Some(quote.ask_price);
+                    let moved =
+                        leg.bid != Some(quote.bid_price) || leg.ask != Some(quote.ask_price);
                     leg.bid = Some(quote.bid_price);
                     leg.ask = Some(quote.ask_price);
                     if moved {
@@ -1024,6 +1062,7 @@ impl DataActor for AtrMarginBinary {
             journal.write(&QuoteRecord {
                 kind: "quote",
                 ts_ns: quote.ts_event.as_u64(),
+                ts_init: quote.ts_init.as_u64(),
                 event_id: event_id.as_str(),
                 leg,
                 instrument_id: quote.instrument_id.to_string(),
@@ -1052,8 +1091,8 @@ impl DataActor for AtrMarginBinary {
         {
             return Ok(());
         }
-        self.ingest_reference(twap.ts_event.as_u64(), twap.value);
         let now_ns = self.clock().timestamp_ns().as_u64();
+        self.ingest_reference(twap.ts_event.as_u64(), now_ns, twap.value);
         self.refresh_windows(now_ns);
         self.maybe_heartbeat(now_ns);
         self.evaluate_due(now_ns)

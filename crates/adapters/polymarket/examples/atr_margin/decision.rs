@@ -244,6 +244,8 @@ pub(crate) struct DirectionalBar {
     pub(crate) low: Decimal,
     /// Most recent observation in the bucket.
     pub(crate) close: Decimal,
+    /// Observations folded into the bucket.
+    pub(crate) observations: u32,
 }
 
 impl DirectionalBar {
@@ -256,6 +258,7 @@ impl DirectionalBar {
             high: value,
             low: value,
             close: value,
+            observations: 1,
         }
     }
 
@@ -268,6 +271,7 @@ impl DirectionalBar {
             self.low = value;
         }
         self.close = value;
+        self.observations += 1;
     }
 
     /// Distance the bar travelled above its open.
@@ -307,28 +311,38 @@ pub(crate) fn directional_atr(
 /// Buckets on absolute time so bar boundaries align with the venue's own minute
 /// boundaries rather than with whenever the strategy happened to start; two runs begun
 /// seconds apart otherwise compute different ATRs from identical input.
+///
+/// A completed bar holding fewer than `min_observations` points is dropped: the feed
+/// pauses for tens of seconds now and then, and a bar assembled from the few points
+/// around such a pause has extremes that describe the gap, not the market.
 #[derive(Debug)]
 pub(crate) struct BarAccumulator {
     bucket_ns: u64,
     capacity: usize,
+    min_observations: u32,
     completed: VecDeque<DirectionalBar>,
     current: Option<DirectionalBar>,
     last_ts_ns: Option<u64>,
     /// Observations rejected for arriving out of order.
     out_of_order: u64,
+    /// Completed bars dropped for holding too few observations.
+    sparse_dropped: u64,
 }
 
 impl BarAccumulator {
-    /// Creates an accumulator for bars of `bar_secs` retaining `capacity` completed bars.
+    /// Creates an accumulator for bars of `bar_secs` retaining `capacity` completed bars,
+    /// keeping only bars with at least `min_observations` points.
     #[must_use]
-    pub(crate) fn new(bar_secs: u64, capacity: usize) -> Self {
+    pub(crate) fn new(bar_secs: u64, capacity: usize, min_observations: u32) -> Self {
         Self {
             bucket_ns: bar_secs.max(1) * 1_000_000_000,
             capacity: capacity.max(1),
+            min_observations: min_observations.max(1),
             completed: VecDeque::new(),
             current: None,
             last_ts_ns: None,
             out_of_order: 0,
+            sparse_dropped: 0,
         }
     }
 
@@ -349,9 +363,13 @@ impl BarAccumulator {
             Some(bar) if bar.start_ns == start_ns => bar.update(value),
             Some(bar) => {
                 let finished = *bar;
-                self.completed.push_back(finished);
-                while self.completed.len() > self.capacity {
-                    self.completed.pop_front();
+                if finished.observations < self.min_observations {
+                    self.sparse_dropped += 1;
+                } else {
+                    self.completed.push_back(finished);
+                    while self.completed.len() > self.capacity {
+                        self.completed.pop_front();
+                    }
                 }
                 self.current = Some(DirectionalBar::seed(start_ns, value));
             }
@@ -372,12 +390,19 @@ impl BarAccumulator {
         self.out_of_order
     }
 
+    /// Returns how many completed bars were dropped for holding too few observations.
+    #[must_use]
+    pub(crate) const fn sparse_dropped(&self) -> u64 {
+        self.sparse_dropped
+    }
+
     /// Clears all state.
     pub(crate) fn clear(&mut self) {
         self.completed.clear();
         self.current = None;
         self.last_ts_ns = None;
         self.out_of_order = 0;
+        self.sparse_dropped = 0;
     }
 }
 
@@ -517,7 +542,10 @@ mod tests {
             }
         }
         // Every branch, including both no-trade bands, must be reachable.
-        assert!(seen_lead.iter().all(|&n| n > 0), "lead branches {seen_lead:?}");
+        assert!(
+            seen_lead.iter().all(|&n| n > 0),
+            "lead branches {seen_lead:?}"
+        );
         assert!(seen_gap.iter().all(|&n| n > 0), "gap branches {seen_gap:?}");
     }
 
@@ -541,7 +569,14 @@ mod tests {
     fn scaling_dampens_ratio_over_longer_horizons() {
         let t = Thresholds::default();
         let unscaled = evaluate(dec!(100), dec!(142), ATR, ATR, 1.0, &t);
-        let scaled = evaluate(dec!(100), dec!(142), ATR, ATR, atr_scale(240.0, 60.0, true), &t);
+        let scaled = evaluate(
+            dec!(100),
+            dec!(142),
+            ATR,
+            ATR,
+            atr_scale(240.0, 60.0, true),
+            &t,
+        );
         assert_eq!(unscaled.verdict, Verdict::LeadThick);
         assert!(scaled.ratio.expect("ratio") < unscaled.ratio.expect("ratio"));
         assert_ne!(scaled.verdict, Verdict::LeadThick);
@@ -601,7 +636,7 @@ mod tests {
     /// Bar boundaries must follow absolute time, not the first observation's offset.
     #[rstest]
     fn accumulator_buckets_on_absolute_time() {
-        let mut acc = BarAccumulator::new(60, 10);
+        let mut acc = BarAccumulator::new(60, 10, 1);
         // Start mid-minute: 90s, 100s, 110s all belong to the 60..120 bucket.
         assert!(acc.push(90 * SEC, dec!(100)));
         assert!(acc.push(100 * SEC, dec!(110)));
@@ -619,9 +654,12 @@ mod tests {
 
     #[rstest]
     fn accumulator_rejects_out_of_order_observations() {
-        let mut acc = BarAccumulator::new(60, 10);
+        let mut acc = BarAccumulator::new(60, 10, 1);
         assert!(acc.push(120 * SEC, dec!(100)));
-        assert!(!acc.push(119 * SEC, dec!(999)), "older point must be refused");
+        assert!(
+            !acc.push(119 * SEC, dec!(999)),
+            "older point must be refused"
+        );
         assert_eq!(acc.out_of_order(), 1);
         // The refused value must not have touched the extremes.
         assert!(acc.push(180 * SEC, dec!(100)));
@@ -630,7 +668,7 @@ mod tests {
 
     #[rstest]
     fn accumulator_bounds_retained_bars() {
-        let mut acc = BarAccumulator::new(60, 3);
+        let mut acc = BarAccumulator::new(60, 3, 1);
         for i in 0..8 {
             acc.push(i * 60 * SEC, dec!(100));
         }
@@ -639,13 +677,44 @@ mod tests {
 
     #[rstest]
     fn accumulator_clear_resets_everything() {
-        let mut acc = BarAccumulator::new(60, 5);
+        let mut acc = BarAccumulator::new(60, 5, 1);
         acc.push(60 * SEC, dec!(100));
         acc.push(180 * SEC, dec!(100));
         acc.push(120 * SEC, dec!(1));
         acc.clear();
         assert!(acc.completed().is_empty());
         assert_eq!(acc.out_of_order(), 0);
-        assert!(acc.push(1 * SEC, dec!(100)), "clear must reset the ordering watermark");
+        assert!(
+            acc.push(1 * SEC, dec!(100)),
+            "clear must reset the ordering watermark"
+        );
+    }
+
+    /// A bar spanning a feed gap must not reach the ATR; the extremes of two points
+    /// around a pause describe the pause, not the market.
+    #[rstest]
+    fn accumulator_drops_sparse_bars() {
+        let mut acc = BarAccumulator::new(60, 10, 3);
+        // Bucket 60..120 receives three points: kept.
+        assert!(acc.push(60 * SEC, dec!(100)));
+        assert!(acc.push(70 * SEC, dec!(130)));
+        assert!(acc.push(80 * SEC, dec!(90)));
+        // Bucket 120..180 receives a single point across a gap: dropped on close.
+        assert!(acc.push(150 * SEC, dec!(500)));
+        assert!(acc.push(180 * SEC, dec!(100)));
+        assert_eq!(
+            acc.completed().len(),
+            1,
+            "only the well-populated bar survives"
+        );
+        assert_eq!(acc.completed()[0].observations, 3);
+        assert_eq!(acc.completed()[0].high, dec!(130));
+        assert_eq!(acc.sparse_dropped(), 1);
+        // Threshold 1 keeps every bar, matching the previous behaviour.
+        let mut lax = BarAccumulator::new(60, 10, 1);
+        lax.push(150 * SEC, dec!(500));
+        lax.push(180 * SEC, dec!(100));
+        assert_eq!(lax.completed().len(), 1);
+        assert_eq!(lax.sparse_dropped(), 0);
     }
 }

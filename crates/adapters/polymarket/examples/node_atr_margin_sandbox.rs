@@ -210,6 +210,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .decide_tolerance_secs(decide_tolerance_secs)
         .atr_bar_secs(atr_bar_secs)
         .atr_min_bars(atr_min_bars)
+        // A bar covering less than a quarter of its length in observations is a feed
+        // gap wearing a bar's clothes; the reference stream pauses for ~30s a few times
+        // an hour and once paused for 151s during the v2 run.
+        .atr_min_observations(u32::try_from((atr_bar_secs / 4).max(1)).unwrap_or(1))
         .max_entry_price(MAX_ENTRY_PRICE)
         .journal_path(journal)
         .arm_label(format!("{arm}/{rules}"))

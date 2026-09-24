@@ -76,6 +76,14 @@ pub(crate) struct AtrMarginBinaryConfig {
     #[builder(default = 5)]
     pub(crate) atr_min_bars: usize,
 
+    /// Minimum reference observations a bar must hold to count towards the ATR.
+    ///
+    /// The feed pauses for tens of seconds now and then. A bar assembled from the few
+    /// points around such a pause has extremes that describe the gap rather than the
+    /// market, so bars below this count are dropped instead of admitted.
+    #[builder(default = 1)]
+    pub(crate) atr_min_observations: u32,
+
     /// Lead ratio at or above which a lead is treated as safe: buy up.
     #[builder(default = 1.05)]
     pub(crate) k_lead_thick: f64,

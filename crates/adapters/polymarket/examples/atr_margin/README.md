@@ -172,3 +172,38 @@ Note that one market can produce many decision records: a refusal leaves it open
 re-evaluation, and one verification window was evaluated 58 times across its decision
 window. Records carry `evaluation_index` so a consumer can collapse them; the settlement
 records, one per market, are what statistics should be computed from.
+
+## What the first long paper run changed
+
+Two days of journal, replayed offline against the strategy's own first-evaluation records,
+exposed three replay-fidelity defects and one precision debt. None changed a verdict on
+the live run; all of them limited what the journal could later be used for.
+
+**The baseline locked several seconds early.** `refresh_windows` resolved a market's
+baseline on the first observation to fall inside the ±5s match tolerance, which is the
+observation 4–5 seconds *before* the activation instant, not the closest one. For a lead
+of a few dollars that shifted the ratio by a fifth or more. The baseline is now taken only
+once the match window can no longer gain a closer observation: an observation at or after
+the instant has arrived, or the wall clock has left the tolerance. `reference_at` already
+picked the closest observation; the defect was asking it too soon.
+
+**Decisions are taken on arrival time, but the journal recorded only observation time.**
+The reference feed's `ts_event` runs about 1.5 seconds (p10 1.2s, p90 2.3s) behind its
+arrival at the strategy, and the strategy evaluates on arrival. A replay that selects the
+decision tick by `ts_ns` therefore picks a tick the strategy could not yet have seen, and
+prices the entry off a quote that had not yet arrived. Reference and quote records now
+carry `ts_init` (arrival) alongside `ts_ns` (observation); the replayer no longer has to
+back out a fixed median lag from decision records.
+
+**A bar spanning a feed gap counted as a bar.** The feed pauses for ~30s several times an
+hour and paused once for 151s. A bucket that caught two points around such a pause has
+extremes that describe the pause, not the market, yet it entered the ATR with the same
+weight as a full bar. `BarAccumulator` now takes a minimum observation count per bar
+(`atr_min_observations`, the paper node uses a quarter of the bar length) and drops bars
+below it, counting them in the heartbeat as `sparse_bars_dropped`. The default of 1 keeps
+the previous behaviour.
+
+**Fills accumulated in `f64`.** Quantities and commissions summed as floats across partial
+fills drifted in the last digits and the settlement's realized figure inherited the drift.
+Fill amounts are now held as `Decimal` and converted to floats only when written, so the
+journal's numeric types are unchanged for existing consumers.
