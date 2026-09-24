@@ -19,7 +19,7 @@ while :; do
   remain=$(( END - $(date +%s) )); [ "$remain" -le 30 ] && break
   n=$((n+1)); echo "$(date -u +%FT%TZ) 第 $n 次启动，剩余 ${remain}s" >> "$SUP"
   ATR_ARM="$ARM" ATR_RULES="$RULES" timeout "$remain" "$BIN" >> "$LOGDIR/${ARM}_${RULES}.log" 2>&1
-  rc=$?; echo "$(date -u +%FT%TZ) 第 $n 次退出 rc=$rc（124=时限到达）" >> "$SUP"
+  rc=$?; echo "$(date -u +%FT%TZ) 第 $n 次退出 rc=${rc}（124=时限到达）" >> "$SUP"
   [ "$rc" -eq 124 ] && break
   sleep 10
 done

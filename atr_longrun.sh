@@ -40,7 +40,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   # 故不依赖停止回调能否执行。
   timeout "$remain" "$BIN" >> "$log" 2>&1
   rc=$?
-  echo "$(date -u +%FT%TZ) 第 $attempt 次退出，rc=$rc（124=时限到达）" >> "$SUP"
+  echo "$(date -u +%FT%TZ) 第 $attempt 次退出，rc=${rc}（124=时限到达）" >> "$SUP"
   [ "$rc" -eq 124 ] && break
   sleep 10
 done
