@@ -89,15 +89,19 @@ Two environment switches select the configuration:
 | Variable | Values | Effect |
 |---|---|---|
 | `ATR_ARM` | `maker` (default) / `taker` | rest post-only at the bid, or cross to the ask |
-| `ATR_RULES` | `thick` (default) / `all` | thick-lead rule only, or all four rules |
+| `ATR_RULES` | `thick` (default) / `all` / `lead_thin` | thick-lead rule only, all four rules, or thin-lead rule only |
 
 Each combination gets its own node, trader, strategy and account ids and its own journal
-(`atr_margin_v2_{arm}_{rules}.jsonl`), so runs with different settings never interleave and
+(`atr_margin_v3_{arm}_{rules}.jsonl`), so runs with different settings never interleave and
 can be run side by side. `ATR_JOURNAL` overrides the journal path.
 
 The default configuration restricts trading to the thick-lead rule. In the exploratory
 study that preceded this implementation it was the only rule with a positive point
 estimate; the other three were negative or statistically indistinguishable from zero.
+The first two paper runs reversed that picture — the thin-lead rule carried all of the
+profit while the thick-lead rule sat near zero — which is why `lead_thin` exists as a
+rule set of its own: a rule's economics are only readable when it trades alone in its
+own simulated book.
 
 ## Tests
 

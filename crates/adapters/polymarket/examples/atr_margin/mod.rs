@@ -26,4 +26,5 @@ pub(crate) mod journal;
 pub(crate) mod strategy;
 
 pub(crate) use config::AtrMarginBinaryConfig;
+pub(crate) use decision::RuleSet;
 pub(crate) use strategy::AtrMarginBinary;

@@ -19,6 +19,8 @@ use nautilus_model::{identifiers::StrategyId, types::Quantity};
 
 use nautilus_trading::strategy::StrategyConfig;
 
+use super::decision::RuleSet;
+
 /// Configuration for [`AtrMarginBinary`](super::AtrMarginBinary).
 ///
 /// Thresholds default to the values the strategy was specified with. The gap between
@@ -123,12 +125,10 @@ pub(crate) struct AtrMarginBinaryConfig {
     #[builder(default = 0.02)]
     pub(crate) min_entry_price: f64,
 
-    /// Restricts trading to the thick-lead rule only.
-    ///
-    /// Of the four rules, only the thick-lead one showed a positive point estimate in
-    /// the exploratory study; the other three were negative or indistinguishable.
-    #[builder(default = false)]
-    pub(crate) thick_lead_only: bool,
+    /// Which rules may place an order. Rules outside the set still evaluate and
+    /// journal; only the order is withheld, counted as `rule_filtered`.
+    #[builder(default)]
+    pub(crate) rules: RuleSet,
 
     /// Order time-in-force expiry in seconds. `None` leaves the order resting.
     pub(crate) order_expire_secs: Option<u64>,

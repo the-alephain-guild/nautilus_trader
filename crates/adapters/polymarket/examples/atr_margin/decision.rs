@@ -73,12 +73,6 @@ impl Verdict {
         }
     }
 
-    /// Returns whether this verdict came from the thick-lead rule.
-    #[must_use]
-    pub(crate) const fn is_thick_lead(self) -> bool {
-        matches!(self, Self::LeadThick)
-    }
-
     /// Returns a stable label for logging and metrics.
     #[must_use]
     pub(crate) const fn label(self) -> &'static str {
@@ -90,6 +84,46 @@ impl Verdict {
             Self::Undecided => "undecided",
             Self::NoAtr => "no_atr",
             Self::Level => "level",
+        }
+    }
+}
+
+/// Which of the four rules may place an order.
+///
+/// Rules outside the set still evaluate and journal their verdict; only the order is
+/// withheld, counted as `rule_filtered`. Running one rule alone is how a paper arm
+/// isolates that rule's economics from the others'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RuleSet {
+    /// All four rules trade.
+    #[default]
+    All,
+    /// Only the thick-lead rule: the one rule with a positive point estimate in the
+    /// exploratory study that preceded the implementation.
+    ThickLeadOnly,
+    /// Only the thin-lead rule: the one rule that carried the profit in the first two
+    /// paper runs while the other three were flat or negative.
+    LeadThinOnly,
+}
+
+impl RuleSet {
+    /// Returns whether an order may be placed on this verdict.
+    #[must_use]
+    pub(crate) const fn admits(self, verdict: Verdict) -> bool {
+        match self {
+            Self::All => true,
+            Self::ThickLeadOnly => matches!(verdict, Verdict::LeadThick),
+            Self::LeadThinOnly => matches!(verdict, Verdict::LeadThin),
+        }
+    }
+
+    /// Returns a stable label for journal names and logging.
+    #[must_use]
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::ThickLeadOnly => "thick",
+            Self::LeadThinOnly => "lead_thin",
         }
     }
 }
@@ -688,6 +722,39 @@ mod tests {
             acc.push(1 * SEC, dec!(100)),
             "clear must reset the ordering watermark"
         );
+    }
+
+    /// Each restricted set admits exactly its own rule and nothing else; the open set
+    /// admits every voting verdict and, like the others, never admits a non-vote.
+    #[rstest]
+    fn rule_set_admits_only_its_rule() {
+        let votes = [
+            Verdict::LeadThick,
+            Verdict::LeadThin,
+            Verdict::GapNear,
+            Verdict::GapFar,
+        ];
+        for v in votes {
+            assert!(RuleSet::All.admits(v));
+        }
+        assert_eq!(
+            votes
+                .iter()
+                .filter(|v| RuleSet::ThickLeadOnly.admits(**v))
+                .count(),
+            1
+        );
+        assert!(RuleSet::ThickLeadOnly.admits(Verdict::LeadThick));
+        assert_eq!(
+            votes
+                .iter()
+                .filter(|v| RuleSet::LeadThinOnly.admits(**v))
+                .count(),
+            1
+        );
+        assert!(RuleSet::LeadThinOnly.admits(Verdict::LeadThin));
+        assert_eq!(RuleSet::default(), RuleSet::All);
+        assert_eq!(RuleSet::LeadThinOnly.label(), "lead_thin");
     }
 
     /// A bar spanning a feed gap must not reach the ATR; the extremes of two points

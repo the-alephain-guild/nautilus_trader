@@ -457,13 +457,13 @@ impl AtrMarginBinary {
             Some(vote) => {
                 vote_label = Some(vote.label());
                 let leg = window.leg(vote).cloned();
-                if self.config.thick_lead_only && !decision.verdict.is_thick_lead() {
+                if !self.config.rules.admits(decision.verdict) {
                     self.declines.rule_filtered += 1;
                     decline_reason = Some("rule_filtered");
                     log::debug!(
-                        "Entry filtered for event {event_id}: verdict={} restricted to \
-                         thick-lead only",
-                        decision.verdict.label()
+                        "Entry filtered for event {event_id}: verdict={} outside rule set {}",
+                        decision.verdict.label(),
+                        self.config.rules.label()
                     );
                 } else if let Some(leg) = leg {
                     leg_instrument_id = Some(leg.instrument_id.to_string());
