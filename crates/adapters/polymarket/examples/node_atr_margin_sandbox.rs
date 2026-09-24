@@ -113,10 +113,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rules = rules();
     let rules_label = rules.label();
     let tag = format!("{}-{}", arm.to_uppercase(), rules_label.to_uppercase());
-    let trader_id = TraderId::from(format!("ATR-MARGIN-V2-{tag}-001").as_str());
-    let account_id = AccountId::from(format!("POLYMARKET-V2-{tag}-001").as_str());
-    let node_name = format!("ATR-MARGIN-V2-{tag}");
-    let strategy_id = format!("ATR-MARGIN-V2-{tag}-001");
+    let trader_id = TraderId::from(format!("ATR-MARGIN-V3-{tag}-001").as_str());
+    let account_id = AccountId::from(format!("POLYMARKET-V3-{tag}-001").as_str());
+    let node_name = format!("ATR-MARGIN-V3-{tag}");
+    let strategy_id = format!("ATR-MARGIN-V3-{tag}-001");
     let journal = journal_path(arm, rules_label);
     println!("ARM={arm}  RULES={rules_label}  journal={journal}");
 
