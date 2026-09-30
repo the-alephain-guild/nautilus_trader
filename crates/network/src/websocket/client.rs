@@ -196,6 +196,18 @@ struct InitialConnectOptions {
     cancellation_token: Option<CancellationToken>,
 }
 
+/// Identifies the endpoint without exposing URL credentials, paths or query parameters.
+fn websocket_log_target(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?;
+            let port = url.port_or_known_default()?;
+            Some(format!("{host}:{port}"))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 impl WebSocketClientInner {
     /// Creates an inner WebSocket client with an existing writer.
     ///
@@ -1056,6 +1068,21 @@ mod connection_error_tests {
     use crate::transport::CloseFrame;
 
     #[rstest]
+    #[case(
+        "wss://user:password@example.com/private/token?key=secret",
+        "example.com:443"
+    )]
+    #[case("ws://127.0.0.1:8080/?token=secret", "127.0.0.1:8080")]
+    #[case("wss://[::1]:8443/private", "[::1]:8443")]
+    #[case("invalid secret-bearing URL", "unknown")]
+    fn websocket_log_target_excludes_credentials_and_request_details(
+        #[case] url: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(websocket_log_target(url), expected);
+    }
+
+    #[rstest]
     #[case(TransportError::ConnectionClosed, true)]
     #[case(TransportError::ConnectionReset, true)]
     #[case(TransportError::ClosedByPeer(Some(CloseFrame::new(1000, "bye"))), true)]
@@ -1303,7 +1330,9 @@ impl WebSocketClientInner {
     }
 
     async fn reconnect_with_outcome(&mut self) -> Result<ReconnectOutcome, TransportError> {
-        log::info!("Reconnecting");
+        let started = dst::time::Instant::now();
+        let target = websocket_log_target(&self.config.url);
+        log::info!("Reconnecting target={target}");
 
         if self.handler.is_none() {
             log::warn!(
@@ -1442,7 +1471,10 @@ impl WebSocketClientInner {
         ));
         self.read_fence = Some(read_fence);
 
-        log::info!("Reconnect succeeded");
+        log::info!(
+            "Reconnect succeeded target={target} attempt_elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
         Ok(ReconnectOutcome::Reconnected)
     }
 
@@ -3441,6 +3473,9 @@ impl WebSocketClient {
 
             let fallback_interval = Duration::from_millis(CONTROLLER_FALLBACK_INTERVAL_MS);
             let mut reconnected_at = None;
+            let target = websocket_log_target(&inner.config.url);
+            let mut recovery_started_at = None;
+            let mut recovery_attempts = 0_u64;
 
             loop {
                 tokio::select! {
@@ -3520,12 +3555,17 @@ impl WebSocketClient {
                         if target.is_closed() {
                             fail_registered_auth(auth_tracker.as_ref(), "WebSocket client closed");
                         }
-                        log::info!("Detected dead connection, transitioning to {target:?}");
+                        log::info!(
+                            "Detected dead connection, transitioning to {target:?} endpoint={}",
+                            websocket_log_target(&inner.config.url)
+                        );
                     }
                     mode = ConnectionMode::from_atomic(&connection_mode);
                 }
 
                 if mode.is_reconnect() {
+                    let recovery_started =
+                        *recovery_started_at.get_or_insert_with(dst::time::Instant::now);
                     if let Some(tracker) = auth_tracker.get() {
                         tracker.invalidate();
                     }
@@ -3584,6 +3624,7 @@ impl WebSocketClient {
                     }
 
                     inner.reconnection_attempt_count += 1;
+                    recovery_attempts = recovery_attempts.saturating_add(1);
                     inner.reconnect_throttle.record_attempt();
                     log::debug!(
                         "Reconnection attempt {} of {}",
@@ -3594,6 +3635,7 @@ impl WebSocketClient {
                     );
 
                     // Race reconnect against disconnect notification
+                    let attempt_started = dst::time::Instant::now();
                     let reconnect_result = tokio::select! {
                         biased;
                         result = inner.reconnect_with_outcome() => Some(result),
@@ -3616,6 +3658,13 @@ impl WebSocketClient {
                             log::debug!("Reconnect interrupted by disconnect");
                         }
                         Some(Ok(ReconnectOutcome::Reconnected)) => {
+                            log::info!(
+                                "websocket_reconnect_completed target={target} attempts={recovery_attempts} \
+                                 elapsed_ms={}",
+                                recovery_started.elapsed().as_millis()
+                            );
+                            recovery_started_at = None;
+                            recovery_attempts = 0;
                             reconnected_at = Some(dst::time::Instant::now());
 
                             state_notify.notify_waiters();
@@ -3654,8 +3703,12 @@ impl WebSocketClient {
                         Some(Err(e)) => {
                             let duration = inner.backoff.next_duration();
                             log::warn!(
-                                "Reconnect attempt {} failed: {e}",
-                                inner.reconnection_attempt_count
+                                "Reconnect attempt {} failed: {e} target={target} \
+                                 recovery_attempts={recovery_attempts} attempt_elapsed_ms={} \
+                                 recovery_elapsed_ms={}",
+                                inner.reconnection_attempt_count,
+                                attempt_started.elapsed().as_millis(),
+                                recovery_started.elapsed().as_millis()
                             );
 
                             if !duration.is_zero() {

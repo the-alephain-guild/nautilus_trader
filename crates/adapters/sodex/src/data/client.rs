@@ -45,7 +45,7 @@ use std::{
 use async_trait::async_trait;
 use nautilus_common::{
     clients::DataClient,
-    live::{get_runtime, runner::get_data_event_sender, task::TaskHandles},
+    live::{dst::time::Instant, get_runtime, runner::get_data_event_sender, task::TaskHandles},
     messages::{
         DataEvent,
         data::{
@@ -417,10 +417,42 @@ async fn run_stream(
     feeds: Arc<Mutex<Feeds>>,
     sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     clock: &'static AtomicTime,
+    client_id: ClientId,
 ) {
     let mut pending = Pending::new();
+    let mut awaiting_update: Option<Instant> = None;
+    let mut awaiting_publication: Option<Instant> = None;
 
     while let Some(event) = events.recv().await {
+        if let Some(started) = awaiting_update {
+            let update = {
+                let feeds = feeds.lock();
+                match &event {
+                    SodexWsEvent::Candle(candle) => feeds
+                        .bars
+                        .get(&(candle.symbol.clone(), candle.interval.clone()))
+                        .map(|feed| ("candle", feed.bar_type.instrument_id())),
+                    SodexWsEvent::Trade(trade) => feeds
+                        .trades
+                        .get(&trade.symbol)
+                        .map(|feed| ("trade", feed.instrument_id)),
+                    SodexWsEvent::Ticker(ticker) => feeds
+                        .quotes
+                        .get(&ticker.symbol)
+                        .map(|feed| ("ticker", feed.instrument_id)),
+                    _ => None,
+                }
+            };
+            if let Some((kind, instrument_id)) = update {
+                log::info!(
+                    "sodex_stream_first_update client_id={client_id} kind={kind} \
+                     instrument_id={instrument_id} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                awaiting_update = None;
+            }
+        }
+
         let published = match event {
             SodexWsEvent::Candle(candle) => publish_candle(&feeds, &mut pending, *candle, clock),
             SodexWsEvent::Trade(trade) => {
@@ -477,16 +509,38 @@ async fn run_stream(
                 // The held bars belong to the connection that just went away. A gap in the
                 // feed means the held snapshot may no longer be that bar's final state, so
                 // publishing it later would present a partial bar as a complete one.
+                let dropped = pending.len();
                 pending.clear();
-                log::info!("sodex_stream_reconnected pending_bars_dropped");
+                let started = Instant::now();
+                awaiting_update = Some(started);
+                awaiting_publication = Some(started);
+                log::info!(
+                    "sodex_stream_reconnected client_id={client_id} pending_bars_dropped={dropped}"
+                );
                 continue;
             }
         };
 
         for data in published {
+            let publication = match &data {
+                Data::Bar(bar) => Some(("bar", bar.bar_type.instrument_id())),
+                Data::Quote(tick) => Some(("quote", tick.instrument_id)),
+                Data::Trade(tick) => Some(("trade", tick.instrument_id)),
+                _ => None,
+            };
             if sender.send(DataEvent::Data(data)).is_err() {
                 log::debug!("sodex_data_consumer_gone");
                 return;
+            }
+            if let Some(started) = awaiting_publication
+                && let Some((kind, instrument_id)) = publication
+            {
+                log::info!(
+                    "sodex_stream_first_data_published client_id={client_id} kind={kind} \
+                     instrument_id={instrument_id} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                awaiting_publication = None;
             }
         }
     }
@@ -658,6 +712,7 @@ impl DataClient for SodexDataClient {
             Arc::clone(&self.feeds),
             self.data_sender.clone(),
             self.clock,
+            self.client_id,
         )));
 
         if let Some(task) = spawn_instrument_refresh(
@@ -1078,6 +1133,8 @@ const fn unix_nanos_to_millis(ts: UnixNanos) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, sync::Once};
+
     use nautilus_model::{
         data::BarSpecification,
         enums::{AggregationSource, AggressorSide, BarAggregation, PriceType},
@@ -1090,6 +1147,157 @@ mod tests {
         config::SODEX_PERPS,
         websocket::{Ticker, Trade},
     };
+
+    thread_local! {
+        static CAPTURED_LOGS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    }
+
+    struct CaptureLogger;
+
+    impl log::Log for CaptureLogger {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            CAPTURED_LOGS.with(|logs| {
+                if let Some(logs) = logs.borrow_mut().as_mut() {
+                    logs.push(record.args().to_string());
+                }
+            });
+        }
+
+        fn flush(&self) {}
+    }
+
+    struct LogCapture;
+
+    impl LogCapture {
+        fn start() -> Self {
+            static INIT: Once = Once::new();
+            static LOGGER: CaptureLogger = CaptureLogger;
+            INIT.call_once(|| {
+                log::set_logger(&LOGGER).unwrap();
+                log::set_max_level(log::LevelFilter::Info);
+            });
+            CAPTURED_LOGS.with(|logs| *logs.borrow_mut() = Some(Vec::new()));
+            Self
+        }
+
+        fn entries(&self, event: &str) -> Vec<String> {
+            CAPTURED_LOGS.with(|logs| {
+                logs.borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .filter(|line| line.starts_with(event))
+                    .cloned()
+                    .collect()
+            })
+        }
+    }
+
+    impl Drop for LogCapture {
+        fn drop(&mut self) {
+            CAPTURED_LOGS.with(|logs| *logs.borrow_mut() = None);
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_logs_only_the_first_subscribed_update_and_publication_each_cycle() {
+        let logs = LogCapture::start();
+        let mut unsubscribed = candle(true);
+        unsubscribed.symbol = "vETH_vUSDC".to_string();
+
+        let published = publish(
+            vec![
+                SodexWsEvent::Candle(Box::new(candle(true))),
+                SodexWsEvent::Reconnected,
+                SodexWsEvent::Candle(Box::new(unsubscribed)),
+                SodexWsEvent::RequestRejected {
+                    op: crate::websocket::messages::Op::Subscribe,
+                    subscription: None,
+                    reason: "subscription refused".to_string(),
+                },
+                SodexWsEvent::Candle(Box::new(candle(false))),
+                SodexWsEvent::Candle(Box::new(candle(false))),
+                SodexWsEvent::Candle(Box::new(candle(true))),
+                SodexWsEvent::Candle(Box::new(candle(true))),
+                SodexWsEvent::Reconnected,
+                SodexWsEvent::Candle(Box::new(candle(true))),
+            ],
+            feeds_with(bar_type(1, BarAggregation::Minute)),
+        )
+        .await;
+
+        assert_eq!(published.len(), 4);
+        let updates = logs.entries("sodex_stream_first_update");
+        let publications = logs.entries("sodex_stream_first_data_published");
+        assert_eq!(updates.len(), 2);
+        assert_eq!(publications.len(), 2);
+        for entry in updates.iter().chain(&publications) {
+            assert!(entry.contains("client_id=SODEX_PERPS"));
+            assert!(entry.contains("instrument_id=vBTC_vUSDC.SODEX_PERPS"));
+            assert!(entry.contains("elapsed_ms="));
+        }
+        assert!(updates[0].contains("kind=candle"));
+        assert!(publications[0].contains("kind=bar"));
+    }
+
+    #[rstest]
+    #[case(true, "ticker", "quote")]
+    #[case(false, "trade", "trade")]
+    #[tokio::test]
+    async fn reconnect_observes_quote_and_trade_recovery(
+        #[case] quote: bool,
+        #[case] update_kind: &str,
+        #[case] published_kind: &str,
+    ) {
+        let logs = LogCapture::start();
+        let event = if quote {
+            SodexWsEvent::Ticker(Box::new(ticker()))
+        } else {
+            SodexWsEvent::Trade(Box::new(trade(crate::common::enums::OrderSide::Buy)))
+        };
+        let published = publish(
+            vec![SodexWsEvent::Reconnected, event.clone(), event],
+            tick_feeds(),
+        )
+        .await;
+
+        assert_eq!(published.len(), 2);
+        let updates = logs.entries("sodex_stream_first_update");
+        let publications = logs.entries("sodex_stream_first_data_published");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(publications.len(), 1);
+        assert!(updates[0].contains(&format!("kind={update_kind}")));
+        assert!(publications[0].contains(&format!("kind={published_kind}")));
+    }
+
+    #[tokio::test]
+    async fn a_closed_engine_queue_does_not_report_data_publication_recovery() {
+        let logs = LogCapture::start();
+        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+        events_tx.send(SodexWsEvent::Reconnected).unwrap();
+        events_tx
+            .send(SodexWsEvent::Candle(Box::new(candle(true))))
+            .unwrap();
+        drop(events_tx);
+        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(data_rx);
+
+        run_stream(
+            events_rx,
+            feeds_with(bar_type(1, BarAggregation::Minute)),
+            data_tx,
+            get_atomic_clock_realtime(),
+            ClientId::from(SODEX_PERPS),
+        )
+        .await;
+
+        assert_eq!(logs.entries("sodex_stream_first_update").len(), 1);
+        assert!(logs.entries("sodex_stream_first_data_published").is_empty());
+    }
 
     fn bar_type(step: usize, aggregation: BarAggregation) -> BarType {
         BarType::new(
@@ -1154,7 +1362,14 @@ mod tests {
         drop(events_tx);
 
         let (data_tx, mut data_rx) = tokio::sync::mpsc::unbounded_channel();
-        run_stream(events_rx, feeds, data_tx, get_atomic_clock_realtime()).await;
+        run_stream(
+            events_rx,
+            feeds,
+            data_tx,
+            get_atomic_clock_realtime(),
+            ClientId::from(SODEX_PERPS),
+        )
+        .await;
 
         let mut published = Vec::new();
         while let Ok(event) = data_rx.try_recv() {

@@ -20,6 +20,20 @@ hashed into signatures, the API key set, the order item shape, the balances, and
 price used for limit bounds. A client binds to one engine through its configuration's `market`,
 and instrument ids must carry the matching venue.
 
+## Connection diagnostics
+
+WebSocket reconnect logs identify the destination host and port, the attempt duration,
+and the number of attempts and elapsed time in the completed reconnect cycle. URL credentials,
+paths, query parameters and headers are excluded from the destination field.
+
+After a reconnect, the data client reports `sodex_stream_first_update` when the first
+subscribed candle, trade or ticker arrives, then `sodex_stream_first_data_published` when
+the first parsed market data item is accepted by the engine's data queue. Each event is logged
+once per reconnect cycle, with the client, instrument, data kind and elapsed milliseconds.
+These events describe the first recovered feed, not every subscription. A forming candle can
+produce the update event long before its completed bar can produce the publication event.
+Neither event proves that a strategy callback has processed the data.
+
 ## Credentials
 
 Market data needs none; the venue serves it unsigned. Execution credentials resolve from the
