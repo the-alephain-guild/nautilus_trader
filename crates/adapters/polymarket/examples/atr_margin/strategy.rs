@@ -21,6 +21,7 @@ use std::{
 };
 
 use nautilus_common::actor::DataActor;
+use nautilus_core::nanos::DurationNanos;
 use nautilus_model::{
     data::{CustomData, DataType, QuoteTick},
     enums::{LiquiditySide, OrderSide, TimeInForce},
@@ -512,9 +513,7 @@ impl AtrMarginBinary {
                                         Some(TimeInForce::Gtd),
                                         Some(
                                             self.clock().timestamp_ns()
-                                                + nautilus_core::nanos::DurationNanos::try_from_secs(
-                                                    secs,
-                                                )?,
+                                                + DurationNanos::try_from_secs(secs)?,
                                         ),
                                     ),
                                     None => (None, None),
@@ -659,7 +658,7 @@ impl AtrMarginBinary {
         };
         // Account profit from what actually filled. The venue cannot settle a binary
         // outcome at expiry itself, so it is derived here from the fills and the reference
-        // outcome — the same outcome the per-share figure uses, applied to real quantity.
+        // outcome - the same outcome the per-share figure uses, applied to real quantity.
         let filled_qty_dec: Decimal = fills.iter().map(|f| f.1).sum();
         let commission_dec: Decimal = fills.iter().map(|f| f.2).sum();
         let avg_fill_dec = if filled_qty_dec > Decimal::ZERO {
