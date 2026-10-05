@@ -26,6 +26,7 @@
 //!  env SODEX_API_KEY_NAME=perps-key-01 \
 //!      SODEX_API_PRIVATE_KEY=<key registered on that engine> \
 //!      SODEX_ACCOUNT_ID=60366 \
+//!      SODEX_WALLET_ADDRESS=0x766a478C89E5E9354b7a23922De18da6A5163b00 \
 //!      SODEX_MARKET=perps \
 //!      cargo run -p nautilus-sodex --example cancel_open_orders
 //! ```

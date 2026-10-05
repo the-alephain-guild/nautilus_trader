@@ -239,7 +239,6 @@ leaves positions alone. It then reads the account again and exits non-zero if an
 resting. It exists because stopping the live node once left two orders resting on perps, so
 cleanup must not depend on the node's shutdown working.
 
-`SODEX_WALLET_ADDRESS` is required even though the example command in the source header omits it.
 `SODEX_MARKET` defaults to spot, so cleaning up perps needs it set.
 
 ### place_and_cancel
