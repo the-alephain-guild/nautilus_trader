@@ -19,18 +19,8 @@ cargo run -q -p nautilus-sodex --example <name>
 ```
 
 `-q` silences cargo's own build output and leaves the program's output alone. Every input is a
-`SODEX_*` environment variable; none of the programs take arguments.
-
-**Any command carrying a private key is written as one `env` invocation with a leading space:**
-
-```text
- env SODEX_API_PRIVATE_KEY=<key> SODEX_ACCOUNT_ID=<aid> cargo run -q -p nautilus-sodex --example verify_signing
-```
-
-With `env` rather than `export`, the key lives only for this command instead of staying in the
-shell's environment for everything run afterwards and every child process it spawns. The leading
-space keeps the line out of shell history under `HIST_IGNORE_SPACE` (zsh) or
-`HISTCONTROL=ignorespace` (bash).
+`SODEX_*` environment variable; none of the programs take arguments. How private keys should reach
+those variables is under [Supplying keys](#supplying-keys).
 
 ## Two kinds of private key
 
@@ -47,6 +37,117 @@ measurement of 2026-09-14: a key registered with `TRADE` withheld placed an orde
 the signature the venue verifies does not cover that field. A key therefore has exactly two
 bounds - its expiry (`SODEX_KEY_TTL_HOURS`) and revocation (`revoke_api_key`) - and a key handed to
 an unattended process should carry an expiry.
+
+## Supplying keys
+
+The programs read keys from the environment and nowhere else, so anything that sets
+`SODEX_API_PRIVATE_KEY` or `SODEX_MASTER_PRIVATE_KEY` for one command works. Two ways are shown:
+one that runs anywhere, and one that keeps the keys in the macOS Keychain.
+
+### Any platform: one `env` invocation
+
+```text
+ env SODEX_API_PRIVATE_KEY=<key> SODEX_ACCOUNT_ID=<aid> cargo run -q -p nautilus-sodex --example verify_signing
+```
+
+With `env` rather than `export`, the key lives only for this command instead of staying in the
+shell's environment for everything run afterwards and every child process it spawns. The leading
+space keeps the line out of shell history under `HIST_IGNORE_SPACE` (zsh) or
+`HISTCONTROL=ignorespace` (bash). The key is still typed or pasted in plain text each time, and
+has to be kept somewhere between runs. The command examples on this page use this form.
+
+### macOS: the Keychain
+
+Stored in a keychain, a key is encrypted at rest, never appears on a command line, and never
+reaches shell history or a dotfile. The command reads it at the moment it runs:
+
+```text
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_MARKET=perps \
+cargo run -q -p nautilus-sodex --example verify_signing
+```
+
+This uses the shell's own `NAME=value command` prefix rather than `env`. The scope is the same -
+the variables exist only for this command - but `env` would receive the expanded key as one of
+its arguments, and a process's arguments are visible to anyone listing processes for as long as it
+runs. The prefix form places the key straight into the command's environment. No leading space is
+needed, since the line holds no secret.
+
+The service name (`-s`) and account (`-a`) are only lookup labels. The convention used here is one
+service per network, `sodex-api-testnet` and `sodex-api-mainnet`, with the registered key name as
+the account. One key name can then be stored for both networks, and a key registered on both
+engines (see [register_api_key](#register_api_key)) is stored once.
+
+**API keys** go in the login keychain, which is unlocked while you are logged in:
+
+```text
+security add-generic-password -s sodex-api-testnet -a perps-key-01 -w
+security find-generic-password -s sodex-api-testnet -a perps-key-01
+security delete-generic-password -s sodex-api-testnet -a perps-key-01
+```
+
+The first stores a key. `-w` is deliberately last and given no value, so `security` prompts for
+the key instead of taking it as an argument; paste the key `register_api_key` printed. Add `-U` to
+overwrite an existing entry. The second confirms an entry exists without printing the key; the
+third removes it, which belongs with every revocation.
+
+**The master key** gets a keychain of its own, with its own password, locked except for the one
+command that needs it. It authorizes withdrawals, so it should not sit in a keychain that is open
+for the whole login session:
+
+```text
+security create-keychain ~/Library/Keychains/sodex-master.keychain
+security set-keychain-settings -l -u -t 300 ~/Library/Keychains/sodex-master.keychain
+printf 'master key: '; read -rs key; echo
+printf 'add-generic-password -s sodex-master -a testnet -w %s %s\n' "$key" ~/Library/Keychains/sodex-master.keychain | security -i
+unset key
+security lock-keychain ~/Library/Keychains/sodex-master.keychain
+```
+
+`create-keychain` asks for the new keychain's password at the terminal; use one that differs from
+the login password. `set-keychain-settings` makes it lock again after 300 idle seconds and when the
+Mac sleeps, in case the explicit lock below is ever skipped. Created by path like this, the
+keychain stays out of the default search list, so nothing that searches keychains generally finds
+it, and every command has to name it.
+
+Storing the key takes three lines rather than the one used for API keys, because
+`add-generic-password` cannot both prompt and target a keychain: it prompts only when `-w` is the
+last argument, and a named keychain must come after every option. Written the API-key way,
+**`-w` takes the keychain's path as the key, and the entry lands in the login keychain.** So the
+key is read without echo into a shell variable, and the command reaches `security` on its standard
+input through `security -i`. `read` and `printf` are shell builtins in zsh and bash, so the key
+never becomes any process's argument, and `unset` clears the variable afterwards.
+
+A command that needs the master key then unlocks, reads, runs, and locks:
+
+```text
+security unlock-keychain ~/Library/Keychains/sodex-master.keychain && \
+SODEX_MASTER_PRIVATE_KEY="$(security find-generic-password -s sodex-master -a testnet -w ~/Library/Keychains/sodex-master.keychain)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_MARKET=perps \
+cargo run -q -p nautilus-sodex --example register_api_key; \
+security lock-keychain ~/Library/Keychains/sodex-master.keychain
+```
+
+`unlock-keychain` prompts for that keychain's password. The final `;` rather than `&&` locks the
+keychain whether or not the program succeeded.
+
+Things this does not change:
+
+- **A missing entry is an empty key, not a stopped command.** If the lookup finds nothing,
+  `security` prints an error, the substitution yields an empty string, and the program still
+  starts. It then refuses the key as having length 0 before sending anything, so nothing reaches
+  the venue - but read the first lines of output rather than assuming the lookup worked.
+- **Any of your processes can read an API key while the login keychain is unlocked.** An entry
+  created by `security` trusts `security` itself, so the lookup above never asks for confirmation,
+  and neither would the same lookup run by anything else under your account. Adding `-T ""` when
+  storing removes that trust, and macOS then asks for confirmation on every read - stronger, and
+  unusable for an unattended process. The separate keychain is what protects the master key.
+- **The running program still holds the key in its environment.** The Keychain protects the key at
+  rest and keeps it off the command line; it does nothing for a process that is already running.
 
 ## Common variables
 
@@ -115,8 +216,9 @@ brake is known to work before any key goes to an unattended process.
   `api-key-01`.
 - Without `SODEX_KEY_TTL_HOURS` the key never expires, and the program says so.
 - Without `SODEX_API_PRIVATE_KEY` a new key is generated and its private half is **printed once and
-  written nowhere**. Store it before the terminal scrolls away; losing it means revoking the key
-  and registering another.
+  written nowhere**. Store it before the terminal scrolls away - on macOS with the
+  `add-generic-password` line under [Supplying keys](#supplying-keys) - since losing it means
+  revoking the key and registering another.
 - **One key for both engines:** register on one engine as above, then run again with
   `SODEX_MARKET` switched and `SODEX_API_PRIVATE_KEY` set to the key just printed. The second run
   registers that address rather than generating a new keypair.
