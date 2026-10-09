@@ -75,10 +75,13 @@ its arguments, and a process's arguments are visible to anyone listing processes
 runs. The prefix form places the key straight into the command's environment. No leading space is
 needed, since the line holds no secret.
 
-The service name (`-s`) and account (`-a`) are only lookup labels. The convention used here is one
-service per network, `sodex-api-testnet` and `sodex-api-mainnet`, with the registered key name as
-the account. One key name can then be stored for both networks, and a key registered on both
-engines (see [register_api_key](#register_api_key)) is stored once.
+The service name (`-s`) and account (`-a`) are only lookup labels; nothing at the venue reads
+them. The convention used here is one service per network, `sodex-api-testnet` and
+`sodex-api-mainnet`, with the registered key name as the account. One key name can then be stored
+for both networks, and a key registered on both engines (see [register_api_key](#register_api_key))
+is stored once. Every Keychain command on this page uses the testnet names; on mainnet, read
+`sodex-api-mainnet` for API keys and `-a mainnet` for the master entry, and add
+`SODEX_NETWORK=mainnet`.
 
 **API keys** go in the login keychain, which is unlocked while you are logged in:
 
@@ -213,11 +216,14 @@ rest, and then the orders are real.
 
 ## Key lifecycle
 
-The order is: find the account id ([fetch_account_id](#finding-the-account-id)), register, check the list, check signing, use, revoke, check the list again. The
-first time on a new account, pull the whole revocation once on a throwaway key, so the emergency
-brake is known to work before any key goes to an unattended process.
+The order is: find the account id ([fetch_account_id](#finding-the-account-id)), register, check
+the list, check signing, use, revoke, check the list again. The first time on a new account, pull
+the whole revocation once on a throwaway key, so the emergency brake is known to work before any
+key goes to an unattended process.
 
 ### register_api_key
+
+Any platform:
 
 ```text
  env SODEX_MASTER_PRIVATE_KEY=<master key> \
@@ -228,17 +234,33 @@ brake is known to work before any key goes to an unattended process.
      cargo run -q -p nautilus-sodex --example register_api_key
 ```
 
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+security unlock-keychain ~/Library/Keychains/sodex-master.keychain && \
+SODEX_MASTER_PRIVATE_KEY="$(security find-generic-password -s sodex-master -a testnet -w ~/Library/Keychains/sodex-master.keychain)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_MARKET=perps \
+SODEX_KEY_TTL_HOURS=720 \
+cargo run -q -p nautilus-sodex --example register_api_key; \
+security lock-keychain ~/Library/Keychains/sodex-master.keychain
+```
+
 - `SODEX_MASTER_PRIVATE_KEY` and `SODEX_ACCOUNT_ID` (from `fetch_account_id`) are required.
-  `SODEX_API_KEY_NAME` defaults to
-  `api-key-01`.
+  `SODEX_API_KEY_NAME` defaults to `api-key-01`.
 - Without `SODEX_KEY_TTL_HOURS` the key never expires, and the program says so.
 - Without `SODEX_API_PRIVATE_KEY` a new key is generated and its private half is **printed once and
-  written nowhere**. Store it before the terminal scrolls away - on macOS with the
-  `add-generic-password` line under [Supplying keys](#supplying-keys) - since losing it means
-  revoking the key and registering another.
+  written nowhere**. Store it before the terminal scrolls away, since losing it means revoking the
+  key and registering another.
 - **One key for both engines:** register on one engine as above, then run again with
   `SODEX_MARKET` switched and `SODEX_API_PRIVATE_KEY` set to the key just printed. The second run
-  registers that address rather than generating a new keypair.
+  registers that address rather than generating a new keypair. With the Keychain, that is the
+  Keychain command above with `SODEX_MARKET=spot` and one more line,
+  `SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)"`.
+- **With the Keychain, store a generated key straight away:**
+  `security add-generic-password -s sodex-api-testnet -a perps-key-01 -w`, then paste the printed
+  key at the prompt.
 - The venue's mainnet UI also creates keys (More -> API, at `/apikeys`), capped at five and valid
   for 1 to 180 days. The testnet UI has no such page.
 
@@ -258,6 +280,8 @@ any other account.
 
 ### verify_signing
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=perps-key-01 \
      SODEX_API_PRIVATE_KEY=<API key> \
@@ -265,6 +289,17 @@ any other account.
      SODEX_MARKET=perps \
      SODEX_WALLET_ADDRESS=<0x...> \
      cargo run -q -p nautilus-sodex --example verify_signing
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_MARKET=perps \
+SODEX_WALLET_ADDRESS=<0x...> \
+cargo run -q -p nautilus-sodex --example verify_signing
 ```
 
 Sends `scheduleCancel` with no timestamp. That only clears a pending dead-man schedule and touches
@@ -277,6 +312,8 @@ wrong key all come back from the venue as the same `API key not found`; the list
 
 ### revoke_api_key
 
+Any platform:
+
 ```text
  env SODEX_MASTER_PRIVATE_KEY=<master key> \
      SODEX_ACCOUNT_ID=<aid> \
@@ -284,6 +321,19 @@ wrong key all come back from the venue as the same `API key not found`; the list
      SODEX_API_PRIVATE_KEY=<the key being revoked> \
      SODEX_MARKET=perps \
      cargo run -q -p nautilus-sodex --example revoke_api_key
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+security unlock-keychain ~/Library/Keychains/sodex-master.keychain && \
+SODEX_MASTER_PRIVATE_KEY="$(security find-generic-password -s sodex-master -a testnet -w ~/Library/Keychains/sodex-master.keychain)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_API_KEY_NAME=throwaway-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a throwaway-key-01 -w)" \
+SODEX_MARKET=perps \
+cargo run -q -p nautilus-sodex --example revoke_api_key; \
+security lock-keychain ~/Library/Keychains/sodex-master.keychain
 ```
 
 - `SODEX_MASTER_PRIVATE_KEY`, `SODEX_ACCOUNT_ID` and `SODEX_API_KEY_NAME` are required.
@@ -298,14 +348,31 @@ wrong key all come back from the venue as the same `API key not found`; the list
   live and revoke it through the venue's own interface.
 - **Revoking a key a running node is using kills it mid-flight.** Every order, cancel and amend
   that node signs starts failing.
+- **With the Keychain, delete the entry once the revocation is verified:**
+  `security delete-generic-password -s sodex-api-testnet -a throwaway-key-01`. Not earlier: the
+  command reads the entry when it starts, and a revocation that fails leaves the key live and the
+  entry still needed.
 
 ### probe_key_permissions
+
+Any platform:
 
 ```text
  env SODEX_MASTER_PRIVATE_KEY=<master key> \
      SODEX_ACCOUNT_ID=<aid> \
      SODEX_MARKET=perps \
      cargo run -q -p nautilus-sodex --example probe_key_permissions
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+security unlock-keychain ~/Library/Keychains/sodex-master.keychain && \
+SODEX_MASTER_PRIVATE_KEY="$(security find-generic-password -s sodex-master -a testnet -w ~/Library/Keychains/sodex-master.keychain)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_MARKET=perps \
+cargo run -q -p nautilus-sodex --example probe_key_permissions; \
+security lock-keychain ~/Library/Keychains/sodex-master.keychain
 ```
 
 A one-off research tool, not part of routine operation. In three steps - control, mirror, under
@@ -345,6 +412,8 @@ for perps; set it whenever the registered name differs.
 
 ### cancel_open_orders
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=perps-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on that engine> \
@@ -352,6 +421,17 @@ for perps; set it whenever the registered name differs.
      SODEX_WALLET_ADDRESS=<0x...> \
      SODEX_MARKET=perps \
      cargo run -q -p nautilus-sodex --example cancel_open_orders
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_WALLET_ADDRESS=<0x...> \
+SODEX_MARKET=perps \
+cargo run -q -p nautilus-sodex --example cancel_open_orders
 ```
 
 Cancels **everything** resting on the selected engine, not only what one program placed, and
@@ -363,11 +443,22 @@ cleanup must not depend on the node's shutdown working.
 
 ### place_and_cancel
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=api-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on spot> \
      SODEX_ACCOUNT_ID=<aid> \
      cargo run -q -p nautilus-sodex --example place_and_cancel
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=api-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a api-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+cargo run -q -p nautilus-sodex --example place_and_cancel
 ```
 
 Optional: `SODEX_SYMBOL_ID` (`1`), `SODEX_LIMIT_PRICE` (`40000`), `SODEX_QUANTITY` (`0.001`). The
@@ -377,12 +468,24 @@ the market**. `SODEX_LEAVE_RESTING=true` skips the cancel, leaving the order for
 
 ### place_modify_cancel
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=perps-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on perps> \
      SODEX_ACCOUNT_ID=<aid> \
      SODEX_WALLET_ADDRESS=<0x...> \
      cargo run -q -p nautilus-sodex --example place_modify_cancel
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_WALLET_ADDRESS=<0x...> \
+cargo run -q -p nautilus-sodex --example place_modify_cancel
 ```
 
 The amendment is verified by reading the account back, not by the acknowledgement. Optional:
@@ -399,12 +502,24 @@ The amendment is verified by reading the account back, not by the acknowledgemen
 
 ### probe_limit_quantity
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=perps-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on perps> \
      SODEX_ACCOUNT_ID=<aid> \
      SODEX_QUANTITY=0.0002 \
      cargo run -q -p nautilus-sodex --example probe_limit_quantity
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_QUANTITY=0.0002 \
+cargo run -q -p nautilus-sodex --example probe_limit_quantity
 ```
 
 A research tool separating the two explanations for `quantity is invalid`: a trailing zero in the
@@ -414,12 +529,24 @@ order rests far from the market and is cancelled immediately.
 
 ### observe_fill
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=api-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on spot> \
      SODEX_ACCOUNT_ID=<aid> \
      SODEX_WALLET_ADDRESS=<0x...> \
      cargo run -q -p nautilus-sodex --example observe_fill
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=api-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a api-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_WALLET_ADDRESS=<0x...> \
+cargo run -q -p nautilus-sodex --example observe_fill
 ```
 
 **Places two real market orders**: a minimum-size buy, then a sell to flatten. The sell reads the
@@ -433,6 +560,8 @@ held, which cleans up a leftover from an earlier run.
 
 ### observe_position
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=perps-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on perps> \
@@ -440,6 +569,17 @@ held, which cleans up a leftover from an earlier run.
      SODEX_WALLET_ADDRESS=<0x...> \
      SODEX_SIDE=buy \
      cargo run -q -p nautilus-sodex --example observe_position
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_WALLET_ADDRESS=<0x...> \
+SODEX_SIDE=buy \
+cargo run -q -p nautilus-sodex --example observe_position
 ```
 
 **Places two real market orders**: one to open, then a reduce-only one to close. The close runs
@@ -452,6 +592,8 @@ and whatever is left open then has to be flattened by hand.
 
 ### set_leverage
 
+Any platform:
+
 ```text
  env SODEX_API_KEY_NAME=perps-key-01 \
      SODEX_API_PRIVATE_KEY=<key registered on perps> \
@@ -460,6 +602,18 @@ and whatever is left open then has to be flattened by hand.
      SODEX_LEVERAGE=20 \
      SODEX_MARGIN_MODE=cross \
      cargo run -q -p nautilus-sodex --example set_leverage
+```
+
+macOS Keychain, set up as under [Supplying keys](#supplying-keys):
+
+```text
+SODEX_API_KEY_NAME=perps-key-01 \
+SODEX_API_PRIVATE_KEY="$(security find-generic-password -s sodex-api-testnet -a perps-key-01 -w)" \
+SODEX_ACCOUNT_ID=<aid> \
+SODEX_SYMBOL_ID=1 \
+SODEX_LEVERAGE=20 \
+SODEX_MARGIN_MODE=cross \
+cargo run -q -p nautilus-sodex --example set_leverage
 ```
 
 Perps only. Leverage applies to the instrument, so it affects every position opened afterwards,
