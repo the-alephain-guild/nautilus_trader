@@ -1,0 +1,132 @@
+name: guild-wheels
+
+# Linux wheels of the guild fork, built on GitHub-hosted runners so that no
+# local Docker VM has to hold a fat-LTO release build. The macOS wheel is still
+# built on a Mac with scripts/guild/build-local-wheel.sh and uploaded by hand.
+#
+# A manual run builds wheels as artifacts only. Pushing a guild-v<version> tag
+# also uploads them to that tag's release, created as a draft when missing, so
+# the release notes and the macOS wheel can be added before it is published.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "guild-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guild-wheels-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu 24.04 ships glibc 2.39, the floor the published manylinux_2_39 wheels declare.
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+    name: build - python 3.12 (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 330
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE_DIR: python
+      RUST_BACKTRACE: 1
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/guild-wheel
+    steps:
+      - name: Checkout repository
+        # https://github.com/actions/checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup # zizmor: ignore[self-repository]
+        with:
+          python-version: "3.12"
+          free-disk-space: "true"
+          rust-cache-enabled: "false"
+
+      # The fat-LTO link of the extension runs in one process; upstream built these
+      # wheels on the same 16 GB runners with 8 GB of swap before moving to larger ones.
+      - name: Add swap space
+        run: bash scripts/ci/configure-linux-swap.bash
+
+      - name: Check the tag names the package version
+        if: startsWith(github.ref, 'refs/tags/guild-v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' python/pyproject.toml | head -n 1)"
+          if [ "guild-v${version}" != "$TAG" ]; then
+            echo "tag $TAG does not match python/pyproject.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Build wheel
+        working-directory: ${{ env.PACKAGE_DIR }}
+        run: |
+          MATURIN_VERSION="$(bash ../scripts/maturin-version.bash)"
+          uv run --no-project --no-build --with "maturin==${MATURIN_VERSION}" -- \
+            maturin build --locked --release --out ../dist --interpreter "$(command -v python3.12)"
+
+      - name: Record wheel digest
+        run: |
+          shopt -s nullglob
+          wheels=(dist/nautilus_trader-*-cp312-cp312-*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "expected one cp312 wheel in dist/, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          {
+            echo "| Wheel | sha256 |"
+            echo "|---|---|"
+            echo "| \`$(basename "${wheels[0]}")\` | \`$(sha256sum "${wheels[0]}" | cut -d' ' -f1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload wheel artifact
+        # https://github.com/actions/upload-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.runner }}
+          path: dist/nautilus_trader-*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/guild-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download wheels
+        # https://github.com/actions/download-artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      # A wheel already on the release is never replaced: consumers pin its sha256.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |-
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" \
+              --notes "Linux wheels built by the guild-wheels workflow; notes and the macOS wheel to follow."
+          fi
+          gh release upload "$TAG" dist/nautilus_trader-*.whl
