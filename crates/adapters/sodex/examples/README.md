@@ -1,6 +1,6 @@
 # nautilus-sodex examples
 
-The eighteen programs here run against the live SoDEX venue. They manage API keys, check signing,
+The nineteen programs here run against the live SoDEX venue. They manage API keys, check signing,
 read market data and account state, and place orders on testnet to settle contract details that
 the venue's documentation leaves open. They are not unit tests: apart from the ones marked
 read-only, every one of them changes state at the venue.
@@ -155,7 +155,7 @@ Things this does not change:
 | ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `SODEX_NETWORK`         | `testnet` / `mainnet` | **Every program defaults to testnet**; only the exact string `mainnet` selects mainnet, so a typo lands on testnet |
 | `SODEX_MARKET`          | `spot` / `perps`      | Selects the engine. **The default differs between programs**; see the Engine column of the overview                |
-| `SODEX_ACCOUNT_ID`      | integer               | The account's `aid`, from `/accounts/{address}/state`                                                              |
+| `SODEX_ACCOUNT_ID`      | integer               | The account's `aid`; see below for how to find it                                                                  |
 | `SODEX_WALLET_ADDRESS`  | `0x...`               | The master wallet address, used for unsigned account and key-list reads                                            |
 | `SODEX_API_KEY_NAME`    | string                | The name the key was registered under. Signed requests are matched by name and key together                        |
 | `SODEX_API_PRIVATE_KEY` | hex                   | Printed once at registration and not recoverable afterwards                                                        |
@@ -163,15 +163,18 @@ Things this does not change:
 
 ### Finding the account id
 
-The `aid` comes from the account state read, which is unsigned and needs only the wallet address:
+`fetch_account_id` reads it from the wallet address alone; the read is unsigned, so it works before
+any API key exists:
 
 ```text
-curl -s https://testnet-gw.sodex.dev/api/v1/spot/accounts/<0x...>/state | jq '.data.aid'
+SODEX_WALLET_ADDRESS=<0x...> cargo run -q -p nautilus-sodex --example fetch_account_id
 ```
 
-Use `mainnet-gw` for mainnet. Either engine works, `spot` or `perps` in the path: both answer the
-same `aid` for one wallet, so there is one id per wallet per network, not one per engine. The
-response also carries `uid`, which has matched `aid` so far; the programs need `aid`.
+It prints the `aid` each engine reports, then a ready line such as `SODEX_ACCOUNT_ID=60366`. Add
+`SODEX_NETWORK=mainnet` for mainnet. Both engines answer the same `aid` for one wallet, so there is
+one id per wallet per network, not one per engine; if the two ever disagree the program exits
+non-zero instead of printing an id. Unlike the other read-only programs, it has no default wallet:
+an id read from someone else's wallet would be silently wrong in every signed request after it.
 
 **Spot and perps keep separate key sets**, even under one account id. A key registered on perps is
 unknown to spot, and a spot request signed with it comes back `API key not found`. That message
@@ -187,6 +190,7 @@ engine the key actually lives on.
 | ----------------------- | --------------------------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------- | ------------ |
 | `register_api_key`      | Registers a new API key, or an existing one on the other engine       | master                               | Yes: adds a key                                             | perps        |
 | `revoke_api_key`        | Revokes an API key and measures that it stopped working               | master, ideally plus the revoked key | Yes: removes a key                                          | perps        |
+| `fetch_account_id`      | Looks up the account id for a wallet, from both engines               | none                                 | No                                                          | both         |
 | `list_api_keys`         | Lists the keys each engine holds                                      | none                                 | No                                                          | both         |
 | `probe_key_permissions` | Asks whether the venue accepts a trade-but-not-withdraw mask          | master                               | Yes: registers a throwaway key if accepted, then revokes it | perps        |
 | `verify_signing`        | Checks with a no-op that the venue accepts this key's signatures      | API key                              | Clears a pending dead-man scheduled cancel, if any          | perps        |
@@ -209,7 +213,7 @@ rest, and then the orders are real.
 
 ## Key lifecycle
 
-The order is: register, check the list, check signing, use, revoke, check the list again. The
+The order is: find the account id ([fetch_account_id](#finding-the-account-id)), register, check the list, check signing, use, revoke, check the list again. The
 first time on a new account, pull the whole revocation once on a throwaway key, so the emergency
 brake is known to work before any key goes to an unattended process.
 
@@ -224,7 +228,8 @@ brake is known to work before any key goes to an unattended process.
      cargo run -q -p nautilus-sodex --example register_api_key
 ```
 
-- `SODEX_MASTER_PRIVATE_KEY` and `SODEX_ACCOUNT_ID` are required. `SODEX_API_KEY_NAME` defaults to
+- `SODEX_MASTER_PRIVATE_KEY` and `SODEX_ACCOUNT_ID` (from `fetch_account_id`) are required.
+  `SODEX_API_KEY_NAME` defaults to
   `api-key-01`.
 - Without `SODEX_KEY_TTL_HOURS` the key never expires, and the program says so.
 - Without `SODEX_API_PRIVATE_KEY` a new key is generated and its private half is **printed once and
@@ -313,14 +318,15 @@ one order to see whether the mask binds, and revoked immediately. Optional: `SOD
 
 None of these needs a key or changes state.
 
-| Example                | Command                                                                               | Optional (default)                                                                                                                                                                                         |
-| ---------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch_bars`           | `cargo run -q -p nautilus-sodex --example fetch_bars`                                 | `SODEX_SYMBOL` (`vBTC_vUSDC`), `SODEX_INTERVAL` (`1h`), `SODEX_START_MINS` (unset: a fixed count of bars)                                                                                                  |
-| `stream_market_data`   | `cargo run -q -p nautilus-sodex --example stream_market_data`                         | `SODEX_SYMBOL` (`vBTC_vUSDC`), `SODEX_INTERVAL` (`1m`), `SODEX_SECONDS` (`90`)                                                                                                                             |
-| `fetch_reports`        | `SODEX_WALLET_ADDRESS=<0x...> cargo run -q -p nautilus-sodex --example fetch_reports` | `SODEX_WALLET_ADDRESS` (the hardcoded test wallet)                                                                                                                                                         |
-| `probe_channels`       | `cargo run -q -p nautilus-sodex --example probe_channels`                             | `SODEX_CHANNEL` (sweep one channel's parameter shapes), `SODEX_LISTEN` (comma-separated channels, subscribed together and printed interleaved), `SODEX_SECONDS` (`10`), `SODEX_ACCOUNT_ID`, `SODEX_SYMBOL` |
-| `probe_account_stream` | `cargo run -q -p nautilus-sodex --example probe_account_stream`                       | `SODEX_PHASE=subsets` (second phase: enumerate field subsets), `SODEX_CHANNEL` (`accountUpdate`), `SODEX_SECONDS` (`45`), `SODEX_ACCOUNT_ID`, `SODEX_SYMBOL`, `SODEX_COIN` (`vUSDC`)                       |
-| `probe_rest_endpoints` | `cargo run -q -p nautilus-sodex --example probe_rest_endpoints`                       | `SODEX_ADDRESS` (the hardcoded test wallet), `SODEX_ACCOUNT_ID`                                                                                                                                            |
+| Example                | Command                                                                                  | Optional (default)                                                                                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch_account_id`     | `SODEX_WALLET_ADDRESS=<0x...> cargo run -q -p nautilus-sodex --example fetch_account_id` | none; the wallet is required                                                                                                                                                                               |
+| `fetch_bars`           | `cargo run -q -p nautilus-sodex --example fetch_bars`                                    | `SODEX_SYMBOL` (`vBTC_vUSDC`), `SODEX_INTERVAL` (`1h`), `SODEX_START_MINS` (unset: a fixed count of bars)                                                                                                  |
+| `stream_market_data`   | `cargo run -q -p nautilus-sodex --example stream_market_data`                            | `SODEX_SYMBOL` (`vBTC_vUSDC`), `SODEX_INTERVAL` (`1m`), `SODEX_SECONDS` (`90`)                                                                                                                             |
+| `fetch_reports`        | `SODEX_WALLET_ADDRESS=<0x...> cargo run -q -p nautilus-sodex --example fetch_reports`    | `SODEX_WALLET_ADDRESS` (the hardcoded test wallet)                                                                                                                                                         |
+| `probe_channels`       | `cargo run -q -p nautilus-sodex --example probe_channels`                                | `SODEX_CHANNEL` (sweep one channel's parameter shapes), `SODEX_LISTEN` (comma-separated channels, subscribed together and printed interleaved), `SODEX_SECONDS` (`10`), `SODEX_ACCOUNT_ID`, `SODEX_SYMBOL` |
+| `probe_account_stream` | `cargo run -q -p nautilus-sodex --example probe_account_stream`                          | `SODEX_PHASE=subsets` (second phase: enumerate field subsets), `SODEX_CHANNEL` (`accountUpdate`), `SODEX_SECONDS` (`45`), `SODEX_ACCOUNT_ID`, `SODEX_SYMBOL`, `SODEX_COIN` (`vUSDC`)                       |
+| `probe_rest_endpoints` | `cargo run -q -p nautilus-sodex --example probe_rest_endpoints`                          | `SODEX_ADDRESS` (the hardcoded test wallet), `SODEX_ACCOUNT_ID`                                                                                                                                            |
 
 All of them also take `SODEX_NETWORK` and `SODEX_MARKET`. Trades are sparse on testnet; to see
 `stream_market_data` print some, set `SODEX_NETWORK=mainnet`, which is still a public read.
