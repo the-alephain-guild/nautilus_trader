@@ -54,10 +54,20 @@ jobs:
           free-disk-space: "true"
           rust-cache-enabled: "false"
 
-      # The fat-LTO link of the extension runs in one process; upstream built these
-      # wheels on the same 16 GB runners with 8 GB of swap before moving to larger ones.
+      # The fat-LTO link of the extension runs in one process. With 8 GB of swap (what
+      # scripts/ci/configure-linux-swap.bash sets) the aarch64 build was terminated
+      # partway through nautilus-pyo3, so this matches the 32 GB of the larger runners
+      # upstream moved to: 16 GB of memory plus 16 GB of swap.
       - name: Add swap space
-        run: bash scripts/ci/configure-linux-swap.bash
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+          swapon --show
 
       - name: Check the tag names the package version
         if: startsWith(github.ref, 'refs/tags/guild-v')
@@ -73,9 +83,21 @@ jobs:
       - name: Build wheel
         working-directory: ${{ env.PACKAGE_DIR }}
         run: |
+          # Sample memory once a minute so a failed run shows whether it ran out.
+          (while true; do
+            usage="$(free -m | awk '/^Mem:/ {m=$3} /^Swap:/ {s=$3} END {print "mem_mb=" m " swap_mb=" s}')"
+            echo "$(date -u +%H:%M:%S) ${usage}"
+            sleep 60
+          done) > "$RUNNER_TEMP/memory.log" 2>&1 &
           MATURIN_VERSION="$(bash ../scripts/maturin-version.bash)"
           uv run --no-project --no-build --with "maturin==${MATURIN_VERSION}" -- \
             maturin build --locked --release --out ../dist --interpreter "$(command -v python3.12)"
+
+      - name: Show memory history
+        if: always()
+        run: |
+          tail -n 60 "$RUNNER_TEMP/memory.log" || true
+          sudo dmesg | grep -iE 'out of memory|oom|killed process' || echo "no OOM entries in dmesg"
 
       - name: Record wheel digest
         run: |
