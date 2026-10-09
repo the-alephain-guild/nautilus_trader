@@ -161,6 +161,18 @@ Things this does not change:
 | `SODEX_API_PRIVATE_KEY` | hex                   | Printed once at registration and not recoverable afterwards                                                        |
 | `SODEX_SYMBOL_ID`       | integer               | The venue's numeric symbol id. `1` is `vBTC_vUSDC` on spot and `BTC-USD` on perps                                  |
 
+### Finding the account id
+
+The `aid` comes from the account state read, which is unsigned and needs only the wallet address:
+
+```text
+curl -s https://testnet-gw.sodex.dev/api/v1/spot/accounts/<0x...>/state | jq '.data.aid'
+```
+
+Use `mainnet-gw` for mainnet. Either engine works, `spot` or `perps` in the path: both answer the
+same `aid` for one wallet, so there is one id per wallet per network, not one per engine. The
+response also carries `uid`, which has matched `aid` so far; the programs need `aid`.
+
 **Spot and perps keep separate key sets**, even under one account id. A key registered on perps is
 unknown to spot, and a spot request signed with it comes back `API key not found`. That message
 reads like a credential problem and is usually an engine mix-up; run `list_api_keys` to see which
