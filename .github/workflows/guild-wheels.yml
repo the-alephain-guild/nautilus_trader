@@ -54,15 +54,14 @@ jobs:
           free-disk-space: "true"
           rust-cache-enabled: "false"
 
-      # The fat-LTO link of the extension runs in one process. With 8 GB of swap (what
-      # scripts/ci/configure-linux-swap.bash sets) the aarch64 build was terminated
-      # partway through nautilus-pyo3, so this matches the 32 GB of the larger runners
-      # upstream moved to: 16 GB of memory plus 16 GB of swap.
+      # The fat-LTO build of nautilus-pyo3 runs in one rustc process. Measured on these
+      # 16 GB runners: x86_64 peaks near 18 GB, but aarch64 used up 16 GB of memory plus
+      # 16 GB of swap and was terminated, so the swap here leaves it 64 GB in total.
       - name: Add swap space
         run: |
           sudo swapoff -a || true
           sudo rm -f /mnt/swapfile /swapfile
-          sudo fallocate -l 16G /swapfile
+          sudo fallocate -l 48G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
