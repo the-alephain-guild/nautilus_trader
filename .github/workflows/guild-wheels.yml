@@ -83,21 +83,21 @@ jobs:
       - name: Build wheel
         working-directory: ${{ env.PACKAGE_DIR }}
         run: |
-          # Sample memory once a minute so a failed run shows whether it ran out.
+          # Print memory use and kernel OOM events into this step's own log: when the
+          # aarch64 build was terminated, the steps after it did not run at all.
           (while true; do
             usage="$(free -m | awk '/^Mem:/ {m=$3} /^Swap:/ {s=$3} END {print "mem_mb=" m " swap_mb=" s}')"
-            echo "$(date -u +%H:%M:%S) ${usage}"
-            sleep 60
-          done) > "$RUNNER_TEMP/memory.log" 2>&1 &
+            pressure="$(awk '/^full/ {print "full_" $2}' /proc/pressure/memory)"
+            top="$(ps -eo rss=,comm= --sort=-rss | head -n 1 | awk '{print "top=" $2 ":" int($1 / 1024) "mb"}')"
+            echo "[memory] $(date -u +%H:%M:%S) ${usage} ${pressure} ${top}"
+            sleep 30
+          done) &
+          (sudo dmesg --follow --time-format iso \
+            | grep --line-buffered -iE 'out of memory|oom|killed process' \
+            | sed -u 's/^/[kernel] /') &
           MATURIN_VERSION="$(bash ../scripts/maturin-version.bash)"
           uv run --no-project --no-build --with "maturin==${MATURIN_VERSION}" -- \
             maturin build --locked --release --out ../dist --interpreter "$(command -v python3.12)"
-
-      - name: Show memory history
-        if: always()
-        run: |
-          tail -n 60 "$RUNNER_TEMP/memory.log" || true
-          sudo dmesg | grep -iE 'out of memory|oom|killed process' || echo "no OOM entries in dmesg"
 
       - name: Record wheel digest
         run: |
