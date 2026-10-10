@@ -89,7 +89,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     parse::OrderSpec,
-    reports::{fill_report, order_status_report, position_status_report},
+    reports::{current_orders, fill_report, order_status_report, position_status_report},
 };
 use crate::{
     common::Market,
@@ -1576,7 +1576,9 @@ impl AccountReader {
     /// Both endpoints are consulted because an order's state is split across them: `/orders`
     /// holds only what is still working, and anything terminal has moved to `/orders/history`.
     /// A reconciliation built on the open list alone would show a cancelled order as absent,
-    /// which the engine cannot tell from an order it was never supposed to know about.
+    /// which the engine cannot tell from an order it was never supposed to know about. History
+    /// holds a row per state change rather than per order, so each order is reported once, at its
+    /// latest revision - see [`current_orders`].
     ///
     /// A record that cannot be expressed is skipped with a warning rather than failing the whole
     /// reconciliation: one unmappable order should not blind the engine to the rest of the book.
@@ -1593,9 +1595,10 @@ impl AccountReader {
             .map_err(|e| anyhow::anyhow!("failed to read order history: {e}"))?;
 
         let ts_init = self.clock.get_time_ns();
-        let mut reports = Vec::with_capacity(open.orders.len() + history.len());
+        let current = current_orders(&open.orders, &history);
+        let mut reports = Vec::with_capacity(current.len());
 
-        for record in open.orders.iter().chain(history.iter()) {
+        for record in current {
             match self.report_for(record, ts_init) {
                 Ok(report) => reports.push(report),
                 Err(e) => log::warn!(

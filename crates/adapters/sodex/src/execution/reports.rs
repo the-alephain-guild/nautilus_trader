@@ -11,6 +11,9 @@
 //! cancelled order as simply absent - which the engine cannot distinguish from an order it should
 //! never have known about.
 //!
+//! History is also not one row per order but one row per state change, so the two lists are
+//! reduced to each order's latest revision before anything is reported - see [`current_orders`].
+//!
 //! # A reported fill beats an inferred one, and says why
 //!
 //! With `/accounts/{wallet}/trades` typed, fills come from the venue rather than being inferred
@@ -28,7 +31,7 @@
 //! so an unfilled order reports no average rather than a zero, which would read as "filled at
 //! zero".
 
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
 
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -235,6 +238,85 @@ pub fn order_status_report(
         .map_err(|e| invalid("executedValue", &record.executed_value, e))?;
 
     Ok(report)
+}
+
+/// Reduces the venue's two order lists to one record per order: the one describing where it stands
+/// now.
+///
+/// # History is a revision log, not a list of orders
+///
+/// `/orders/history` answers with a row per state change, newest first, all under the order's one
+/// `orderID`. A limit order that rested, was modified and was then cancelled appears three times -
+/// `NEW` at the price it was placed at, `NEW` at the modified price, `CANCELED` - and every one of
+/// those rows is a well-formed order record. Reporting each of them hands the engine several
+/// reports for one order, of which it keeps the last per venue order id; with the venue's
+/// newest-first ordering that is the oldest revision. Long-cancelled orders came back as accepted
+/// that way, with their original `price * quantity` booked as locked balance, and every cancel the
+/// engine then sent was answered `OrderNotFound`.
+///
+/// The latest revision is picked by `updatedAt`, not by position in the response, and a tie goes
+/// to the later lifecycle stage: an order that crosses on arrival can be accepted and filled in the
+/// same millisecond, and only the stage separates those two rows.
+///
+/// # Only the open list says an order is still working
+///
+/// An order whose latest revision reads `NEW` or `PARTIALLY_FILLED` but which `/orders` does not
+/// hold is left out. Reporting it as working would claim a resting order the venue has just said
+/// it does not have; leaving it out lets the next read, by which time history carries the terminal
+/// row, settle it.
+///
+/// Orders are returned in venue order id order, which is the order they were placed in.
+#[must_use]
+pub fn current_orders<'a>(
+    open: &'a [OrderRecord],
+    history: &'a [OrderRecord],
+) -> Vec<&'a OrderRecord> {
+    let mut latest: BTreeMap<u64, &OrderRecord> = BTreeMap::new();
+
+    for record in open.iter().chain(history) {
+        latest
+            .entry(record.order_id)
+            .and_modify(|held| {
+                if revision_rank(record) > revision_rank(held) {
+                    *held = record;
+                }
+            })
+            .or_insert(record);
+    }
+
+    latest
+        .into_values()
+        .filter(|record| {
+            let working = matches!(
+                record.status,
+                OrderStatus::New | OrderStatus::PartiallyFilled
+            );
+            let listed_open = open.iter().any(|held| held.order_id == record.order_id);
+            if working && !listed_open {
+                log::warn!(
+                    "sodex_order_report_skipped order_id={} status={} reason=not_on_open_list",
+                    record.order_id,
+                    record.status
+                );
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// Orders an order's revisions: by update time, then by how far along its lifecycle each is.
+const fn revision_rank(record: &OrderRecord) -> (u64, u8) {
+    let stage = match record.status {
+        OrderStatus::New => 0,
+        OrderStatus::Triggered => 1,
+        OrderStatus::PartiallyFilled => 2,
+        OrderStatus::Filled
+        | OrderStatus::Canceled
+        | OrderStatus::Rejected
+        | OrderStatus::Expired => 3,
+    };
+    (record.updated_at_ms, stage)
 }
 
 /// The average price actually achieved, or `None` when nothing has filled.
@@ -897,5 +979,281 @@ mod position_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use nautilus_model::{
+        identifiers::{ClientId, Symbol, Venue},
+        reports::mass_status::ExecutionMassStatus,
+    };
+    use rstest::rstest;
+
+    use super::*;
+    use crate::{config::SODEX_SPOT, http::account_reads::OpenOrders};
+
+    /// The spot account's `/accounts/{wallet}/orders/history`, verbatim as read on 2026-10-10,
+    /// while `/accounts/{wallet}/orders` and the account state both listed no open order.
+    ///
+    /// Seven orders in fourteen rows: one row per state change, newest first. The two `modprobe`
+    /// orders rested, were modified from 40000 to 39000 and were then cancelled, so each appears
+    /// three times; the plain `probe` orders rested and were cancelled; the `fillprobe` market
+    /// orders filled on arrival and appear once.
+    const HISTORY: &str = r#"[
+        {"symbol":"vBTC_vUSDC","orderID":1290675050,"clOrdID":"modprobe-1789366562193","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"39000","origQty":"0.001","status":"CANCELED","executedQty":"0","executedValue":"0","marginFrozen":"0","createdAt":1789366566113,"updatedAt":1789366566894},
+        {"symbol":"vBTC_vUSDC","orderID":1290675050,"clOrdID":"modprobe-1789366562193","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"39000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"39","createdAt":1789366566113,"updatedAt":1789366566485},
+        {"symbol":"vBTC_vUSDC","orderID":1290675050,"clOrdID":"modprobe-1789366562193","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1789366566113,"updatedAt":1789366566113},
+        {"symbol":"vBTC_vUSDC","orderID":1290674856,"clOrdID":"modprobe-1789366491054","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"39000","origQty":"0.001","status":"CANCELED","executedQty":"0","executedValue":"0","marginFrozen":"0","createdAt":1789366491841,"updatedAt":1789366531252},
+        {"symbol":"vBTC_vUSDC","orderID":1290674856,"clOrdID":"modprobe-1789366491054","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"39000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"39","createdAt":1789366491841,"updatedAt":1789366492268},
+        {"symbol":"vBTC_vUSDC","orderID":1290674856,"clOrdID":"modprobe-1789366491054","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1789366491841,"updatedAt":1789366491841},
+        {"symbol":"vBTC_vUSDC","orderID":1290674093,"clOrdID":"probe-1789366226975","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40002","origQty":"0.001","status":"CANCELED","executedQty":"0","executedValue":"0","marginFrozen":"0","createdAt":1789366227859,"updatedAt":1789366242504},
+        {"symbol":"vBTC_vUSDC","orderID":1290674086,"clOrdID":"probe-1789366224603","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40001","origQty":"0.001","status":"CANCELED","executedQty":"0","executedValue":"0","marginFrozen":"0","createdAt":1789366225689,"updatedAt":1789366242504},
+        {"symbol":"vBTC_vUSDC","orderID":1290674093,"clOrdID":"probe-1789366226975","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40002","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40.002","createdAt":1789366227859,"updatedAt":1789366227859},
+        {"symbol":"vBTC_vUSDC","orderID":1290674086,"clOrdID":"probe-1789366224603","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40001","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40.001","createdAt":1789366225689,"updatedAt":1789366225689},
+        {"symbol":"vBTC_vUSDC","orderID":1290029653,"clOrdID":"fillprobe-1789115999154","side":"SELL","type":"MARKET","timeInForce":"IOC","price":"69661.35","origQty":"0.00099","status":"FILLED","executedQty":"0.00099","executedValue":"76.62699","marginFrozen":"0","createdAt":1789116003061,"updatedAt":1789116003061},
+        {"symbol":"vBTC_vUSDC","orderID":1290012932,"clOrdID":"fillprobe-1789108466447","side":"BUY","type":"MARKET","timeInForce":"IOC","price":"84901.85","origQty":"0.001","status":"FILLED","executedQty":"0.001","executedValue":"77.184","marginFrozen":"0","createdAt":1789108467221,"updatedAt":1789108467221},
+        {"symbol":"vBTC_vUSDC","orderID":1289807722,"clOrdID":"probe-1789040198677","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"CANCELED","executedQty":"0","executedValue":"0","marginFrozen":"0","createdAt":1789040199583,"updatedAt":1789040199772},
+        {"symbol":"vBTC_vUSDC","orderID":1289807722,"clOrdID":"probe-1789040198677","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1789040199583,"updatedAt":1789040199583}
+    ]"#;
+
+    /// The open list as read alongside [`HISTORY`]: empty.
+    const NO_OPEN_ORDERS: &str =
+        r#"{"blockTime":1791641491424,"blockHeight":283520468,"orders":[]}"#;
+
+    /// An open list holding one resting order and one partly filled order.
+    ///
+    /// Constructed in the venue's shape rather than captured: the account held nothing open when
+    /// the history above was read. The partly filled order's history appears in
+    /// [`HISTORY_WITH_LIVE_ORDERS`].
+    const TWO_OPEN_ORDERS: &str = r#"{"blockTime":1791641491424,"blockHeight":283520468,"orders":[
+        {"symbol":"vBTC_vUSDC","orderID":1290700001,"clOrdID":"resting-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1791641400000,"updatedAt":1791641400000},
+        {"symbol":"vBTC_vUSDC","orderID":1290700002,"clOrdID":"partial-open-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"PARTIALLY_FILLED","executedQty":"0.0004","executedValue":"16","marginFrozen":"24","createdAt":1791641410000,"updatedAt":1791641420000}
+    ]}"#;
+
+    /// History rows for the orders on [`TWO_OPEN_ORDERS`], plus one order that partly filled and
+    /// was then cancelled. Constructed in the venue's revision-log shape, newest first.
+    const HISTORY_WITH_LIVE_ORDERS: &str = r#"[
+        {"symbol":"vBTC_vUSDC","orderID":1290700003,"clOrdID":"partial-cancel-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"CANCELED","executedQty":"0.0004","executedValue":"16","marginFrozen":"0","createdAt":1791641430000,"updatedAt":1791641450000},
+        {"symbol":"vBTC_vUSDC","orderID":1290700003,"clOrdID":"partial-cancel-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"PARTIALLY_FILLED","executedQty":"0.0004","executedValue":"16","marginFrozen":"24","createdAt":1791641430000,"updatedAt":1791641440000},
+        {"symbol":"vBTC_vUSDC","orderID":1290700003,"clOrdID":"partial-cancel-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1791641430000,"updatedAt":1791641430000},
+        {"symbol":"vBTC_vUSDC","orderID":1290700002,"clOrdID":"partial-open-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"PARTIALLY_FILLED","executedQty":"0.0004","executedValue":"16","marginFrozen":"24","createdAt":1791641410000,"updatedAt":1791641420000},
+        {"symbol":"vBTC_vUSDC","orderID":1290700002,"clOrdID":"partial-open-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1791641410000,"updatedAt":1791641410000},
+        {"symbol":"vBTC_vUSDC","orderID":1290700001,"clOrdID":"resting-1","side":"BUY","type":"LIMIT","timeInForce":"GTC","price":"40000","origQty":"0.001","status":"NEW","executedQty":"0","executedValue":"0","marginFrozen":"40","createdAt":1791641400000,"updatedAt":1791641400000}
+    ]"#;
+
+    fn open(json: &str) -> Vec<OrderRecord> {
+        serde_json::from_str::<OpenOrders>(json)
+            .expect("the open-list fixture must parse")
+            .orders
+    }
+
+    fn history(json: &str) -> Vec<OrderRecord> {
+        serde_json::from_str(json).expect("the history fixture must parse")
+    }
+
+    /// Feeds the selected records to the engine's own mass status, which keeps one report per
+    /// venue order id - the last one it is given - exactly as reconciliation receives them.
+    fn reconcile(open: &[OrderRecord], history: &[OrderRecord]) -> ExecutionMassStatus {
+        let reports = current_orders(open, history)
+            .into_iter()
+            .map(|record| {
+                order_status_report(
+                    record,
+                    AccountId::from("SODEX_SPOT-60366"),
+                    InstrumentId::new(Symbol::from("vBTC_vUSDC"), Venue::from(SODEX_SPOT)),
+                    2,
+                    5,
+                    UnixNanos::default(),
+                )
+                .expect("every fixture record must convert")
+            })
+            .collect();
+
+        let mut mass_status = ExecutionMassStatus::new(
+            ClientId::from("SODEX_SPOT"),
+            AccountId::from("SODEX_SPOT-60366"),
+            Venue::from(SODEX_SPOT),
+            UnixNanos::default(),
+            None,
+        );
+        mass_status.add_order_reports(reports);
+        mass_status
+    }
+
+    /// The status the engine will reconcile each order to, by client order id.
+    fn status_of(mass_status: &ExecutionMassStatus, cl_ord_id: &str) -> NautilusStatus {
+        mass_status
+            .order_reports()
+            .values()
+            .find(|report| {
+                report.client_order_id.map(|id| id.to_string()) == Some(cl_ord_id.into())
+            })
+            .unwrap_or_else(|| panic!("{cl_ord_id} must be reported"))
+            .order_status
+    }
+
+    /// How many orders reconciliation will initialize as open, by the engine's own predicate.
+    fn open_count(mass_status: &ExecutionMassStatus) -> usize {
+        mass_status
+            .order_reports()
+            .values()
+            .filter(|report| report.order_status.is_open())
+            .count()
+    }
+
+    #[rstest]
+    fn closed_history_reconciles_to_no_open_order() {
+        // The incident: with nothing open at the venue, five long-closed orders came back as
+        // accepted, and 200.003 vUSDC - the sum of their original `price * quantity` - as locked.
+        let mass_status = reconcile(&open(NO_OPEN_ORDERS), &history(HISTORY));
+
+        assert_eq!(mass_status.order_reports().len(), 7);
+        assert_eq!(open_count(&mass_status), 0);
+    }
+
+    #[rstest]
+    fn each_order_reconciles_to_its_final_state() {
+        let mass_status = reconcile(&open(NO_OPEN_ORDERS), &history(HISTORY));
+
+        for cancelled in [
+            "modprobe-1789366562193",
+            "modprobe-1789366491054",
+            "probe-1789366226975",
+            "probe-1789366224603",
+            "probe-1789040198677",
+        ] {
+            assert_eq!(
+                status_of(&mass_status, cancelled),
+                NautilusStatus::Canceled,
+                "{cancelled}"
+            );
+        }
+        for filled in ["fillprobe-1789115999154", "fillprobe-1789108466447"] {
+            assert_eq!(
+                status_of(&mass_status, filled),
+                NautilusStatus::Filled,
+                "{filled}"
+            );
+        }
+    }
+
+    #[rstest]
+    fn a_modified_order_reports_its_last_price() {
+        // The last revision carries the modified price; the first carries the one it was placed
+        // at. Reporting the first would describe an order the venue no longer has.
+        let mass_status = reconcile(&open(NO_OPEN_ORDERS), &history(HISTORY));
+
+        let report = mass_status
+            .order_reports()
+            .get(&VenueOrderId::new("1290675050"))
+            .cloned()
+            .expect("the modified order must be reported");
+        assert_eq!(
+            report.price.map(|price| price.to_string()),
+            Some("39000.00".to_string())
+        );
+    }
+
+    #[rstest]
+    fn only_orders_on_the_open_list_reconcile_as_open() {
+        let mass_status = reconcile(&open(TWO_OPEN_ORDERS), &history(HISTORY_WITH_LIVE_ORDERS));
+
+        assert_eq!(mass_status.order_reports().len(), 3);
+        assert_eq!(open_count(&mass_status), 2);
+        assert_eq!(
+            status_of(&mass_status, "resting-1"),
+            NautilusStatus::Accepted
+        );
+        assert_eq!(
+            status_of(&mass_status, "partial-open-1"),
+            NautilusStatus::PartiallyFilled
+        );
+    }
+
+    #[rstest]
+    fn a_partial_fill_then_cancel_reconciles_as_cancelled_with_its_fill() {
+        let mass_status = reconcile(&open(TWO_OPEN_ORDERS), &history(HISTORY_WITH_LIVE_ORDERS));
+
+        let report = mass_status
+            .order_reports()
+            .get(&VenueOrderId::new("1290700003"))
+            .cloned()
+            .expect("the cancelled order must be reported");
+        assert_eq!(report.order_status, NautilusStatus::Canceled);
+        assert_eq!(report.filled_qty.to_string(), "0.00040");
+        assert_eq!(report.avg_px, Some(Decimal::from(40_000)));
+    }
+
+    #[rstest]
+    fn a_working_revision_absent_from_the_open_list_is_not_reported_open() {
+        // History whose newest row for an order still reads `NEW`, while the open list does not
+        // hold it. The open list is the venue's statement of what is working, so the order is
+        // left out rather than reported as resting - which would book its notional as locked and
+        // send a cancel the venue answers with `OrderNotFound`.
+        let stale = history(HISTORY_WITH_LIVE_ORDERS);
+
+        let mass_status = reconcile(&open(NO_OPEN_ORDERS), &stale);
+
+        assert_eq!(open_count(&mass_status), 0);
+        assert!(
+            mass_status
+                .order_reports()
+                .get(&VenueOrderId::new("1290700001"))
+                .is_none()
+        );
+        assert_eq!(
+            status_of(&mass_status, "partial-cancel-1"),
+            NautilusStatus::Canceled
+        );
+    }
+
+    #[rstest]
+    fn an_order_closed_between_the_two_reads_reports_closed() {
+        // The open list is read first. An order cancelled before history is read is on both, and
+        // the later revision is the one that holds.
+        let mut cancelled = open(TWO_OPEN_ORDERS);
+        cancelled.truncate(1);
+        let mut later = cancelled[0].clone();
+        later.status = OrderStatus::Canceled;
+        later.updated_at_ms += 1;
+
+        let mass_status = reconcile(&cancelled, &[later]);
+
+        assert_eq!(
+            status_of(&mass_status, "resting-1"),
+            NautilusStatus::Canceled
+        );
+        assert_eq!(open_count(&mass_status), 0);
+    }
+
+    #[rstest]
+    #[case::terminal_row_first(true)]
+    #[case::terminal_row_last(false)]
+    fn revisions_stamped_the_same_millisecond_resolve_to_the_later_stage(
+        #[case] terminal_first: bool,
+    ) {
+        // A limit order that crosses on arrival can be accepted and filled within one
+        // millisecond. Row order is not relied on to separate them; the lifecycle stage is.
+        let mut placed = history(HISTORY_WITH_LIVE_ORDERS)
+            .into_iter()
+            .find(|record| record.cl_ord_id == "resting-1")
+            .expect("fixture holds the resting order");
+        placed.order_id = 1_290_700_009;
+        placed.cl_ord_id = "crossed-1".to_string();
+        let mut filled = placed.clone();
+        filled.status = OrderStatus::Filled;
+        filled.executed_qty = "0.001".to_string();
+        filled.executed_value = "40".to_string();
+
+        let rows = if terminal_first {
+            vec![filled, placed]
+        } else {
+            vec![placed, filled]
+        };
+
+        let mass_status = reconcile(&[], &rows);
+
+        assert_eq!(status_of(&mass_status, "crossed-1"), NautilusStatus::Filled);
     }
 }
