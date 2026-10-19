@@ -2,7 +2,7 @@
 
 > **Status**: 🔲 Not started（第一次修订，待复核；未实施）
 > **Created**: 2026-10-19
-> **Revised**: 2026-10-19（按独立评审的 1 条 HIGH、3 条 MEDIUM、6 条 LOW 修订，修订对照见文末「修订记录」）
+> **Revised**: 2026-10-19（按独立评审的 1 条 HIGH、3 条 MEDIUM、6 条 LOW 修订，修订对照见文末「修订记录」）；同日第二次修订：Task 0 的范围扩大到源码测试与集成测试
 > **Project**: nautilus_trader (fork) — `crates/adapters/sodex`（Guild 自维护的场所适配器）
 > **For Claude**: Use `/forge:execute` to implement this plan.
 
@@ -54,16 +54,16 @@ SoDEX 现货订单的每一笔场所成交，都以场所的成交号、数量�
 
 ## 关键设计决策 (Key Design Decisions)
 
-| 问题                  | 决策                                         | 理由                                                             |
-| ------------------- | ------------------------------------------ | -------------------------------------------------------------- |
-| 真实成交由谁送进引擎          | 适配器在读到成交量增加时，用已有的发送器主动送出                   | 核心的周期检查对 `FILLED` 只补推断成交（根因 2）；改核心违反「只改适配器」                    |
-| 是否遵守 `open_only`    | 不以此为手段。被送出真实成交的那份终态记录不再作为状态报告返回；其余行为保持     | 遵守 `open_only` 会让核心对缺失订单只记 debug，成交丢失（根因 2）                    |
-| 现货推断成交的手续费          | 返回错误，推迟对账加报错；永续不变                          | 接口拿不到方向，只改适配器时这是最接近正确的做法；维护方 2026-10-19 采纳「只改适配器：算手续费时报错，推迟对账」 |
-| Task 1 与 Task 2 的关系 | 同一个发布单元，不单独发布 Task 1                       | 只有 Task 1 时，挂单后成交的订单会一直停在待对账                                   |
-| 运行中余额               | 送出真实成交后刷新一次余额；接上推送后由推送更新                   | 不让余额目标押在一个尚未查明的订阅参数上                                           |
-| 推送的订阅参数             | 先跑探针，查明之后再写解析代码；没有真实成交时的载荷就不写解析器           | 照着推测写，曾是这个适配器最坏的一类故障（`probe_channels.rs`）                      |
-| 测试网                 | 三项都列为待授权，各自写成可直接批准的请求                      | 测试网用真实凭据与 Guild 的验证账户，每次单独授权                                   |
-| 示例里的默认账户号           | 全部去掉，改为必须由环境变量给出，单独一个小提交，放在实施第一步；已推送的历史不改写 | 维护方 2026-10-19 采纳「当前文件里去掉，改读环境变量」                              |
+| 问题                  | 决策                                                       | 理由                                                             |
+| ------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
+| 真实成交由谁送进引擎          | 适配器在读到成交量增加时，用已有的发送器主动送出                                 | 核心的周期检查对 `FILLED` 只补推断成交（根因 2）；改核心违反「只改适配器」                    |
+| 是否遵守 `open_only`    | 不以此为手段。被送出真实成交的那份终态记录不再作为状态报告返回；其余行为保持                   | 遵守 `open_only` 会让核心对缺失订单只记 debug，成交丢失（根因 2）                    |
+| 现货推断成交的手续费          | 返回错误，推迟对账加报错；永续不变                                        | 接口拿不到方向，只改适配器时这是最接近正确的做法；维护方 2026-10-19 采纳「只改适配器：算手续费时报错，推迟对账」 |
+| Task 1 与 Task 2 的关系 | 同一个发布单元，不单独发布 Task 1                                     | 只有 Task 1 时，挂单后成交的订单会一直停在待对账                                   |
+| 运行中余额               | 送出真实成交后刷新一次余额；接上推送后由推送更新                                 | 不让余额目标押在一个尚未查明的订阅参数上                                           |
+| 推送的订阅参数             | 先跑探针，查明之后再写解析代码；没有真实成交时的载荷就不写解析器                         | 照着推测写，曾是这个适配器最坏的一类故障（`probe_channels.rs`）                      |
+| 测试网                 | 三项都列为待授权，各自写成可直接批准的请求                                    | 测试网用真实凭据与 Guild 的验证账户，每次单独授权                                   |
+| 示例与测试里的账户号          | 示例改为必须由环境变量给出；源码测试与集成测试里的换成占位值；单独一个小提交，放在实施第一步；已推送的历史不改写 | 维护方 2026-10-19 采纳「当前文件里去掉，改读环境变量」与「一并换成中性占位值」                  |
 
 ## 承载决策 (Capability Hosting Decision)
 
@@ -73,32 +73,49 @@ SoDEX 现货订单的每一笔场所成交，都以场所的成交号、数量�
 
 ## 文件清单 (File Inventory)
 
-| 文件路径                                                                                                                  | 操作             | 描述                                                                     |
-| --------------------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------- |
-| `crates/adapters/sodex/examples/*.rs`、`crates/adapters/sodex/examples/README.md`                                      | Modify（Task 0） | 去掉默认账户号，改为必须由环境变量给出（清单见 Task 0）                                        |
-| `crates/adapters/sodex/src/execution/client.rs`                                                                       | Modify         | `calculate_commission` 对现货返回错误；周期检查读到成交量增加时送出真实成交并刷新余额；推送订阅（Task 4）    |
-| `crates/adapters/sodex/src/execution/client.rs` 中的既有测试 `commission_is_denominated_in_the_cost_currency`（`:2178-2183`） | Modify         | 改写为新口径：现货返回错误、永续按名义额计                                                  |
-| `crates/adapters/sodex/src/execution/reports.rs`                                                                      | Modify（可能）     | 由历史记录与账户成交组装 `OrderStatusReport` 加 `FillReport`                        |
-| `crates/adapters/sodex/src/websocket/messages.rs`、`websocket/client.rs`                                               | Modify（Task 4） | `accountUpdate` 订阅与载荷类型                                                |
-| `crates/adapters/sodex/examples/probe_account_stream.rs`                                                              | 运行（Task 3）     | 第二阶段探测                                                                 |
-| `crates/adapters/sodex/Cargo.toml`                                                                                    | Modify         | 开发依赖加 `axum`（工作区已有，`Cargo.toml:364`），供假 HTTP 服务使用；其余所需依赖在 Step 0 实证后补齐 |
-| `crates/adapters/sodex/tests/integration/periodic_check.rs`（新建）                                                       | Create         | 驱动真实周期检查的端到端失败模式测试                                                     |
-| `crates/adapters/sodex/tests/integration/main.rs`                                                                     | Modify         | 挂上新测试模块                                                                |
-| `.forge/plans/2026-10/02-sodex-inferred-fills-and-account-stream.md`                                                  | Modify         | 本计划                                                                    |
-| `.forge/README.md`                                                                                                    | Modify         | 计划索引与范围说明                                                              |
+| 文件路径                                                                                                                                                                                                                                | 操作             | 描述                                                                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `crates/adapters/sodex/examples/*.rs`、`examples/README.md`；`src/config.rs`、`src/execution/client.rs`、`src/execution/reports.rs`、`src/http/account.rs`、`src/http/requests.rs`、`src/http/spot.rs` 的测试模块；`tests/integration/python.rs` | Modify（Task 0） | 示例改读环境变量；测试数据里的账户号换成占位值 `12345`（位置清单见 Task 0）                          |
+| `crates/adapters/sodex/src/execution/client.rs`                                                                                                                                                                                     | Modify         | `calculate_commission` 对现货返回错误；周期检查读到成交量增加时送出真实成交并刷新余额；推送订阅（Task 4）    |
+| `crates/adapters/sodex/src/execution/client.rs` 中的既有测试 `commission_is_denominated_in_the_cost_currency`（`:2178-2183`）                                                                                                               | Modify         | 改写为新口径：现货返回错误、永续按名义额计                                                  |
+| `crates/adapters/sodex/src/execution/reports.rs`                                                                                                                                                                                    | Modify（可能）     | 由历史记录与账户成交组装 `OrderStatusReport` 加 `FillReport`                        |
+| `crates/adapters/sodex/src/websocket/messages.rs`、`websocket/client.rs`                                                                                                                                                             | Modify（Task 4） | `accountUpdate` 订阅与载荷类型                                                |
+| `crates/adapters/sodex/examples/probe_account_stream.rs`                                                                                                                                                                            | 运行（Task 3）     | 第二阶段探测                                                                 |
+| `crates/adapters/sodex/Cargo.toml`                                                                                                                                                                                                  | Modify         | 开发依赖加 `axum`（工作区已有，`Cargo.toml:364`），供假 HTTP 服务使用；其余所需依赖在 Step 0 实证后补齐 |
+| `crates/adapters/sodex/tests/integration/periodic_check.rs`（新建）                                                                                                                                                                     | Create         | 驱动真实周期检查的端到端失败模式测试                                                     |
+| `crates/adapters/sodex/tests/integration/main.rs`                                                                                                                                                                                   | Modify         | 挂上新测试模块                                                                |
+| `.forge/plans/2026-10/02-sodex-inferred-fills-and-account-stream.md`                                                                                                                                                                | Modify         | 本计划                                                                    |
+| `.forge/README.md`                                                                                                                                                                                                                  | Modify         | 计划索引与范围说明                                                              |
 
 ## 实现任务 (Tasks)
 
-### Task 0: 示例不再内置账户号（单独一个小提交）
+### Task 0: 示例、源码测试与集成测试都不再带真实账户号（单独一个小提交）
 
 **Files**：当前含该账户号的 15 个示例文件，即 `crates/adapters/sodex/examples/` 下的 `README.md`、`cancel_open_orders.rs`、`observe_fill.rs`、`observe_position.rs`、`place_and_cancel.rs`、`place_modify_cancel.rs`、`probe_account_stream.rs`、`probe_channels.rs`（两处）、`probe_key_permissions.rs`、`probe_limit_quantity.rs`、`probe_rest_endpoints.rs`、`register_api_key.rs`、`revoke_api_key.rs`、`set_leverage.rs`、`verify_signing.rs`。
 
 - 每处默认值改为必须由环境变量 `SODEX_ACCOUNT_ID` 给出，缺失时报错退出，并在报错里说明如何查到账户号（已有示例 `352dbf5c91` 加过查询账户号的办法）。
 - README 改为说明这个环境变量，不写具体账户号。
 - 已推送的历史不改写。
-- `crates/adapters/sodex/src/` 与 `tests/` 里的同一数字出现在测试数据与文档注释中，不在本步范围；是否另行处理由维护方另定。
-- **验收**：`git grep -c <账户号> -- crates/adapters/sodex/examples/` 为 0；`cargo build -p nautilus-sodex --examples` 通过；任取一个示例在不设环境变量时运行，确认报错退出。
-- **提交**：`chore(sodex): read the account id from the environment in every example`。
+- **源码与集成测试里的同一数字**（维护方 2026-10-19 采纳「一并换成中性占位值」）：按 `git grep` 列出的全部位置如下，共 55 行。它们全部位于各文件的 `#[cfg(test)]` 测试模块或集成测试里，生产代码里没有；文档注释里也没有出现。
+  - `crates/adapters/sodex/src/config.rs:406`、`:414`（配置序列化往返）；
+  - `crates/adapters/sodex/src/execution/client.rs:1911`、`:1925`、`:1939`、`:1954`、`:1974`、`:1985`、`:2021`、`:2041`（下单、撤单请求组装）；
+  - `crates/adapters/sodex/src/execution/reports.rs:467`、`:552`、`:712`、`:819`、`:886`、`:1063`、`:1075`（报告里的 `AccountId`，形如 `SODEX_SPOT-<账户号>`）；
+  - `crates/adapters/sodex/src/http/account.rs:399`、`:411`、`:421`、`:432`、`:453`、`:469`、`:480`、`:490`、`:504`、`:506`、`:517`、`:520`（API Key 的登记与撤销请求）；
+  - `crates/adapters/sodex/src/http/requests.rs:1060`、`:1066`、`:1091`、`:1095`、`:1239`、`:1246`、`:1259`、`:1269`、`:1279`、`:1288`、`:1293`、`:1324`、`:1329`、`:1338`、`:1350`、`:1357`、`:1361`、`:1499`、`:1500`、`:1503`、`:1506`（各类请求的 JSON 序列化）；
+  - `crates/adapters/sodex/src/http/spot.rs:324`、`:342`、`:350`、`:458`（现货批量下单请求）；
+  - `crates/adapters/sodex/tests/integration/python.rs:49`（常量 `TEST_ACCOUNT_ID`，`:142`、`:190` 经常量使用）。
+
+  实施时以当时 `git grep` 的结果为准，行号如有漂移，先更新这张清单。
+- **占位值**：统一换成 `12345`。它一看就是示例值，而且与这些测试里出现的其他数字（`symbolID` 1、`id` 7、杠杆 20、各订单号等）都不相同，字段写错位置时测试仍能分辨。
+- **断言了这个数字本身的测试**：夹具与断言一起换。例如 `config.rs:414` 断言往返后的 `account_id` 等于这个数字；`requests.rs`、`spot.rs` 与 `client.rs:1974` 期望的 JSON 字符串里含 `"accountID":<账户号>`；`reports.rs` 里的报告标识形如 `SODEX_SPOT-<账户号>`。
+  - **为什么不会削弱测试**：这些测试验证的是「给定的账户号原样出现在序列化结果、往返结果或报告标识里」，账户号本身取什么值无关紧要。把输入与期望同时换成同一个占位值，比较的仍是「输入的那个值到了输出」，判别力不变。
+  - 签名类测试（`account.rs` 的登记与撤销请求）只断言签名前缀与请求体字段，不比对依赖账户号的签名或摘要常量。这几个测试模块里没有长十六进制期望值，已用 `git grep` 核对，所以换值不需要重算任何金样。
+  - 证明办法：换值前后测试数相同；再做一次变异，把某个请求结构的 `accountID` 字段改名，换值前后都应有同样的测试转红。
+- **验收**：
+  - 示例、源码、集成测试三处扫描账户号，结果必须为 0：`git grep -c <账户号> -- crates/adapters/sodex/examples crates/adapters/sodex/src crates/adapters/sodex/tests` 无输出；
+  - `cargo build -p nautilus-sodex --examples` 通过；任取一个示例在不设环境变量时运行，确认报错退出；
+  - `cargo test -p nautilus-sodex` 通过，测试数与换值之前相同；上面的变异在换值前后都转红。
+- **提交**：`chore(sodex): read the account id from the environment and use a placeholder in tests`。
 
 ### Task 1: 现货推断成交不再给出计价币手续费（与 Task 2 同一发布单元）
 
@@ -222,7 +239,7 @@ SoDEX 现货订单的每一笔场所成交，都以场所的成交号、数量�
 
 ## 验证清单 (Verification)
 
-- [ ] Task 0：示例目录里不再有账户号，示例可编译，缺环境变量时报错退出
+- [ ] Task 0：示例、源码、集成测试三处账户号扫描为 0；示例可编译，缺环境变量时报错退出；测试数不变
 - [ ] Task 1、Task 2、Task 4 的失败模式测试都经历过先红后绿，红的原因正是要修的缺陷
 - [ ] 上面逐条写出的变异各跑一次，预期的断言转红
 - [ ] `cargo test -p nautilus-sodex`、`cargo clippy -p nautilus-sodex --all-targets -- -D warnings` 通过
@@ -234,7 +251,7 @@ SoDEX 现货订单的每一笔场所成交，都以场所的成交号、数量�
 
 | Task               | Status | Completed | Notes             |
 | ------------------ | ------ | --------- | ----------------- |
-| 0 示例去掉账户号          | 🔲     |           |                   |
+| 0 示例与测试去掉账户号       | 🔲     |           |                   |
 | 1 现货推断成交返回错误       | 🔲     |           | 与 Task 2 同一发布单元   |
 | 2 适配器主动送出真实成交并刷新余额 | 🔲     |           | Step 0 实证不成立则停下回报 |
 | 3 accountUpdate 探测 | 🔲     |           | 待授权 A             |
@@ -252,7 +269,7 @@ SoDEX 现货订单的每一笔场所成交，都以场所的成交号、数量�
 | M-2 | 失败模式测试拦不住 H-1，夹具与变异没有落地                    | 驱动真实周期检查、假 HTTP 服务、一单两笔成交的真实形状、`open_only=true`；逐条写出断言与变异，「原计划写法」使「到达 `FILLED`」转红；写明开发依赖                                                                |
 | M-3 | 三项待授权只有一句话                                 | 每项写明账户、交易对、笔数、金额上限、时长、证据与余额账本核对；A 项写明第二阶段可能真的订阅成功；C 项写明构建交付办法                                                                                           |
 | L-1 | 正文有内部编号与内部用语                               | 改为中性说法                                                                                                                                                  |
-| L-2 | 示例内置账户号                                    | 新增 Task 0，示例一律改读环境变量；历史不改写                                                                                                                              |
+| L-2 | 示例内置账户号                                    | 新增 Task 0，示例一律改读环境变量；历史不改写。第二次修订：范围扩大到 `src/` 与 `tests/`，测试数据换成占位值                                                                                      |
 | L-3 | README 写「不涉及上游源码」                          | 按实际范围改写                                                                                                                                                 |
 | L-4 | 余额目标只靠 Task 4                              | 送出真实成交后刷新余额，列为 Task 2 的断言 4                                                                                                                             |
 | L-5 | 原 Task 2 第 4 条在原设计下不可实现                    | 并入新 Task 2 的断言 5                                                                                                                                        |
