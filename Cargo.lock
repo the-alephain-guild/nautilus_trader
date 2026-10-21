@@ -6553,6 +6553,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-papertrade"
+version = "0.64.0"
+dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "anyhow",
+ "axum",
+ "nautilus-core",
+ "nautilus-network",
+ "rstest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "nautilus-persistence"
 version = "0.64.0"
 dependencies = [

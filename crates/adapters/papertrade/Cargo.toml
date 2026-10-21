@@ -1,0 +1,32 @@
+[package]
+name = "nautilus-papertrade"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Papertrade signed-intent protocol integration (not a live execution client)"
+categories.workspace = true
+keywords.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nautilus-core = { workspace = true }
+nautilus-network = { workspace = true }
+alloy = { workspace = true, features = ["sol-types", "signer-local"] }
+alloy-primitives = { workspace = true }
+anyhow = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+rstest = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

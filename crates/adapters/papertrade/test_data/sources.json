@@ -1,0 +1,45 @@
+{
+  "observed_date": "2026-10-21",
+  "status": "Observed official frontend protocol; not an official SDK compatibility guarantee",
+  "source_revision": "ac86ec3c5f",
+  "sources": [
+    {
+      "url": "https://docs.papertrade.xyz/how/architecture/",
+      "evidence": "Authorized relayer and BatchExecutor required for open and close"
+    },
+    {
+      "url": "https://docs.papertrade.xyz/learn/session-keys/",
+      "evidence": "Session authority, expiry, master-wallet-only withdrawals"
+    },
+    {
+      "url": "https://docs.papertrade.xyz/dev/contract-addresses/",
+      "evidence": "Exchange proxy and chain 999; collateral address differs from observed frontend deployment, so no funding operation is implemented"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/assets/typed-data-B0hqt2-N.js",
+      "sha256": "ff04eb15141ecc5fd02bf9a2f7cf3a0440396b5e7d08bb6aed6d545e244213de",
+      "evidence": "Field names, order, widths, domain names and intent ID tag"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/assets/app-MANTjuWP.js",
+      "sha256": "de1f858cd89b49483c10715f8f07361f67d498a29d27d4af13b9b6ed819adde8",
+      "evidence": "POST /intents, cancellation route, decimal-string serialization, signature v/r/s, intent ID algorithm and maximum 12-position close batch"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/assets/deployment-Bd2yQrF5.js",
+      "sha256": "b43af444439e4c0e11a5677cb91b9ddd4666af4867ad677ce59371fa9b709884",
+      "evidence": "Chain ID, Exchange proxy, frontend collateral decimals and address"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/assets/hooks-C6lPsPHg.js",
+      "sha256": "5b1fcf62a001a8a3182ddb7e18545b5d945101cc07ca5018a11a51a1ff189d24",
+      "evidence": "One-hour deadline, 30-day session key and user SSE state route"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/assets/build-DKmGwGmw.js",
+      "observed_build": "169e8a6905e3",
+      "evidence": "X-Papertrade-Build source; build must be supplied explicitly, not assumed current"
+    }
+  ],
+  "scope": "Digests identify researched remote assets on this date, and do not pin current repository source bytes."
+}

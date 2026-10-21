@@ -18,6 +18,7 @@ members = [
   "crates/adapters/kraken",
   "crates/adapters/lighter",
   "crates/adapters/okx",
+  "crates/adapters/papertrade",
   "crates/adapters/polymarket",
   "crates/adapters/sandbox",
   "crates/adapters/sodex",

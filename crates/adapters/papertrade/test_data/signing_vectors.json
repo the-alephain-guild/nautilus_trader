@@ -1,0 +1,30 @@
+{
+  "OpenPosition": {
+    "digest": "0x29adcb74f4099f1c498bcef28aab65361d693024643a70f8437c2c1c6ec81e4f",
+    "intentId": "0x5c74dc9be8abadf7272e2828b395dd406a65f1b8fa8df7ef4478328a1d7aa7c4",
+    "v": "28",
+    "r": "0x471f8044a76da57d05f73d1a9aa71c9502f5cdca6c13b36ba71d780f92bf0476",
+    "s": "0x27d0e70a31f9859df5f6b0d7646532435edd8ec575f34ddbf14964b8dbf9097a"
+  },
+  "Close": {
+    "digest": "0xf9ce458d1f7edd90e838227bef8768188bcc614fe5777d4744cabd8d7f91fcb7",
+    "intentId": "0x9cf362533246db4bf6cc52d3443a75b71bbaa264eb94dc98b30c4308dd6f1219",
+    "v": "28",
+    "r": "0xd2db2aba3a9e33aad7d7fdaa242fc7c305daca03f162b7afdc5871c90ae5649d",
+    "s": "0x5b546029108f871940369618de888857cdfe609672d41f3bac4483e84c2134fe"
+  },
+  "RegisterSessionKey": {
+    "digest": "0x0a35e2458adfcc2bde3c70be8952a0e43321201b9b445227f7b4d341aff8a579",
+    "intentId": "0x2843ab23bde87947c78675de46e90b7eafba32385428eb7d61bc9257f5b284e6",
+    "v": "27",
+    "r": "0x4758fe0f5b70d757cd31456cb5509cd33878cf0f3fc6318f5143cf16492fe35f",
+    "s": "0x76827c157d959edf2177b61898c5e98a4177fbef50d2d1f8b4e494ce928c1786"
+  },
+  "CancelIntent": {
+    "digest": "0x3cc5976d5445989f4cde05125bb1b40d9a174e70e6733e0e904c3b802008508f",
+    "intentId": "0x5c74dc9be8abadf7272e2828b395dd406a65f1b8fa8df7ef4478328a1d7aa7c4",
+    "v": "27",
+    "r": "0x83ee279f20a068cf3020fcc3f6dfc08e5ae18cbd528428130006435d2c9a250e",
+    "s": "0x0fd975319627fd65977d4b3ecbcf3ef3aba5a71b4148a35fe94c51c915adfdeb"
+  }
+}
