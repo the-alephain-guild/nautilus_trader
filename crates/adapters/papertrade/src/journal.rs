@@ -21,7 +21,7 @@ use alloy_primitives::{Address, B256, U256};
 use anyhow::{Result, ensure};
 use nautilus_common::messages::execution::SubmitOrder;
 use nautilus_core::UUID4;
-use nautilus_model::{enums::OrderStatus, reports::FillReport};
+use nautilus_model::{enums::OrderStatus, identifiers::ClientOrderId, reports::FillReport};
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,7 +49,14 @@ pub struct JournalEntry {
     pub nonce: Raw,
     pub submitted_block: u64,
     pub scanned_through: u64,
+    // Older journals cannot prove that a transport attempt never began.
+    #[serde(default = "legacy_send_attempted")]
+    pub send_attempted: bool,
 }
+fn legacy_send_attempted() -> bool {
+    true
+}
+
 impl JournalEntry {
     pub(crate) fn signed(&self) -> Result<SignedIntent> {
         SignedIntent::restore(
@@ -110,6 +117,45 @@ impl Journal {
                 Ok(serde_json::from_str(value.value())?)
             })
             .collect()
+    }
+    pub(crate) fn recover_unsent(&self) -> Result<()> {
+        for mut entry in self.entries()? {
+            if !entry.send_attempted
+                && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
+            {
+                ensure!(entry.fills.is_empty(), "Unsent intent has a fill");
+                entry.status = OrderStatus::Rejected;
+                self.update(&entry)?;
+            }
+        }
+        Ok(())
+    }
+    /// Commits the transport-attempt marker before any request can leave this process.
+    pub fn begin_submission(&self, client_order_id: ClientOrderId) -> Result<Option<JournalEntry>> {
+        let mut tx = self.db.begin_write()?;
+        tx.set_durability(Durability::Immediate)?;
+        let entry = {
+            let mut table = tx.open_table(ORDERS)?;
+            let mut entry: JournalEntry = serde_json::from_str(
+                table
+                    .get(client_order_id.as_str())?
+                    .ok_or_else(|| anyhow::anyhow!("Unknown submission"))?
+                    .value(),
+            )?;
+            if entry.send_attempted
+                || !matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
+            {
+                return Ok(None);
+            }
+            entry.send_attempted = true;
+            table.insert(
+                client_order_id.as_str(),
+                serde_json::to_string(&entry)?.as_str(),
+            )?;
+            entry
+        };
+        tx.commit()?;
+        Ok(Some(entry))
     }
     pub(crate) fn snapshot(&self) -> Result<Option<crate::wire::AccountSnapshot>> {
         let tx = self.db.begin_read()?;
@@ -250,6 +296,7 @@ impl Journal {
                 nonce: Raw(nonce),
                 submitted_block,
                 scanned_through: submitted_block.saturating_sub(1),
+                send_attempted: false,
             };
             let json = serde_json::to_string(&entry)?;
             table.insert(key.as_str(), json.as_str())?;
@@ -261,7 +308,6 @@ impl Journal {
     }
     pub fn update(&self, entry: &JournalEntry) -> Result<()> {
         let key = entry.command.client_order_id.to_string();
-        let json = serde_json::to_string(entry)?;
         let mut tx = self.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         {
@@ -276,7 +322,11 @@ impl Journal {
                 previous.intent_id == entry.intent_id
                     && previous.body == entry.body
                     && previous.nonce == entry.nonce
-                    && previous.command == entry.command,
+                    && previous.command == entry.command
+                    && previous.action == entry.action
+                    && previous.target == entry.target
+                    && previous.deadline == entry.deadline
+                    && previous.submitted_block == entry.submitted_block,
                 "Immutable journal payload changed"
             );
             if matches!(
@@ -302,7 +352,10 @@ impl Journal {
                     ),
                 "Confirmed fill cannot be removed or rewritten"
             );
-            table.insert(key.as_str(), json.as_str())?;
+            let mut merged = entry.clone();
+            merged.send_attempted |= previous.send_attempted;
+            merged.scanned_through = merged.scanned_through.max(previous.scanned_through);
+            table.insert(key.as_str(), serde_json::to_string(&merged)?.as_str())?;
         }
         tx.commit()?;
         Ok(())

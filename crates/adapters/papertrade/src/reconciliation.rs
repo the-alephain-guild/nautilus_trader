@@ -194,6 +194,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     );
     let mut open_clients = HashMap::new();
     let mut close_clients = HashMap::new();
+    let mut covered_timestamp = None;
     for entry in &mut entries {
         if let Some((_, outcome)) = snapshot
             .intent_outcomes
@@ -314,6 +315,35 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 .operations
                 .iter()
                 .any(|o| o.intent_id == entry.intent_id);
+            let succeeded = snapshot
+                .intent_outcomes
+                .iter()
+                .any(|(id, outcome)| *id == entry.intent_id && outcome == "succeeded");
+            if !remote
+                && !succeeded
+                && pending_ids.contains(&entry.intent_id)
+                && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
+                && covered_block >= entry.submitted_block
+                && entry.scanned_through >= covered_block
+                && snapshot.indexed_through_timestamp > entry.deadline
+            {
+                let timestamp = match covered_timestamp {
+                    Some(timestamp) => timestamp,
+                    None => {
+                        let timestamp = inner.api.block_timestamp(covered_block).await?;
+                        ensure!(
+                            timestamp <= snapshot.indexed_through_timestamp,
+                            "Coverage block is ahead of account time"
+                        );
+                        covered_timestamp = Some(timestamp);
+                        timestamp
+                    }
+                };
+                if timestamp > entry.deadline {
+                    entry.status = OrderStatus::Expired;
+                    inner.journal.update(entry)?;
+                }
+            }
             if remote && entry.status == OrderStatus::Submitted {
                 entry.status = OrderStatus::Accepted;
                 inner.journal.update(entry)?;
@@ -339,6 +369,9 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 None,
             );
             report.reduce_only = entry.command.order_init.reduce_only;
+            if entry.status == OrderStatus::Rejected && !entry.send_attempted {
+                report.cancel_reason = Some("Restarted before any transport attempt".into());
+            }
             bundle.orders.push(report);
         }
     }

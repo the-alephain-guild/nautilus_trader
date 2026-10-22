@@ -128,6 +128,7 @@ impl PapertradeExecutionClient {
             core.base_currency,
         );
         let journal = Journal::open(&config.journal_path, wallet, config.account_id.as_str())?;
+        journal.recover_unsent()?;
         let checkpoint = journal.snapshot()?;
         if let Some(snapshot) = &checkpoint {
             snapshot.validate(wallet)?;
@@ -579,6 +580,12 @@ impl ExecutionClient for PapertradeExecutionClient {
         let inner = self.inner.clone();
         let task = get_runtime().spawn(async move {
             let result = async {
+                let Some(entry) = inner
+                    .journal
+                    .begin_submission(entry.command.client_order_id)?
+                else {
+                    return Ok(());
+                };
                 let signed = entry.signed()?;
                 let now = inner.clock.get_time_ns().as_u64() / 1_000_000_000;
                 let outcome = inner.relayer.submit(&signed, now).await?;

@@ -15,17 +15,19 @@
 
 //! Read-only public API and account stream, using the shared HTTP transport.
 
-use crate::{
-    stream::{SseDecoder, WalletState},
-    wire::{AccountSnapshot, CloseRecord, TradingState},
-};
+use std::{collections::HashSet, time::Duration};
+
 use alloy_primitives::{Address, B256};
 use anyhow::{Result, ensure};
 use nautilus_network::http::{HttpClient, HttpRedirectPolicy, HttpResponseStream, Method};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::HashSet, time::Duration};
 use url::Url;
+
+use crate::{
+    stream::{SseDecoder, WalletState},
+    wire::{AccountSnapshot, CloseRecord, TradingState},
+};
 
 #[derive(Debug, Clone)]
 pub struct PapertradeApi {
@@ -160,6 +162,27 @@ impl PapertradeApi {
             }
         }
         anyhow::bail!("History page budget exhausted; coverage is incomplete")
+    }
+    pub(crate) async fn block_timestamp(&self, number: u64) -> Result<u64> {
+        let height = format!("0x{number:x}");
+        let response = self.http.request(Method::POST,self.rpc.to_string(),None,
+            Some(std::collections::HashMap::from([("Content-Type".into(),"application/json".into())])),
+            Some(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":[height,false]}))?),
+            Some(20),None).await?;
+        ensure!(response.status.is_success(), "Block RPC HTTP failure");
+        let envelope: Value = serde_json::from_slice(&response.body)?;
+        ensure!(
+            envelope.get("error").is_none() && envelope["result"]["number"] == height,
+            "Missing or mismatched coverage block"
+        );
+        let block = &envelope["result"];
+        let hash: B256 = serde_json::from_value(block["hash"].clone())?;
+        ensure!(!hash.is_zero(), "Unmined coverage block");
+        let timestamp = block["timestamp"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("0x"))
+            .ok_or_else(|| anyhow::anyhow!("Missing coverage block timestamp"))?;
+        Ok(u64::from_str_radix(timestamp, 16)?)
     }
     pub async fn receipt(&self, tx_hash: B256) -> Result<Value> {
         let body = serde_json::to_vec(

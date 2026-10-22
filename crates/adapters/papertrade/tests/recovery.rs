@@ -52,6 +52,7 @@ struct Source {
     trading: Mutex<Value>,
     history: Mutex<Value>,
     receipt: Mutex<Option<Value>>,
+    block_timestamp: Mutex<Option<u64>>,
 }
 async fn wallet(State(source): State<Arc<Source>>) -> Response {
     if source.unavailable.load(Ordering::SeqCst) {
@@ -79,7 +80,9 @@ async fn history(State(source): State<Arc<Source>>) -> Json<Value> {
     Json(source.history.lock().clone())
 }
 async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> Json<Value> {
-    let result = if request["method"] == "eth_getTransactionReceipt" {
+    let result = if request["method"] == "eth_getBlockByNumber" {
+        source.block_timestamp.lock().map(|stamp| json!({"number":request["params"][0],"timestamp":format!("0x{stamp:x}"),"hash":format!("0x{}","11".repeat(32))})).unwrap_or(Value::Null)
+    } else if request["method"] == "eth_getTransactionReceipt" {
         source.receipt.lock().clone().unwrap_or(Value::Null)
     } else {
         let from = u64::from_str_radix(
@@ -144,6 +147,7 @@ impl Harness {
             unavailable: AtomicBool::new(false),
             history: Mutex::new(json!({"items":[],"nextCursor":null})),
             receipt: Mutex::new(None),
+            block_timestamp: Mutex::new(None),
             trading: Mutex::new(
                 serde_json::from_str(include_str!("../test_data/live_trading.json")).unwrap(),
             ),
@@ -385,6 +389,10 @@ async fn delayed_close_receipt_never_publishes_an_external_identity_for_a_local_
             },
         )
         .unwrap();
+    journal
+        .begin_submission(entry.command.client_order_id)
+        .unwrap()
+        .unwrap();
     drop(journal);
     let tx = B256::repeat_byte(31);
     let block = B256::repeat_byte(32);
@@ -534,6 +542,7 @@ async fn newer_chain_evidence_cannot_complete_an_older_empty_account_snapshot(
     harness.source.wallet.send_replace(source.clone());
     let now = source["indexedThroughTimestamp"].as_u64().unwrap();
     let entry = prepared_open(&harness, &position, now, now + 3600);
+    mark_attempted(&harness, &entry);
     let mut receipt: Value =
         serde_json::from_str(include_str!("../test_data/live_open_receipt.json")).unwrap();
     let old_id = b256!("adfae189b04060dcbef2af7322b00447844d8119b819e1820308e38e86339614");
@@ -627,4 +636,113 @@ async fn invalid_history_market_does_not_poison_recovery(
         .await
         .expect("Invalid history was persisted before validation");
     recovered.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn restart_rejects_a_durable_order_that_never_started_submission() {
+    use nautilus_model::enums::OrderStatus;
+    use nautilus_papertrade::wire::VenuePosition;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    source["openPositions"] = json!([]);
+    source["locked"] = json!("0");
+    harness.source.wallet.send_replace(source.clone());
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let entry = prepared_open(&harness, &position, now, now + 3600);
+    // Drop/reopen after the real durable prepare, before any transport invocation.
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+    let order = mass
+        .order_reports()
+        .into_values()
+        .find(|r| r.client_order_id == Some(entry.command.client_order_id))
+        .unwrap();
+    assert_eq!(
+        order.order_status,
+        OrderStatus::Rejected,
+        "An unsent request blocked recovery forever"
+    );
+    assert!(mass.reports_complete());
+    assert!(mass.fill_reports().is_empty());
+    client.submit_order(entry.command).unwrap();
+    client.disconnect().await.unwrap();
+}
+
+fn mark_attempted(harness: &Harness, entry: &nautilus_papertrade::journal::JournalEntry) {
+    let wallet = harness.source.wallet.borrow();
+    let journal = nautilus_papertrade::journal::Journal::open(
+        &harness.config.journal_path,
+        wallet["address"].as_str().unwrap().parse().unwrap(),
+        "PAPERTRADE-001",
+    )
+    .unwrap();
+    journal
+        .begin_submission(entry.command.client_order_id)
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_deadline() {
+    use nautilus_model::enums::OrderStatus;
+    use nautilus_papertrade::wire::VenuePosition;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    source["openPositions"] = json!([]);
+    source["locked"] = json!("0");
+    harness.source.wallet.send_replace(source.clone());
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let deadline = now - 3600;
+    harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
+    let entry = prepared_open(&harness, &position, now - 7200, deadline);
+    mark_attempted(&harness, &entry);
+    *harness.source.block_timestamp.lock() = Some(deadline - 1);
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(
+        !mass.reports_complete(),
+        "Local time alone terminated an ambiguous intent"
+    );
+    assert!(
+        mass.order_reports()
+            .values()
+            .any(|r| r.client_order_id == Some(entry.command.client_order_id)
+                && r.order_status == OrderStatus::Submitted)
+    );
+    client.disconnect().await.unwrap();
+    drop(client);
+    *harness.source.block_timestamp.lock() = None;
+    let mut unavailable = harness.client();
+    unavailable.start().unwrap();
+    assert!(
+        unavailable.connect().await.is_err(),
+        "Missing block evidence was treated as expiry"
+    );
+    unavailable.disconnect().await.unwrap();
+    drop(unavailable);
+    *harness.source.block_timestamp.lock() = Some(now);
+    let mut restarted = harness.client();
+    restarted.start().unwrap();
+    restarted.connect().await.unwrap();
+    let mass = restarted.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(
+        mass.order_reports()
+            .values()
+            .any(|r| r.client_order_id == Some(entry.command.client_order_id)
+                && r.order_status == OrderStatus::Expired),
+        "Complete post-deadline execution coverage did not resolve the unknown order"
+    );
+    assert!(mass.reports_complete());
+    assert!(mass.fill_reports().is_empty());
+    restarted.disconnect().await.unwrap();
 }

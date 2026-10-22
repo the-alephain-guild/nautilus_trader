@@ -150,6 +150,45 @@ fn conflicting_close_identity_is_rejected_without_poisoning_the_journal(#[case] 
         "Changed position economics were accepted as a close"
     );
     assert!(journal.closes().unwrap().is_empty());
-    journal.remember(&[], std::slice::from_ref(&correct)).unwrap();
+    journal
+        .remember(&[], std::slice::from_ref(&correct))
+        .unwrap();
     assert_eq!(journal.closes().unwrap(), vec![correct]);
+}
+
+#[rstest]
+fn send_attempt_and_scan_progress_survive_late_acknowledgements() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal =
+        Journal::open(&dir.path().join("journal.redb"), WALLET, "PAPERTRADE-001").unwrap();
+    let (entry, _) = journal
+        .prepare(&command("PT-ATTEMPT"), None, 100, sign)
+        .unwrap();
+    assert!(!entry.send_attempted);
+    let mut attempted = journal
+        .begin_submission(entry.command.client_order_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        journal
+            .begin_submission(entry.command.client_order_id)
+            .unwrap()
+            .is_none()
+    );
+    attempted.scanned_through = 200;
+    journal.update(&attempted).unwrap();
+    let mut late = entry;
+    late.status = OrderStatus::Accepted;
+    journal.update(&late).unwrap();
+    let saved = journal.entries().unwrap().pop().unwrap();
+    assert!(saved.send_attempted);
+    assert_eq!(saved.scanned_through, 200);
+    let mut legacy = serde_json::to_value(saved).unwrap();
+    legacy.as_object_mut().unwrap().remove("send_attempted");
+    let legacy: nautilus_papertrade::journal::JournalEntry =
+        serde_json::from_value(legacy).unwrap();
+    assert!(
+        legacy.send_attempted,
+        "Old journals cannot prove that submission was never attempted"
+    );
 }
