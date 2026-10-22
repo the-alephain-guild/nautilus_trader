@@ -882,3 +882,65 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     );
     recovered.disconnect().await.unwrap();
 }
+
+fn closed_history(position: &nautilus_papertrade::wire::VenuePosition, timestamp_ms: u64) -> Value {
+    json!({"positionId":position.position_id,"instrumentId":position.instrument_id,"symbol":"BTC",
+        "priceScaleRaw":"10","isLong":position.is_long,"entryPriceRaw":position.entry_price,
+        "marginRaw":position.margin,"leverage":position.leverage,"openedAtMs":position.opened_at_ms,
+        "timestampMs":timestamp_ms,"txHash":format!("0x{}","31".repeat(32)),"kind":"PositionClosed",
+        "exitPriceRaw":position.entry_price,"adjustedPnlRaw":"0","userPaidFeeRaw":"0"})
+}
+
+#[tokio::test]
+async fn retained_close_history_cannot_be_replayed_with_an_older_snapshot_after_failed_round() {
+    use nautilus_papertrade::wire::VenuePosition;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let old = harness.source.wallet.borrow().clone();
+    let positions: Vec<VenuePosition> =
+        serde_json::from_value(old["openPositions"].clone()).unwrap();
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    client.disconnect().await.unwrap();
+    drop(client);
+    let mut newer = old.clone();
+    newer["accountRevision"] = json!(2);
+    newer["indexedThroughBlock"] = json!(old["indexedThroughBlock"].as_u64().unwrap() + 10);
+    newer["walletRevision"] = newer["indexedThroughBlock"].clone();
+    newer["indexedThroughTimestamp"] = json!(old["indexedThroughTimestamp"].as_u64().unwrap() + 10);
+    newer["openPositions"] = json!([]);
+    newer["locked"] = json!("0");
+    let time = newer["indexedThroughTimestamp"].as_u64().unwrap() * 1000;
+    *harness.source.history.lock() =
+        json!({"items":[closed_history(&positions[0],time)],"nextCursor":null});
+    harness.source.wallet.send_replace(newer.clone());
+    let mut failed = harness.client();
+    failed.start().unwrap();
+    assert!(
+        failed.connect().await.is_err(),
+        "Missing close for the second position must defer publication"
+    );
+    failed.disconnect().await.unwrap();
+    drop(failed);
+    harness.source.wallet.send_replace(old);
+    *harness.source.history.lock() = json!({"items":[],"nextCursor":null});
+    let mut stale = harness.client();
+    stale.start().unwrap();
+    assert!(
+        stale.connect().await.is_err(),
+        "Persisted future close was combined with an older open position"
+    );
+    stale.disconnect().await.unwrap();
+    drop(stale);
+    harness.source.wallet.send_replace(newer);
+    *harness.source.history.lock() = json!({"items":positions.iter().map(|p|closed_history(p,time)).collect::<Vec<_>>(),"nextCursor":null});
+    let mut recovered = harness.client();
+    recovered.start().unwrap();
+    recovered.connect().await.unwrap();
+    let mass = recovered.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(mass.reports_complete());
+    assert!(mass.position_reports().is_empty());
+    assert_eq!(mass.fill_reports().values().map(Vec::len).sum::<usize>(), 4);
+    recovered.disconnect().await.unwrap();
+}

@@ -70,21 +70,22 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     } else {
         Vec::new()
     };
-    ensure!(
-        fresh_history
-            .iter()
-            .all(|r| r.timestamp_ms <= snapshot.indexed_through_timestamp * 1000),
-        "Close history exceeds account time coverage"
-    );
-    ensure!(
-        !fresh_history.iter().any(|r| snapshot
-            .open_positions
-            .iter()
-            .any(|p| p.position_id == r.position_id)),
-        "Close history is ahead of the account snapshot"
-    );
+    let retained_history = inner.journal.closes()?;
     let markets: HashMap<_, _> = trading.instruments.iter().map(|m| (m.id, m)).collect();
-    for record in &fresh_history {
+    // Evidence retained by an earlier failed round has the same coverage
+    // requirements as a freshly downloaded record.
+    for record in fresh_history.iter().chain(&retained_history) {
+        ensure!(
+            record.timestamp_ms <= snapshot.indexed_through_timestamp * 1000,
+            "Close history exceeds account time coverage"
+        );
+        ensure!(
+            !snapshot
+                .open_positions
+                .iter()
+                .any(|p| p.position_id == record.position_id),
+            "Close history is ahead of the account snapshot"
+        );
         let market = markets
             .get(&record.instrument_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown closed market"))?;
