@@ -1589,7 +1589,18 @@ impl ExecutionEngine {
                 ts_now,
                 self.config.allow_overfills,
             ) {
-                self.handle_event(&event);
+                if let OrderEventAny::Filled(fill) = &event {
+                    match self.project_retained_reconciliation_fill(fill) {
+                        Ok(true) => {}
+                        Ok(false) => self.handle_event(&event),
+                        Err(e) => {
+                            log::error!("Cannot reconcile retained fill {}: {e}", fill.trade_id);
+                            return;
+                        }
+                    }
+                } else {
+                    self.handle_event(&event);
+                }
             }
 
             // Refresh order after fill to keep filled_qty accurate for the next iteration.
@@ -1614,6 +1625,43 @@ impl ExecutionEngine {
         for event in &events {
             self.handle_event(event);
         }
+    }
+
+    /// Restores an order projection when the position already contains this exact fill.
+    fn project_retained_reconciliation_fill(&mut self, fill: &OrderFilled) -> anyhow::Result<bool> {
+        {
+            let cache = self.cache.borrow();
+            let position_id = fill
+                .position_id
+                .or_else(|| cache.position_id(&fill.client_order_id).copied());
+            let Some(position) = position_id.and_then(|id| cache.position(&id)) else {
+                return Ok(false);
+            };
+            if !position.trade_ids.contains(&fill.trade_id) {
+                return Ok(false);
+            }
+            let retained = position
+                .events
+                .iter()
+                .find(|event| event.trade_id == fill.trade_id)
+                .ok_or_else(|| anyhow::anyhow!("Retained trade has no economic evidence"))?;
+            anyhow::ensure!(
+                retained.account_id == fill.account_id
+                    && retained.instrument_id == fill.instrument_id
+                    && retained.client_order_id == fill.client_order_id
+                    && retained.venue_order_id == fill.venue_order_id
+                    && retained.order_side == fill.order_side
+                    && retained.last_qty == fill.last_qty
+                    && retained.last_px == fill.last_px
+                    && retained
+                        .commission
+                        .unwrap_or(Money::zero(retained.currency))
+                        == fill.commission.unwrap_or(Money::zero(fill.currency)),
+                "Retained trade identity or economics disagree with fill report"
+            );
+        }
+        self.project_reconciliation_fill(fill);
+        Ok(true)
     }
 
     /// Reconciles a position status report received at runtime.

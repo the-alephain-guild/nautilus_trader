@@ -19293,3 +19293,54 @@ fn test_zero_quantity_fill_does_not_create_external_order(mut execution_engine: 
     assert!(!cache.order_exists(&client_order_id));
     assert_eq!(cache.positions_total_count(None, None, None, None, None), 0);
 }
+
+#[rstest]
+fn test_bundled_retained_fill_economic_conflict_does_not_infer_a_replacement(
+    mut execution_engine: ExecutionEngine,
+) {
+    let retained = stub_position_long(audusd_sim());
+    let original = &retained.events[0];
+    let cache = execution_engine.cache();
+    cache
+        .borrow_mut()
+        .add_instrument(audusd_sim().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_position_without_order(&retained, OmsType::Hedging)
+        .unwrap();
+    let mut report = create_order_status_report(
+        Some(original.client_order_id),
+        original.venue_order_id,
+        original.instrument_id,
+        OrderStatus::Filled,
+        original.last_qty,
+        original.last_qty,
+    );
+    report.account_id = original.account_id;
+    let mut fill = create_fill_report_with_account(
+        original.account_id,
+        original.instrument_id,
+        Some(original.client_order_id),
+        original.venue_order_id,
+        original.trade_id,
+        original.last_qty,
+        original.last_px,
+    );
+    fill.venue_position_id = Some(retained.id);
+    fill.commission = original
+        .commission
+        .unwrap_or(Money::zero(original.currency))
+        + Money::new(1.0, original.currency);
+    execution_engine.reconcile_order_with_fills(&report, &[fill]);
+    let cache = execution_engine.cache().borrow();
+    let order = cache.order(&original.client_order_id).unwrap();
+    assert_eq!(order.status(), OrderStatus::Accepted);
+    assert!(order.filled_qty().is_zero());
+    assert!(order.trade_ids().is_empty());
+    assert_eq!(cache.positions(None, None, None, None, None).len(), 1);
+    let position = cache.position(&retained.id).unwrap();
+    assert_eq!(position.quantity, retained.quantity);
+    assert_eq!(position.realized_pnl, retained.realized_pnl);
+    assert_eq!(position.commissions(), retained.commissions());
+}
