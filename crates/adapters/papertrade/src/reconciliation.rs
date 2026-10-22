@@ -231,17 +231,10 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 if let std::collections::hash_map::Entry::Vacant(slot) =
                     receipts.entry(record.tx_hash)
                 {
-                    match inner.api.receipt(record.tx_hash).await {
-                        Ok(receipt) => {
-                            slot.insert(receipt);
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "papertrade_close_receipt_unavailable intent_id={} error={e}",
-                                entry.intent_id
-                            );
-                        }
-                    }
+                    // Until the receipt is readable, this close may belong to the
+                    // local command. Publishing an external order here would make
+                    // the same trade change identity when evidence arrives later.
+                    slot.insert(inner.api.receipt(record.tx_hash).await?);
                 }
                 if let Some(receipt) = receipts.get(&record.tx_hash) {
                     match chain::intent_result(receipt, entry.intent_id)? {

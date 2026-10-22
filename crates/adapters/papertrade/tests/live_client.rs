@@ -58,6 +58,7 @@ use serde_json::{Value, json};
 struct ServerState {
     attempt_id: Mutex<Option<B256>>,
     rpc_calls: AtomicUsize,
+    trading_calls: AtomicUsize,
     wallet: tokio::sync::watch::Sender<Value>,
     posts: Mutex<Vec<Value>>,
     count: AtomicUsize,
@@ -88,8 +89,14 @@ async fn submit(
     state.count.fetch_add(1, Ordering::SeqCst);
     (StatusCode::INTERNAL_SERVER_ERROR, "acknowledgement lost")
 }
-async fn trading() -> Json<Value> {
-    Json(serde_json::from_str(include_str!("../test_data/live_trading.json")).unwrap())
+async fn trading(State(state): State<Arc<ServerState>>) -> Json<Value> {
+    let mut value: Value =
+        serde_json::from_str(include_str!("../test_data/live_trading.json")).unwrap();
+    value["indexedThroughBlock"] = json!(
+        value["indexedThroughBlock"].as_u64().unwrap()
+            + state.trading_calls.fetch_add(1, Ordering::SeqCst) as u64
+    );
+    Json(value)
 }
 async fn history() -> Json<Value> {
     Json(json!({"items":[],"nextCursor":null}))
@@ -124,6 +131,7 @@ async fn lost_acknowledgement_reconnect_and_restart_do_not_resubmit_or_duplicate
     let state = Arc::new(ServerState {
         attempt_id: Mutex::new(None),
         rpc_calls: AtomicUsize::new(0),
+        trading_calls: AtomicUsize::new(0),
         wallet: wallet_tx,
         posts: Mutex::new(Vec::new()),
         count: AtomicUsize::new(0),
