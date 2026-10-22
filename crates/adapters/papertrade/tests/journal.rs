@@ -192,3 +192,37 @@ fn send_attempt_and_scan_progress_survive_late_acknowledgements() {
         "Old journals cannot prove that submission was never attempted"
     );
 }
+
+#[rstest]
+fn execution_success_survives_late_ack_and_rejects_terminal_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.redb");
+    let journal = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let (entry, _) = journal
+        .prepare(&command("PT-SUCCESS"), None, 100, sign)
+        .unwrap();
+    let mut success = journal
+        .begin_submission(entry.command.client_order_id)
+        .unwrap()
+        .unwrap();
+    success.execution_succeeded = true;
+    success.scanned_through = 200;
+    journal.update(&success).unwrap();
+    let mut late = entry;
+    late.status = OrderStatus::Accepted;
+    journal.update(&late).unwrap();
+    for status in [
+        OrderStatus::Expired,
+        OrderStatus::Rejected,
+        OrderStatus::Canceled,
+    ] {
+        late.status = status;
+        assert!(journal.update(&late).is_err());
+    }
+    drop(journal);
+    let reopened = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let saved = reopened.entries().unwrap().pop().unwrap();
+    assert!(saved.execution_succeeded);
+    assert_eq!(saved.status, OrderStatus::Accepted);
+    assert_eq!(saved.scanned_through, 200);
+}

@@ -169,17 +169,17 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             continue;
         }
         for receipt in receipts.values() {
-            match chain::intent_result(receipt, entry.intent_id)? {
-                Some(true) if entry.action == "openPosition" => {
+            if chain::intent_result(receipt, entry.intent_id)? == Some(true) {
+                entry.execution_succeeded = true;
+                if entry.action == "openPosition" {
                     let opened =
                         chain::recovered_open(receipt, entry.intent_id, inner.wallet, &entry.body)?;
                     inner.journal.remember(std::slice::from_ref(&opened), &[])?;
                     by_position.insert(opened.position_id, opened);
                 }
-                // A failed chain attempt does not revoke the signed intent; a
-                // later relayer attempt can still execute it before its deadline.
-                _ => {}
             }
+            // Failed attempts do not revoke the intent. Successful attempts must
+            // survive the scan cursor even while account history is still lagging.
         }
         entry.scanned_through = entry.scanned_through.max(covered_block);
         inner.journal.update(entry)?;
@@ -205,7 +205,12 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 "failed" => Some(OrderStatus::Rejected),
                 "expired" => Some(OrderStatus::Expired),
                 "cancelled" => Some(OrderStatus::Canceled),
-                "succeeded" | "unknown" => None,
+                "succeeded" => {
+                    entry.execution_succeeded = true;
+                    inner.journal.update(entry)?;
+                    None
+                }
+                "unknown" => None,
                 _ => anyhow::bail!("Unknown intent outcome"),
             };
             if let Some(status) = status {
@@ -321,6 +326,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 .any(|(id, outcome)| *id == entry.intent_id && outcome == "succeeded");
             if !remote
                 && !succeeded
+                && !entry.execution_succeeded
                 && pending_ids.contains(&entry.intent_id)
                 && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
                 && covered_block >= entry.submitted_block

@@ -746,3 +746,139 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
     assert!(mass.fill_reports().is_empty());
     restarted.disconnect().await.unwrap();
 }
+
+#[tokio::test]
+async fn successful_close_cannot_expire_while_history_is_delayed_across_restart() {
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy_primitives::{B256, U256};
+    use nautilus_common::messages::execution::SubmitOrder;
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::{
+        enums::{OrderSide, OrderStatus, OrderType},
+        identifiers::{ClientOrderId, InstrumentId},
+        orders::OrderTestBuilder,
+    };
+    use nautilus_papertrade::{
+        journal::Journal,
+        reports,
+        signing::{Close, PapertradeSigner},
+        wire::{TradingState, VenuePosition},
+    };
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let markets: TradingState =
+        serde_json::from_value(harness.source.trading.lock().clone()).unwrap();
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
+        .client_order_id(ClientOrderId::from("PT-SUCCESS-CLOSE"))
+        .side(OrderSide::Sell)
+        .quantity(reports::quantity(&position, &markets.instruments[0]).unwrap())
+        .reduce_only(true)
+        .build();
+    harness
+        .cache
+        .borrow_mut()
+        .add_order(order.clone(), None, None, false)
+        .unwrap();
+    let command = SubmitOrder::from_order(
+        &order,
+        TraderId::from("TESTER-001"),
+        None,
+        None,
+        UUID4::new(),
+        UnixNanos::from(1),
+    );
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let wallet = source["address"].as_str().unwrap().parse().unwrap();
+    let signer =
+        PapertradeSigner::new(PrivateKeySigner::from_bytes(&B256::repeat_byte(17)).unwrap());
+    let journal = Journal::open(&harness.config.journal_path, wallet, "PAPERTRADE-001").unwrap();
+    let (entry, _) = journal
+        .prepare(
+            &command,
+            Some(position.position_id),
+            source["indexedThroughBlock"].as_u64().unwrap(),
+            |nonce| {
+                signer.sign_close(
+                    &Close {
+                        user: wallet,
+                        positionIds: vec![position.position_id.0],
+                        nonce,
+                        deadline: now - 3600,
+                    },
+                    now - 7200,
+                )
+            },
+        )
+        .unwrap();
+    journal
+        .begin_submission(entry.command.client_order_id)
+        .unwrap()
+        .unwrap();
+    drop(journal);
+    harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
+    *harness.source.block_timestamp.lock() = Some(now);
+    let tx = B256::repeat_byte(31);
+    let block = B256::repeat_byte(32);
+    let height = format!("0x{:x}", source["indexedThroughBlock"].as_u64().unwrap());
+    let result = json!({"address":nautilus_papertrade::chain::BATCH_EXECUTOR,
+        "topics":[nautilus_papertrade::chain::RESULT_TOPIC,B256::ZERO,B256::ZERO,entry.intent_id],
+        "transactionHash":tx,"blockHash":block,"blockNumber":height,"removed":false,
+        "data":format!("0x{:064x}",U256::from(1))});
+    let exit = position.entry_price.0 + U256::from(100);
+    let close = json!({"address":nautilus_papertrade::signing::EXCHANGE,
+        "topics":["0x87902ed2451849f465fc4d36a01d7f5c67b53af12f63ee85d2814a2d582f89bf",format!("0x{:064x}",position.position_id.0),format!("0x{:064x}",U256::from_be_slice(wallet.as_slice()))],
+        "transactionHash":tx,"blockHash":block,"blockNumber":height,"removed":false,
+        "data":format!("0x{exit:064x}{}","0".repeat(256))});
+    let receipt = json!({"status":"0x1","transactionHash":tx,"blockHash":block,"blockNumber":height,"logs":[result,close]});
+    *harness.source.receipt.lock() = Some(receipt.clone());
+    for reconnect in 0..2 {
+        let mut client = harness.client();
+        client.start().unwrap();
+        client.connect().await.unwrap();
+        let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+        let report = mass
+            .order_reports()
+            .into_values()
+            .find(|r| r.client_order_id == Some(command.client_order_id))
+            .unwrap();
+        assert!(
+            matches!(
+                report.order_status,
+                OrderStatus::Submitted | OrderStatus::Accepted
+            ),
+            "A successful close was terminated before its history arrived, reconnect={reconnect}"
+        );
+        assert!(!mass.reports_complete());
+        client.disconnect().await.unwrap();
+        drop(client);
+        // The next scan starts after this receipt; success must survive in the journal.
+        *harness.source.receipt.lock() = None;
+    }
+    *harness.source.history.lock() = json!({"items":[{"positionId":position.position_id,
+        "instrumentId":position.instrument_id,"symbol":"BTC","priceScaleRaw":"10",
+        "isLong":position.is_long,"entryPriceRaw":position.entry_price,"marginRaw":position.margin,
+        "leverage":position.leverage,"openedAtMs":position.opened_at_ms,"timestampMs":now*1000,
+        "txHash":tx,"kind":"PositionClosed","exitPriceRaw":exit.to_string(),"adjustedPnlRaw":"0","userPaidFeeRaw":"0"}],"nextCursor":null});
+    source["openPositions"].as_array_mut().unwrap().remove(0);
+    source["locked"] = source["openPositions"][0][5].clone();
+    source["accountRevision"] = json!(2);
+    source["walletRevision"] = source["indexedThroughBlock"].clone();
+    harness.source.wallet.send_replace(source);
+    *harness.source.receipt.lock() = Some(receipt);
+    let mut recovered = harness.client();
+    recovered.start().unwrap();
+    recovered.connect().await.unwrap();
+    let mass = recovered.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(mass.reports_complete());
+    assert!(
+        mass.order_reports()
+            .values()
+            .any(|r| r.client_order_id == Some(command.client_order_id)
+                && r.order_status == OrderStatus::Filled)
+    );
+    recovered.disconnect().await.unwrap();
+}

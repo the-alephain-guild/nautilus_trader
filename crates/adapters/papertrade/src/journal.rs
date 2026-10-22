@@ -52,6 +52,8 @@ pub struct JournalEntry {
     // Older journals cannot prove that a transport attempt never began.
     #[serde(default = "legacy_send_attempted")]
     pub send_attempted: bool,
+    #[serde(default)]
+    pub execution_succeeded: bool,
 }
 fn legacy_send_attempted() -> bool {
     true
@@ -297,6 +299,7 @@ impl Journal {
                 submitted_block,
                 scanned_through: submitted_block.saturating_sub(1),
                 send_attempted: false,
+                execution_succeeded: false,
             };
             let json = serde_json::to_string(&entry)?;
             table.insert(key.as_str(), json.as_str())?;
@@ -329,6 +332,17 @@ impl Journal {
                     && previous.submitted_block == entry.submitted_block,
                 "Immutable journal payload changed"
             );
+            ensure!(
+                !(previous.execution_succeeded || entry.execution_succeeded)
+                    || (!matches!(
+                        entry.status,
+                        OrderStatus::Rejected | OrderStatus::Canceled | OrderStatus::Expired
+                    ) && !matches!(
+                        previous.status,
+                        OrderStatus::Rejected | OrderStatus::Canceled | OrderStatus::Expired
+                    )),
+                "Terminal failure contradicts observed execution success"
+            );
             if matches!(
                 previous.status,
                 OrderStatus::Filled
@@ -354,6 +368,7 @@ impl Journal {
             );
             let mut merged = entry.clone();
             merged.send_attempted |= previous.send_attempted;
+            merged.execution_succeeded |= previous.execution_succeeded;
             merged.scanned_through = merged.scanned_through.max(previous.scanned_through);
             table.insert(key.as_str(), serde_json::to_string(&merged)?.as_str())?;
         }
