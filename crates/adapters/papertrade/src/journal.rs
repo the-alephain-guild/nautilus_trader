@@ -182,10 +182,15 @@ impl Journal {
         let mut tx = self.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         {
+            let closes = tx.open_table(CLOSES)?;
             let mut table = tx.open_table(POSITIONS)?;
             for position in positions {
                 let mut position = position.clone();
                 let key = position.position_id.to_string();
+                if let Some(close) = closes.get(key.as_str())? {
+                    let close: CloseRecord = serde_json::from_str(close.value())?;
+                    close.validate_position(&position)?;
+                }
                 if let Some(old) = table.get(key.as_str())? {
                     let old: VenuePosition = serde_json::from_str(old.value())?;
                     ensure!(

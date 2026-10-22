@@ -234,3 +234,120 @@ async fn live_node_retained_position_recovers_missing_or_lagging_orders_without_
     }
     restarted.dispose();
 }
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn live_node_recovers_closed_during_downtime_with_history_before_open_proof(
+    #[case] conflict: bool,
+) {
+    use alloy_primitives::{B256, U256};
+    use nautilus_model::{enums::OrderStatus, identifiers::PositionId, orders::Order};
+    use nautilus_papertrade::wire::VenuePosition;
+    use rust_decimal::Decimal;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let position: VenuePosition = serde_json::from_value(json!([
+        "9001",
+        0,
+        true,
+        false,
+        "830000",
+        "166000000000000000000",
+        10,
+        "0",
+        (now - 20) * 1000,
+        null
+    ]))
+    .unwrap();
+    source["openPositions"] = json!([]);
+    source["locked"] = json!("0");
+    source["balance"] = json!("1018250000000000000000");
+    source["funds"]["availableBalance"] = source["balance"].clone();
+    harness.source.wallet.send_replace(source.clone());
+    harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
+    let entry = support::prepared_open(&harness, &position, now - 60, now + 3600 - 60);
+    support::mark_attempted(&harness, &entry);
+    let mut record = closed_history(&position, (now - 10) * 1000);
+    record["exitPriceRaw"] = json!("840000");
+    record["adjustedPnlRaw"] = json!("19000000000000000000");
+    record["userPaidFeeRaw"] = json!("500000000000000000");
+    record["builderFeeRaw"] = json!("250000000000000000");
+    if conflict {
+        record["marginRaw"] = json!("332000000000000000000");
+    }
+    *harness.source.history.lock() = json!({"items":[record],"nextCursor":null});
+    let tx = B256::repeat_byte(42);
+    let hash = B256::repeat_byte(43);
+    let height = format!("0x{:x}", source["indexedThroughBlock"].as_u64().unwrap());
+    let wallet: alloy_primitives::Address = source["address"].as_str().unwrap().parse().unwrap();
+    let result = json!({"address":nautilus_papertrade::chain::BATCH_EXECUTOR,
+        "topics":[nautilus_papertrade::chain::RESULT_TOPIC,B256::ZERO,B256::ZERO,entry.intent_id],
+        "transactionHash":tx,"blockHash":hash,"blockNumber":height,"removed":false,
+        "data":format!("0x{:064x}{:064x}{:064x}{:064x}",1,64,32,position.position_id.0)});
+    let open = json!({"address":nautilus_papertrade::signing::EXCHANGE,
+        "topics":["0x88451ea1189f73b554f0bf39c09868560ed149b3d788fcc933ff66ba926827f3",format!("0x{:064x}",position.position_id.0),format!("0x{:064x}",U256::from_be_slice(wallet.as_slice()))],
+        "transactionHash":tx,"blockHash":hash,"blockNumber":height,"blockTimestamp":format!("0x{:x}",now-20),"removed":false,
+        "data":format!("0x{:064x}{:064x}{:064x}{:064x}{:064x}{:064x}",0,1,0,position.entry_price.0,position.margin.0,position.leverage)});
+    *harness.source.receipt.lock() = Some(
+        json!({"status":"0x1","transactionHash":tx,"blockHash":hash,"blockNumber":height,"logs":[result,open]}),
+    );
+    let mut node = account_node(&harness);
+    if conflict {
+        let handle = node.handle();
+        let stop = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let running = handle.is_running();
+            handle.stop();
+            running
+        };
+        let (run, running) = tokio::join!(node.run(), stop);
+        run.unwrap();
+        assert!(
+            !running,
+            "Contradictory evidence allowed LiveNode to enter Running"
+        );
+        assert!(
+            node.kernel()
+                .cache()
+                .borrow()
+                .positions(None, None, None, None, None)
+                .is_empty()
+        );
+        assert!(
+            node.kernel()
+                .cache()
+                .borrow()
+                .orders(None, None, None, None, None)
+                .is_empty()
+        );
+        node.dispose();
+        drop(node);
+        harness.source.history.lock()["items"][0]["marginRaw"] = json!(position.margin);
+        node = account_node(&harness);
+    }
+    run_account_node(&mut node).await;
+    {
+        let cache = node.kernel().cache();
+        let cache = cache.borrow();
+        assert_eq!(cache.positions(None, None, None, None, None).len(), 1);
+        let recovered = cache.position(&PositionId::from("PT-9001")).unwrap();
+        assert!(recovered.is_closed());
+        assert_eq!(
+            recovered.realized_pnl.unwrap().as_decimal(),
+            Decimal::new(1825, 2)
+        );
+        assert_eq!(
+            recovered.commissions()[0].as_decimal(),
+            Decimal::new(175, 2)
+        );
+        assert_eq!(recovered.trade_ids().len(), 2);
+        let order = cache.order(&entry.command.client_order_id).unwrap();
+        assert_eq!(order.status(), OrderStatus::Filled);
+        assert_eq!(order.trade_ids().len(), 1);
+    }
+    node.dispose();
+}

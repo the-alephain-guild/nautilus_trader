@@ -114,7 +114,10 @@ fn late_acknowledgement_does_not_erase_a_terminal_state() {
 #[case("marginRaw")]
 #[case("leverage")]
 #[case("openedAtMs")]
-fn conflicting_close_identity_is_rejected_without_poisoning_the_journal(#[case] field: &str) {
+fn conflicting_close_identity_is_rejected_without_poisoning_the_journal(
+    #[case] field: &str,
+    #[values(false, true)] history_first: bool,
+) {
     use nautilus_papertrade::wire::{CloseRecord, VenuePosition};
     use serde_json::{Value, json};
     let source: Value =
@@ -142,6 +145,20 @@ fn conflicting_close_identity_is_rejected_without_poisoning_the_journal(#[case] 
     let dir = tempfile::tempdir().unwrap();
     let journal =
         Journal::open(&dir.path().join("journal.redb"), WALLET, "PAPERTRADE-001").unwrap();
+    if history_first {
+        journal
+            .remember(&[], std::slice::from_ref(&correct))
+            .unwrap();
+        let contradictory_open = nautilus_papertrade::reports::historical_position(&conflict);
+        assert!(
+            journal.remember(&[contradictory_open], &[]).is_err(),
+            "Later open proof contradicted retained close economics"
+        );
+        assert!(journal.observed().unwrap().is_empty());
+        journal.remember(&[position], &[]).unwrap();
+        assert_eq!(journal.observed().unwrap().len(), 1);
+        return;
+    }
     journal
         .remember(std::slice::from_ref(&position), &[])
         .unwrap();

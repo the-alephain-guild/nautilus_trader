@@ -94,41 +94,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             "Close history market identity or price scale changed"
         );
     }
-    inner
-        .journal
-        .remember(&snapshot.open_positions, &fresh_history)?;
-    let history = inner.journal.closes()?;
-    let observed = inner.journal.observed()?;
-    ensure!(
-        observed.iter().all(|old| snapshot
-            .open_positions
-            .iter()
-            .any(|p| p.position_id == old.position_id)
-            || history.iter().any(|r| r.position_id == old.position_id)),
-        "Position disappeared without a terminal history record"
-    );
     let mut entries = inner.journal.entries()?;
-    let mut bundle = ReportBundle {
-        complete: true,
-        ..Default::default()
-    };
-    if snapshot.operations.iter().any(|o| {
-        matches!(o.action.as_str(), "openPosition" | "closePositions")
-            && !entries.iter().any(|e| e.intent_id == o.intent_id)
-    }) {
-        bundle.complete = false;
-    }
-    let now = inner.clock.get_time_ns();
-    let account_id = inner.config.account_id;
-    let mut by_position = HashMap::new();
-    for p in &observed {
-        by_position.insert(p.position_id, p.clone());
-    }
-    for close in &history {
-        by_position
-            .entry(close.position_id)
-            .or_insert_with(|| reports::historical_position(close));
-    }
     let pending: Vec<_> = entries
         .iter()
         .filter(|e| {
@@ -160,6 +126,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             receipts.insert(hash, receipt);
         }
     }
+    let mut source_positions = snapshot.open_positions.clone();
     for entry in &mut entries {
         if !pending_ids.contains(&entry.intent_id) {
             continue;
@@ -175,15 +142,51 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 if entry.action == "openPosition" {
                     let opened =
                         chain::recovered_open(receipt, entry.intent_id, inner.wallet, &entry.body)?;
-                    inner.journal.remember(std::slice::from_ref(&opened), &[])?;
-                    by_position.insert(opened.position_id, opened);
+                    source_positions.push(opened);
                 }
             }
             // Failed attempts do not revoke the intent. Successful attempts must
             // survive the scan cursor even while account history is still lagging.
         }
-        entry.scanned_through = entry.scanned_through.max(covered_block);
-        inner.journal.update(entry)?;
+    }
+    inner.journal.remember(&source_positions, &fresh_history)?;
+    let history = inner.journal.closes()?;
+    let observed = inner.journal.observed()?;
+    ensure!(
+        observed.iter().all(|old| snapshot
+            .open_positions
+            .iter()
+            .any(|p| p.position_id == old.position_id)
+            || history.iter().any(|r| r.position_id == old.position_id)),
+        "Position disappeared without a terminal history record"
+    );
+    // Commit mutually checked source rows before moving any scan cursor.
+    for entry in &mut entries {
+        if pending_ids.contains(&entry.intent_id) {
+            entry.scanned_through = entry.scanned_through.max(covered_block);
+            inner.journal.update(entry)?;
+        }
+    }
+    let mut bundle = ReportBundle {
+        complete: true,
+        ..Default::default()
+    };
+    if snapshot.operations.iter().any(|o| {
+        matches!(o.action.as_str(), "openPosition" | "closePositions")
+            && !entries.iter().any(|e| e.intent_id == o.intent_id)
+    }) {
+        bundle.complete = false;
+    }
+    let now = inner.clock.get_time_ns();
+    let account_id = inner.config.account_id;
+    let mut by_position = HashMap::new();
+    for p in &observed {
+        by_position.insert(p.position_id, p.clone());
+    }
+    for close in &history {
+        by_position
+            .entry(close.position_id)
+            .or_insert_with(|| reports::historical_position(close));
     }
     ensure!(
         by_position.values().all(|p| snapshot

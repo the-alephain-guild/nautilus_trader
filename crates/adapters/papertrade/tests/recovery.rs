@@ -18,7 +18,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 use nautilus_model::identifiers::TraderId;
 use serde_json::{Value, json};
 mod support;
-use support::{Harness, SERIAL, closed_history};
+use support::{Harness, SERIAL, closed_history, mark_attempted, prepared_open};
 
 #[tokio::test]
 async fn failed_wallet_reconnect_never_restores_old_coverage_on_poll_ticks() {
@@ -263,85 +263,6 @@ async fn delayed_close_receipt_never_publishes_an_external_identity_for_a_local_
     recovered.disconnect().await.unwrap();
 }
 
-fn prepared_open(
-    harness: &Harness,
-    position: &nautilus_papertrade::wire::VenuePosition,
-    now: u64,
-    deadline: u64,
-) -> nautilus_papertrade::journal::JournalEntry {
-    use alloy::signers::local::PrivateKeySigner;
-    use alloy_primitives::B256;
-    use nautilus_common::messages::execution::SubmitOrder;
-    use nautilus_core::{UUID4, UnixNanos};
-    use nautilus_model::{
-        enums::OrderType,
-        identifiers::{ClientOrderId, InstrumentId},
-        orders::OrderTestBuilder,
-        types::Quantity,
-    };
-    use nautilus_papertrade::{
-        journal::Journal,
-        signing::{OpenPosition, PapertradeSigner},
-    };
-    let wallet = harness.source.wallet.borrow();
-    let order = OrderTestBuilder::new(OrderType::Market)
-        .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
-        .client_order_id(ClientOrderId::from("PT-OPEN-RECOVERY"))
-        .quantity(
-            Quantity::from_decimal_dp(
-                position.margin.decimal().unwrap() * rust_decimal::Decimal::from(position.leverage),
-                2,
-            )
-            .unwrap(),
-        )
-        .quote_quantity(true)
-        .build();
-    harness
-        .cache
-        .borrow_mut()
-        .add_order(order.clone(), None, None, false)
-        .unwrap();
-    let command = SubmitOrder::from_order(
-        &order,
-        TraderId::from("TESTER-001"),
-        None,
-        None,
-        UUID4::new(),
-        UnixNanos::from(1),
-    );
-    let signer =
-        PapertradeSigner::new(PrivateKeySigner::from_bytes(&B256::repeat_byte(17)).unwrap());
-    let journal = Journal::open(
-        &harness.config.journal_path,
-        wallet["address"].as_str().unwrap().parse().unwrap(),
-        "PAPERTRADE-001",
-    )
-    .unwrap();
-    journal
-        .prepare(
-            &command,
-            None,
-            wallet["indexedThroughBlock"].as_u64().unwrap(),
-            |nonce| {
-                signer.sign_open(
-                    &OpenPosition {
-                        user: wallet["address"].as_str().unwrap().parse().unwrap(),
-                        instrumentId: position.instrument_id,
-                        isLong: position.is_long,
-                        size: u128::try_from(position.margin.0).unwrap(),
-                        leverage: position.leverage,
-                        useDebt: false,
-                        nonce,
-                        deadline,
-                    },
-                    now,
-                )
-            },
-        )
-        .unwrap()
-        .0
-}
-
 #[rstest::rstest]
 #[case(false)]
 #[case(true)]
@@ -491,20 +412,6 @@ async fn restart_rejects_a_durable_order_that_never_started_submission() {
     assert!(mass.fill_reports().is_empty());
     client.submit_order(entry.command).unwrap();
     client.disconnect().await.unwrap();
-}
-
-fn mark_attempted(harness: &Harness, entry: &nautilus_papertrade::journal::JournalEntry) {
-    let wallet = harness.source.wallet.borrow();
-    let journal = nautilus_papertrade::journal::Journal::open(
-        &harness.config.journal_path,
-        wallet["address"].as_str().unwrap().parse().unwrap(),
-        "PAPERTRADE-001",
-    )
-    .unwrap();
-    journal
-        .begin_submission(entry.command.client_order_id)
-        .unwrap()
-        .unwrap();
 }
 
 #[tokio::test]
