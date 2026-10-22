@@ -243,3 +243,60 @@ fn execution_success_survives_late_ack_and_rejects_terminal_failure() {
     assert_eq!(saved.status, OrderStatus::Accepted);
     assert_eq!(saved.scanned_through, 200);
 }
+
+#[rstest]
+fn legacy_unresolved_journal_rescans_results_without_changing_request_identity() {
+    use redb::{Database, TableDefinition};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.redb");
+    let journal = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let (entry, _) = journal
+        .prepare(&command("PT-LEGACY"), None, 100, sign)
+        .unwrap();
+    let mut attempted = journal
+        .begin_submission(entry.command.client_order_id)
+        .unwrap()
+        .unwrap();
+    attempted.status = OrderStatus::Accepted;
+    attempted.scanned_through = 200;
+    journal.update(&attempted).unwrap();
+    drop(journal);
+    // This is the on-disk format produced before execution-success evidence was recorded.
+    let mut legacy = serde_json::to_value(&attempted).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("execution_succeeded");
+    {
+        let db = Database::open(&path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut orders = tx
+                .open_table(TableDefinition::<&str, &str>::new("orders"))
+                .unwrap();
+            orders
+                .insert(
+                    entry.command.client_order_id.as_str(),
+                    serde_json::to_string(&legacy).unwrap().as_str(),
+                )
+                .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let reopened = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let restored = reopened.entries().unwrap().pop().unwrap();
+    assert_eq!(
+        restored.scanned_through, 99,
+        "Legacy cursor skipped success evidence that was never retained"
+    );
+    assert_eq!(restored.intent_id, entry.intent_id);
+    assert_eq!(restored.body, entry.body);
+    assert_eq!(restored.nonce, entry.nonce);
+    assert!(restored.send_attempted);
+    assert!(
+        reopened
+            .begin_submission(entry.command.client_order_id)
+            .unwrap()
+            .is_none()
+    );
+}

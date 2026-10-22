@@ -106,6 +106,28 @@ impl Journal {
             tx.open_table(POSITIONS)?;
             tx.open_table(CLOSES)?;
         }
+        {
+            let mut orders = tx.open_table(ORDERS)?;
+            let mut legacy = Vec::new();
+            for row in orders.iter()? {
+                let (key, value) = row?;
+                let raw: Value = serde_json::from_str(value.value())?;
+                if raw.get("execution_succeeded").is_some() {
+                    continue;
+                }
+                let mut entry: JournalEntry = serde_json::from_value(raw)?;
+                if entry.fills.is_empty()
+                    && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
+                {
+                    // Earlier readers advanced the cursor without retaining close success.
+                    entry.scanned_through = entry.submitted_block.saturating_sub(1);
+                    legacy.push((key.value().to_owned(), serde_json::to_string(&entry)?));
+                }
+            }
+            for (key, value) in legacy {
+                orders.insert(key.as_str(), value.as_str())?;
+            }
+        }
         tx.commit()?;
         Ok(Self { db })
     }
