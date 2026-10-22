@@ -111,6 +111,7 @@ nautilus-interactive-brokers = { path = "crates/adapters/interactive_brokers", v
 nautilus-kraken = { path = "crates/adapters/kraken", version = "0.64.0", default-features = false }
 nautilus-lighter = { path = "crates/adapters/lighter", version = "0.64.0", default-features = false }
 nautilus-okx = { path = "crates/adapters/okx", version = "0.64.0", default-features = false }
+nautilus-papertrade = { path = "crates/adapters/papertrade", version = "0.64.0", default-features = false }
 nautilus-polymarket = { path = "crates/adapters/polymarket", version = "0.64.0", default-features = false }
 nautilus-sandbox = { path = "crates/adapters/sandbox", version = "0.64.0", default-features = false }
 nautilus-sodex = { path = "crates/adapters/sodex", version = "0.64.0", default-features = false }

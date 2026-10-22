@@ -109,6 +109,28 @@ impl fmt::Debug for SignedIntent {
 }
 
 impl SignedIntent {
+    pub(crate) fn restore(id: B256, action: &str, deadline: u64, body: Value) -> Result<Self> {
+        let action = match action {
+            "openPosition" => "openPosition",
+            "closePositions" => "closePositions",
+            _ => anyhow::bail!("Unknown journal action"),
+        };
+        ensure!(
+            body["action"] == action
+                && body["signed"]["deadline"]
+                    .as_str()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    == Some(deadline),
+            "Journal request envelope mismatch"
+        );
+        Ok(Self {
+            id,
+            action,
+            deadline,
+            cancellation: false,
+            body,
+        })
+    }
     pub fn id(&self) -> B256 {
         self.id
     }

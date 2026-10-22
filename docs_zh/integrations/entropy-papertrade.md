@@ -2,7 +2,8 @@
 
 本次以 2026-10-21 的公开文档、官方前端和只读 API 为证据，对照仓库
 `ac86ec3c5f` 的 Hyperliquid 适配器。结论是：Entropy 直接复用现有适配器；
-Papertrade 需要独立协议适配，当前只实现了底层签名和 relayer 提交逻辑，还不是完整的实盘场所客户端。
+Papertrade 使用独立的 HyperEVM 意图协议。后续实施已补齐 Papertrade 的原生数据、执行客户端、
+Python factories、成交和仓位对账、持久化重启恢复，并以真实 `LiveNode` 验证本地接线。
 
 ## 两个平台不是同一类接口
 
@@ -15,7 +16,7 @@ Papertrade 需要独立协议适配，当前只实现了底层签名和 relayer 
 | 数量含义    | 标的数量，精度取当前 metadata                 | `size` 是 18 位小数的保证金                        |
 | 平仓与取消   | 原生数量订单、reduce-only 和订单撤销            | 按具体仓位 ID 平仓；取消的是 relayer 中的意图              |
 | 盈亏到账    | 按 Hyperliquid 账户和成交模型处理             | 平仓盈利可能先形成付款队列债权                            |
-| 本次接入结果  | 复用原生工厂，增加发现函数、行情和执行示例               | 新增独立 Rust 协议 crate，不注册到 `LiveNode`         |
+| 本次接入结果  | 复用原生工厂，增加发现函数、行情和执行示例               | 独立原生客户端、Python factories 与持久化恢复            |
 
 [Entropy 官方架构文档](https://docs.entropy.io/about-entropy/readme)写明：
 “Entropy (ticker: io) is one such HIP-3 market deployer.”
@@ -76,7 +77,7 @@ Entropy 的不同产品可以有不同资金费率机制、市场开放状态、
 ## Papertrade 实现方式
 
 新增 crate 位于
-[`crates/adapters/papertrade`](../../crates/adapters/papertrade/src/lib.rs)，详细协议与未完成边界见
+[`crates/adapters/papertrade`](../../crates/adapters/papertrade/src/lib.rs)，详细协议、接线与验收边界见
 [Papertrade 协议适配层](papertrade.md)。
 
 该实现从官方前端核对协议结构，独立编写 Rust 逻辑，没有引入搜索到的第三方交易机器人作为依赖。
@@ -95,9 +96,9 @@ Entropy 的不同产品可以有不同资金费率机制、市场开放状态、
 本次没有验证这两个地址当前的链上角色，所以没有实现存款、提现、approve 或桥接，
 也不推断其中哪一个可安全使用。后续资金接入必须先用当前代理存储与链上调用独立核验。
 
-Papertrade 仍欠账户流、链上成交证据、订单与仓位映射、动态风险校验和持久化恢复；
-原因、影响和补齐路线逐项写在[协议说明](papertrade.md)中。
-这些缺失意味着协议层测试通过仍不足以宣称可以通过 `LiveNode` 实盘交易。
+Papertrade 的账户流、链上意图证据、订单与仓位映射、动态交易校验和持久化恢复已补充实现，
+具体能力、接线方式和未行使的主网交易边界见[适配器说明](papertrade.md)。
+新增执行路径支持保证金开仓、整仓平仓和排队取消；不把本地集成测试当作真实资金下单验收。
 
 ## 验证范围
 

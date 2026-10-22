@@ -1,94 +1,152 @@
-# Papertrade 协议适配层
+# Papertrade LiveNode 适配器
 
-本 crate 实现 Papertrade 在 HyperEVM 上的签名意图协议，包括开仓、按仓位 ID 批量平仓、
-主钱包注册 session key、取消排队意图，以及显式调用官方 relayer 的 HTTP 客户端。
-它不是已接入 `LiveNode` 的 Nautilus `ExecutionClient`，也没有 Python factory。
+本适配器已提供原生 Rust 数据客户端、执行客户端、factories 和 Python 注册，
+可以通过 `nautilus_trader.adapters.papertrade` 接入 `LiveNode`。
+实现以官方前端接口和公开链上交易为依据；本次未找到官方发布的版本化 trade SDK。
 
-## 与 Hyperliquid 的区别
+## Papertrade 暴露的接口
+
+| 接口                                                        | 用途                        | 本次证据                                       |
+| --------------------------------------------------------- | ------------------------- | ------------------------------------------ |
+| `GET /state/trading`                                      | 市场、精度、暂停状态、杠杆及交易限额        | 官方 origin 实际返回 JSON                        |
+| `GET /state/user/live?wallet=0x...`                       | 账户 SSE 快照、连续增量和心跳         | 实测 HTTP 200 与 `text/event-stream`，包含非空多空仓位 |
+| `GET /query/accounts/{wallet}/trades?filter=all&limit=75` | 分页平仓、清算、入场及退出价格、实现盈亏和费用   | 实际读取非空历史记录                                 |
+| `POST /intents`                                           | 开仓、平仓及 session key 注册     | 官方前端的签名结构与请求格式；没有发送真实账户的写请求                |
+| `POST /intents/{intentId}/cancel`                         | 取消 relayer 中的排队意图         | 官方前端格式；本地 HTTP harness 验证                  |
+| HyperEVM JSON-RPC                                         | 逐意图 batch 结果与 Exchange 事件 | 实际读取开仓、平仓交易及日志                             |
+
+查询参数必须排序生成 canonical URL。成交历史必须翻到 `nextCursor=null`；
+重复 cursor、非成功 HTTP、损坏记录和超出配置页数均返回错误，不返回“空历史”。
+`GET /intents/{id}` 探针返回 404，恢复流程不依赖这个路径。
+来源、地址和远端版本记录在
+[`sources.json`](../../crates/adapters/papertrade/test_data/sources.json)。
 
 [官方架构说明](https://docs.papertrade.xyz/how/architecture/)写明：
 “Papertrade's relayer submits every open and close.”
-因此，Hyperliquid 的 `/exchange` 下单、`cloid`、订单簿撮合和撤单不能代替这里的意图协议。
-`Exchange.openPositionBySig` 也不能由普通用户绕过授权 batch executor 直接调用。
+因此本适配器使用 HyperEVM 意图协议，不能把请求发送到 Hyperliquid 的 `/exchange`。
+[官方 session key 说明](https://docs.papertrade.xyz/learn/session-keys/)定义了交易密钥权限和有效期。
 
-[官方交易说明](https://docs.papertrade.xyz/)描述的是以 HyperCore BBO 中点为价格来源、
-与 LP 对手方结算的合成交易。它没有自己的撮合订单簿。Hyperliquid 的 BBO 可以作参考行情，
-不能作为 Papertrade 的成交证明，更不能把 Hyperliquid 的深度解释成 Papertrade 的可成交深度。
+## LiveNode 接线
 
-## 已实现的协议
+公开行情不需要凭据，可运行：
 
-签名结构与 HTTP 格式来自 2026-10-21 读取的官方前端，来源定位见
-[`sources.json`](../../crates/adapters/papertrade/test_data/sources.json)。这是前端实现观察，不是官方对长期兼容性的承诺。
-实现没有引入第三方机器人代码。
+```bash
+uv run --project python --no-sync python examples/live/papertrade/data_tester.py
+```
 
-| 操作             | EIP-712 primary type | HTTP 路径                           | JSON action          |
-| -------------- | -------------------- | --------------------------------- | -------------------- |
-| 开仓             | `OpenPosition`       | `POST /intents`                   | `openPosition`       |
-| 平仓             | `Close`              | `POST /intents`                   | `closePositions`     |
-| 注册 session key | `RegisterSessionKey` | `POST /intents`                   | `registerSessionKey` |
-| 取消排队意图         | `CancelIntent`       | `POST /intents/{intentId}/cancel` | 无，直接发送签名字段           |
+账户连接示例为
+[`account_monitor.py`](../../examples/live/papertrade/account_monitor.py)。
+它连接数据和执行客户端、执行账户对账，但没有安装下单策略：
 
-交易和注册使用 chain ID `999`、Exchange 代理
-`0x6cd5661646289fb6e65ea5c032310fded797d0a2`，domain name 原样为 `String`，
-version 为 `1`。取消使用相同链和代理，但 domain name 为 `PaperTrade Intent Cancel`，
-version 为 `2`。domain 名字虽然不常见，也是签名字节的一部分，不能改成品牌名。
+```bash
+uv run --project python --no-sync python examples/live/papertrade/account_monitor.py \
+  --wallet YOUR_MASTER_WALLET_ADDRESS \
+  --build-id CURRENT_OFFICIAL_FRONTEND_BUILD \
+  --journal target/papertrade/account.redb
+```
 
-`OpenPosition.size` 是 **18 位小数的抵押保证金**，不是 BTC/ETH 数量，也不是 ERC-20 的原始单位。
-例如，保证金 `12.345` 对应 `12345000000000000000`。
-`margin_to_raw` 只做精确换算，拒绝需要舍入的输入和溢出。
-`instrumentId`、`leverage`、`nonce`、`deadline` 等整数在线上 JSON 中是十进制字符串，
-布尔值保留为 JSON boolean。
+事先通过安全的环境变量渠道设置 `PAPERTRADE_SESSION_PRIVATE_KEY`。
+这里需要已在对应钱包注册的 session key；适配器不自动注册、不读取主钱包私钥、不自动续期。
+连接时会核对钱包快照中的注册记录，并要求密钥至少还有一小时有效期。
+错误钱包即使返回空账户，也不能绕过这个检查。
 
-意图 ID 使用：
-`keccak256(keccak256("papertrade:intent-id:v2") || EIP712_digest || signer_address)`。
-这里使用的是实际签名者地址；session key 和主钱包签同一个消息时不能混用 ID。
-取消请求沿用被取消意图的 ID，不用取消签名的 digest 生成新交易 ID。
-一次平仓允许 1 至 12 个不重复的仓位 ID。取消回执的 action 仍绑定原交易 action。
+配置类为 `PapertradeDataClientConfig` 和 `PapertradeExecutionClientConfig`；
+对应工厂为 `PapertradeDataClientFactory` 和 `PapertradeExecutionClientFactory`。
+数据、订单和仓位统一使用 `PAPERTRADE` venue，例如
+`BTC-USD-PERP.PAPERTRADE`，OMS 为 `Hedging`。
+该场所可以同时存在同一标的的独立多仓和空仓，不能压成净头寸。
 
-`PapertradeSigner` 不读取环境变量，调用者显式传入已有的 Alloy `PrivateKeySigner`。
-注册时要求签名者就是 `user`，防止 session key 自授权。session key 的链上有效性、
-scope 和是否被撤销，仍由协议校验；本地签名成功不表示已获得交易权限。
+## 支持的交易语义
 
-## 使用边界
+- 开仓支持独立 `MARKET GTC` 意图。设置 `quote_quantity=True`，
+  订单数量表示美元名义金额；适配器按配置杠杆换算保证金。
+  比如名义金额 1000、杠杆 10，对应保证金 100。
+- 开仓前核对市场状态、intake、当前杠杆范围、最小保证金、最小与最大名义金额、
+  可用现金和本地未决请求占用。OI 计数使用场所原生单位，不把美元金额直接加到 OI；
+  合约在实际执行时校验本次增量。
+- `OpenPosition.size` 是 18 位小数的保证金。`margin_to_raw` 拒绝舍入和溢出，
+  不把抵押币 ERC-20 的小数位当作这个字段的小数位。
+- 开仓确认后，以实际入场价计算标的数量，再由真实成交报告把订单转为实际 base quantity。
+  所有数量计算使用 Decimal 和原生定点类型。
+- 平仓设置 `reduce_only=True`，并以原生 base quantity 提交完整仓位数量。
+  使用 `papertrade_position_id` 参数或对应的 venue position ID 明确目标；
+  方向、标的和数量必须与当前快照一致，拒绝部分平仓和反向目标。
+- 限价、修改和条件订单不属于该协议能力。修改请求会收到明确拒绝；
+  订单列表会被逐单拒绝，避免把依赖关系拆成独立交易。
+- 单笔取消和批量取消针对排队意图，不是对已确认仓位进行反向交易。
+  `cancel_all_orders` 只处理该策略、该标的及方向过滤后、本地 journal 中的未决意图。
 
-调用者必须持久化并协调 nonce，然后保存原始消息、签名请求和意图 ID，再提交。
-nonce 不是毫秒时间戳，也不是 Hyperliquid L1 action nonce。
-本 crate 不分配 nonce、不保存钱包、不负责多进程锁，也不在结果未知时生成替代意图。
+协议层还保留主钱包注册 session key 的签名函数，供独立授权流程使用，
+执行客户端本身不调用它。存款、提现、approve、桥接与 PAPER 质押不在本实现中。
 
-`PapertradeRelayerClient::new(build_id)` 使用官方 origin，要求调用者显式提供当前前端
-`X-Papertrade-Build` 标识。客户端拒绝重定向，使用共享 HTTP transport 的 secret-body 路径，
-按每秒一个请求进行本地节流，不添加应用层自动重试。这个节流值不是平台公布的限额。
-本地测试通过 `with_origin` 指向 loopback mock server。
+## 行情、成交与结算的区别
 
-`submit` 的结果保留证据级别：
+数据客户端加载官方市场配置，发布用于合约定价的 BBO 中点参考报价。
+参考报价的 bid/ask 数量都是零，没有伪造 Papertrade 撮合深度。
+启动时加载参考报价，后续按配置轮询已订阅标的；暂停结算市场使用场所公布的冻结价格。
+`reference_info_url` 可显式配置，默认为 Hyperliquid 官方 `/info`。
 
-- `Acknowledged` 表示收到了与本地意图 ID 和 action 相符的 relayer 回执，同时保留服务器 state。
-  `queued`、`prepared`、`submitted` 均不表示成交；`failed` 等失败状态也原样保留。
-- `Unknown` 表示发送失败、HTTP 非成功状态、响应损坏或回执无法绑定。
-  调用者必须用原意图 ID 对账。即使收到 HTTP 409，也不能推断之前的请求没有被接收。
-- `confirmed` 仅表示 relayer 报告确认，不能单凭它生成 `OrderFilled` 或增加可提现余额。
-  一笔 batch 交易包含多个用户意图，交易收据成功也不等于每个意图成功。
+成交证据来自账户仓位、完整成交历史和必要的链上结果，绝不来自这条参考报价。
+`queued`、`prepared`、`submitted` 或单独的 `confirmed` 回执均不足以生成 fill。
+一笔 batch 的交易状态成功，也不证明其中每个用户意图都成功。
 
-## 尚未完成的 Nautilus 接入
+原生引擎以 USDC 的六位货币精度显示金额；源数据中的 18 位整数保存在 journal。
+原生 base quantity 按当前构建的定点精度向零取整。
+平仓 fill 的 settlement adjustment 同时包含非线性收益扣减、清算 payoff cap 和显式费用，
+使原生已实现净盈亏与协议源记录在 USDC 显示精度内一致。
+它不是按名义金额计算的常规手续费率；不要把该字段当作独立费率研究数据。
+未实现盈亏仍按原生 instrument 模型计算，协议最终结算以源记录为准。
 
-以下工作不在当前协议层中；因此当前 crate 不满足实盘适配器验收条件：
+现金账户状态只包括可支配余额和以现金支付的锁定保证金。
+`queued` 债权、PAPER 及债权支付的保证金不计为可用现金；
+原始账户快照保留这些字段，供单独的资金与队列核算使用。
 
-| 欠缺内容                                                 | 当前没有直接接入的原因                                                  | 缺失的后果                     | 后续补齐方式                                           |
-| ---------------------------------------------------- | ------------------------------------------------------------ | ------------------------- | ------------------------------------------------ |
-| Rust `DataClient`、`ExecutionClient` 和 PyO3 factories | Papertrade 原生操作是保证金开仓和按 ID 平仓，尚未定义为 Nautilus 数量订单的完整契约       | 不能在 `LiveNode` 中配置此场所执行策略 | 明确独立 venue、hedging 仓位标识、数量换算、订单能力和拒绝语义后实现 traits |
-| 实时账户与成交对账                                            | 前端使用 `/state/user/live?wallet=...` 的流式状态，尚未实现快照、增量、重连和链上事件关联 | 无法证明数量、成交价、佣金和仓位的完整性      | 采集官方流与链上日志，覆盖部分失败、清算、重启和重复事件                     |
-| 动态风控与资金状态                                            | 市场开放状态、杠杆和 OI 限额、可用保证金、queued balance 均会变化                   | 签名层只验证字段范围，不能保证请求满足平台交易条件 | 下单前加载当前配置及账户状态，并在控制面执行实时校验                       |
-| 持久化恢复和 session 生命周期                                  | 本 crate 只负责签名与单次提交，不拥有持久化存储                                  | 重启后不能自行完成未知意图恢复或密钥续期      | 使用事务日志协调 nonce、请求和 ID，再以事件证据关闭在途状态               |
-| 提现与付款队列结算                                            | 盈利可能先形成排队债权，不能直接当作现金                                         | 完成平仓不等于资金可支配              | 分开记录实现盈亏、可用余额、排队债权与实际到账                          |
+## 成交对账与重启恢复
 
-没有测试账号、已注册 session key 和资金授权，本次不发送任何生产签名意图，也不操作存提资金。
-没有实际运行账户流或链上成交验收，因此离线测试不能证明 relayer 会接收请求或真实资金路径可用。
+journal 使用已有 redb，提交采用 immediate durability，并持有数据库的独占进程锁。
+在 Unix 上，journal 文件设为 0600；它包含签名请求，不能当作普通公开日志。
+每个 journal 固定绑定链、Exchange 代理、钱包和账户 ID。
 
-## 验证
+发送请求前，nonce 与完整命令、原始签名载荷、意图 ID、扫描起点在同一事务中提交。
+相同 client order ID 的相同命令在网络失败、重连及重启后均复用已有记录，不再次签名或发送；
+同 ID 不同载荷明确报错。晚到的接收回执不能覆盖已确认的成交或终态。
 
-运行 `cargo test -p nautilus-papertrade --locked` 和
-`cargo clippy -p nautilus-papertrade --all-targets --locked -- -D warnings`。
+账户 SSE 按 `baseAccountRevision` 连续应用增量，核对钱包、仓位唯一性、
+锁定保证金与可用资金等不变量。同一 revision 不同载荷、版本缺口、非法帧或断流会撤销当前状态。
+重连必须先得到完整快照，旧缓存不能作为新的权威状态。
 
-签名 fixture 使用独立 Python `eth-account==0.13.7` 生成，与 Rust Alloy 的输出逐字节比较，
-覆盖开仓、含大整数数组的平仓、注册和取消。测试密钥由 32 个 `0x11` 字节组成，
-只用于公开离线向量，不含真实账户凭据。所有 HTTP 测试只访问 loopback mock server。
+恢复同时读取原始 journal、新账户快照和完整分页历史。
+对未决意图，从持久化区块起点扫描 BatchExecutor 对应 ID 的结果日志。
+只有实际扫描过的区间才推进扫描位置；排队状态不会推进尚未读取的链上区间。
+
+链上开仓结果返回仓位 ID，再与 Exchange 开仓事件中的钱包、标的、方向、保证金、
+杠杆和入场价核对。这样，即使进程丢失接收回执、仓位又在停机期间关闭，
+仍能恢复原开仓身份，再使用真实终结记录恢复关闭。
+本地平仓同样要求意图级成功结果与目标仓位的 Exchange 事件匹配，不能仅凭仓位消失归因。
+某一次链上尝试失败也不会被当作签名意图的最终拒绝：有效期内 relayer 仍可能再次执行同一个意图。
+最终失败状态取自已绑定意图 ID 的 relayer 终态，而成功成交仍需实际执行证据。
+
+Trade ID 由事件种类、仓位 ID 和关闭交易 hash 稳定生成，长度适配原生 36 字符约束；
+重复源帧和重新对账不会创造新的经济成交。
+发现已观察仓位消失却没有终结证据、历史冲突或读取失败时，不发布“空仓”。
+无法证明的意图保留未决状态，并将 mass status 的 `reports_complete` 设为 false；
+新开仓会被阻断。没有用超时、HTTP 409 或链上交易整体成功冒充逐意图结论。
+
+journal 恢复的是适配器的交易身份和证据，不代替策略自身的内部状态持久化。
+已有引擎缓存的部署应保留其正常持久化配置；新缓存通过 Native reconciliation 恢复账户和仓位。
+如果删除 journal、切换钱包或改变账户归属，不能再声称是同一执行实例的无损恢复。
+
+## 验证与尚未行使的边界
+
+本次验证包括独立 `eth-account==0.13.7` 签名向量、实际公开非空账户和成交记录、
+真实开平仓 receipt、SSE 增量与重连、持久化重开、丢回执和重复命令测试，
+以及通过实际 Python `LiveNode`、原生执行引擎和缓存恢复多空仓位的本地集成测试。
+公开数据节点还实际收到 `QuoteTick` 并正常停止。
+
+这不等于真实账户下单验收：本次没有使用资金账户私钥、提交生产签名意图或操作资金。
+主网签名接收、真实开平仓、控制权竞争和长期运行仍需由有权限的测试账户单独验收。
+公开前端接口不是已发现的版本化兼容承诺；schema 或链上事件变化时实现会报错并停止相应对账，
+而不会返回默认余额或猜测成交。
+
+官方地址文档与读取的前端 deployment 对 collateral 地址存在差异，
+本次没有核实两个地址当前的链上资金角色；资金操作仍未实现，后续必须先核验再接入。

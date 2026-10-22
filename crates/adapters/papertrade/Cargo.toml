@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Papertrade signed-intent protocol integration (not a live execution client)"
+description = "Papertrade live trading and signed-intent integration"
 categories.workspace = true
 keywords.workspace = true
 documentation.workspace = true
@@ -15,9 +15,19 @@ homepage.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["high-precision"]
+high-precision = ["nautilus-model/high-precision"]
+python = ["dep:nautilus-system", "nautilus-common/python", "nautilus-core/python", "nautilus-model/python", "nautilus-network/python", "nautilus-system/python", "pyo3", "pyo3-stub-gen"]
+extension-module = ["python", "nautilus-common/extension-module", "nautilus-core/extension-module", "nautilus-model/extension-module", "nautilus-network/extension-module", "pyo3/extension-module"]
+
 [dependencies]
 nautilus-core = { workspace = true }
 nautilus-network = { workspace = true }
+nautilus-common = { workspace = true, features = ["live"] }
+nautilus-model = { workspace = true }
+nautilus-live = { workspace = true }
+nautilus-system = { workspace = true, optional = true }
 alloy = { workspace = true, features = ["sol-types", "signer-local"] }
 alloy-primitives = { workspace = true }
 anyhow = { workspace = true }
@@ -25,8 +35,20 @@ rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+log = { workspace = true }
+redb = { workspace = true }
+ustr = { workspace = true }
+pyo3 = { workspace = true, optional = true }
+pyo3-stub-gen = { workspace = true, optional = true }
 
 [dev-dependencies]
+nautilus-model = { workspace = true, features = ["test-support"] }
+futures-util = { workspace = true }
 axum = { workspace = true }
+tempfile = { workspace = true }
 rstest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

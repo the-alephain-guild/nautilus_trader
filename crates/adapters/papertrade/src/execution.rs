@@ -1,0 +1,761 @@
+// -------------------------------------------------------------------------------------------------
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+//  https://nautechsystems.io
+//
+//  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+//  You may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+// -------------------------------------------------------------------------------------------------
+
+//! Native execution client with durable intent identity and evidence-based reconciliation.
+
+use crate::{
+    api::PapertradeApi,
+    config::{PAPERTRADE, PapertradeExecutionClientConfig},
+    http::{IntentState, PapertradeRelayerClient, SubmissionOutcome},
+    journal::Journal,
+    reports,
+    signing::{CancelIntent, Close, OpenPosition, PapertradeSigner, margin_to_raw},
+    wire::{AccountSnapshot, Raw, TradingState},
+};
+use alloy::signers::local::PrivateKeySigner;
+use alloy_primitives::{Address, U256};
+use anyhow::{Result, ensure};
+use async_trait::async_trait;
+use nautilus_common::{
+    clients::ExecutionClient,
+    live::{get_runtime, runner::get_exec_event_sender},
+    messages::execution::{
+        BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
+        GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
+        ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
+    },
+};
+use nautilus_core::{
+    Params, UnixNanos,
+    time::{AtomicTime, get_atomic_clock_realtime},
+};
+use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
+use nautilus_model::{
+    accounts::AccountAny,
+    enums::{OmsType, OrderSide, OrderStatus, OrderType, TimeInForce},
+    identifiers::{AccountId, ClientId, InstrumentId, Venue, VenueOrderId},
+    orders::{Order, OrderAny},
+    reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
+    types::{AccountBalance, MarginBalance},
+};
+use parking_lot::RwLock;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReportBundle {
+    pub orders: Vec<OrderStatusReport>,
+    pub fills: Vec<FillReport>,
+    pub positions: Vec<PositionStatusReport>,
+    pub complete: bool,
+}
+#[derive(Debug)]
+pub(crate) struct Inner {
+    pub sent_orders: parking_lot::Mutex<std::collections::HashMap<VenueOrderId, String>>,
+    pub normalized:
+        parking_lot::Mutex<std::collections::HashSet<nautilus_model::identifiers::ClientOrderId>>,
+    pub config: PapertradeExecutionClientConfig,
+    pub wallet: Address,
+    pub signer: PapertradeSigner,
+    pub api: PapertradeApi,
+    pub relayer: PapertradeRelayerClient,
+    pub journal: Journal,
+    pub snapshot: RwLock<Option<AccountSnapshot>>,
+    pub trading: RwLock<Option<TradingState>>,
+    pub bundle: RwLock<Option<ReportBundle>>,
+    pub live: AtomicBool,
+    pub sync: tokio::sync::Mutex<()>,
+    pub emitter: ExecutionEventEmitter,
+    pub clock: &'static AtomicTime,
+}
+#[derive(Debug)]
+pub struct PapertradeExecutionClient {
+    core: ExecutionClientCore,
+    inner: Arc<Inner>,
+    cancellation: CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+    outbound: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+impl PapertradeExecutionClient {
+    pub fn new(core: ExecutionClientCore, config: PapertradeExecutionClientConfig) -> Result<Self> {
+        ensure!(
+            config.leverage > 0 && config.leverage <= 1_000 && config.poll_interval_ms >= 500,
+            "Invalid execution configuration"
+        );
+        let wallet: Address = config.wallet_address.parse()?;
+        let key = config
+            .session_private_key
+            .clone()
+            .or_else(|| {
+                std::env::var("PAPERTRADE_SESSION_PRIVATE_KEY")
+                    .ok()
+                    .map(Into::into)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("Set PAPERTRADE_SESSION_PRIVATE_KEY or session_private_key")
+            })?;
+        let signer: PrivateKeySigner = key
+            .expose_secret()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid session private key"))?;
+        let clock = get_atomic_clock_realtime();
+        let emitter = ExecutionEventEmitter::new(
+            clock,
+            core.trader_id,
+            core.account_id,
+            core.account_type,
+            core.base_currency,
+        );
+        let journal = Journal::open(&config.journal_path, wallet, config.account_id.as_str())?;
+        let inner = Inner {
+            sent_orders: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            normalized: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            api: PapertradeApi::new(
+                config.origin.parse()?,
+                config.rpc_url.parse()?,
+                config.max_history_pages,
+            )?,
+            relayer: PapertradeRelayerClient::with_origin(
+                config.origin.parse()?,
+                config.build_id.clone(),
+            )?,
+            config,
+            wallet,
+            signer: PapertradeSigner::new(signer),
+            journal,
+            snapshot: RwLock::new(None),
+            trading: RwLock::new(None),
+            bundle: RwLock::new(None),
+            live: AtomicBool::new(false),
+            sync: tokio::sync::Mutex::new(()),
+            emitter,
+            clock,
+        };
+        Ok(Self {
+            core,
+            inner: Arc::new(inner),
+            cancellation: CancellationToken::new(),
+            task: None,
+            outbound: parking_lot::Mutex::new(Vec::new()),
+        })
+    }
+    fn track(&self, task: tokio::task::JoinHandle<()>) {
+        let mut tasks = self.outbound.lock();
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+    fn now(&self) -> u64 {
+        self.inner.clock.get_time_ns().as_u64() / 1_000_000_000
+    }
+    fn bundle(&self) -> Result<ReportBundle> {
+        ensure!(
+            self.inner.live.load(Ordering::Acquire),
+            "Papertrade source coverage unavailable"
+        );
+        self.inner
+            .bundle
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Papertrade not reconciled"))
+    }
+    fn auth(&self, account: &AccountSnapshot) -> Result<()> {
+        let now = self.now();
+        ensure!(
+            account
+                .session_keys
+                .iter()
+                .any(|(key, expiry)| *key == self.inner.signer.address()
+                    && expiry.0 > U256::from(now + 3_600)),
+            "Session key is not registered or expires within one hour"
+        );
+        Ok(())
+    }
+    fn deny(&self, order: &OrderAny, error: &anyhow::Error) {
+        self.inner
+            .emitter
+            .emit_order_denied(order, &error.to_string());
+    }
+    fn prepare_order(
+        &self,
+        cmd: &SubmitOrder,
+        order: &OrderAny,
+    ) -> Result<(crate::journal::JournalEntry, bool)> {
+        ensure!(
+            self.inner.live.load(Ordering::Acquire),
+            "Account stream unavailable"
+        );
+        let account = self
+            .inner
+            .snapshot
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No account snapshot"))?;
+        self.auth(&account)?;
+        let trading = self
+            .inner
+            .trading
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No trading configuration"))?;
+        let market = trading
+            .instruments
+            .iter()
+            .find(|m| reports::instrument_id(m) == cmd.instrument_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown Papertrade instrument"))?;
+        ensure!(
+            order.order_type() == OrderType::Market
+                && order.time_in_force() == TimeInForce::Gtc
+                && order.contingency_type().is_none()
+                && !order.is_post_only(),
+            "Papertrade supports independent MARKET GTC intents only"
+        );
+        let now = self.now();
+        let deadline = now + 3_600;
+        if order.is_reduce_only() {
+            ensure!(!order.is_quote_quantity(), "Close requires base quantity");
+            let position_id = cmd
+                .params
+                .as_ref()
+                .and_then(|p| p.get("papertrade_position_id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .or_else(|| {
+                    cmd.position_id
+                        .map(|id| id.to_string().trim_start_matches("PT-").to_owned())
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Close requires papertrade_position_id or venue position_id")
+                })?;
+            let raw = Raw(U256::from_str_radix(&position_id, 10)?);
+            let position = account
+                .open_positions
+                .iter()
+                .find(|p| p.position_id == raw)
+                .ok_or_else(|| anyhow::anyhow!("Close target is absent from current snapshot"))?;
+            ensure!(
+                position.instrument_id == market.id
+                    && position.is_long == (order.order_side() == OrderSide::Sell)
+                    && order.quantity() == reports::quantity(position, market)?,
+                "Close must match the complete venue position"
+            );
+            ensure!(
+                trading.action_enabled("closePositions"),
+                "Close intake paused"
+            );
+            ensure!(
+                !self
+                    .inner
+                    .journal
+                    .entries()?
+                    .iter()
+                    .any(|e| e.target == Some(raw)
+                        && matches!(e.status, OrderStatus::Submitted | OrderStatus::Accepted)
+                        && e.command.client_order_id != cmd.client_order_id),
+                "Another close is unresolved for this position"
+            );
+            self.inner
+                .journal
+                .prepare(cmd, Some(raw), trading.indexed_through_block, |nonce| {
+                    self.inner.signer.sign_close(
+                        &Close {
+                            user: self.inner.wallet,
+                            positionIds: vec![raw.0],
+                            nonce,
+                            deadline,
+                        },
+                        now,
+                    )
+                })
+        } else {
+            ensure!(
+                self.bundle()?.complete,
+                "An unresolved prior intent must be reconciled before opening exposure"
+            );
+            ensure!(
+                order.is_quote_quantity(),
+                "Open requires quote_quantity=True (USD notional)"
+            );
+            ensure!(
+                !trading.trading_paused
+                    && market.active
+                    && !market.paused
+                    && trading.action_enabled("openPosition"),
+                "Open intake paused"
+            );
+            ensure!(
+                self.inner.config.leverage <= market.max_leverage
+                    && (trading.maximum_leverage == 0
+                        || self.inner.config.leverage <= trading.maximum_leverage)
+                    && self.inner.config.leverage >= trading.minimum_leverage,
+                "Leverage outside current venue limits"
+            );
+            let notional = order.quantity().as_decimal();
+            let margin = notional / rust_decimal::Decimal::from(self.inner.config.leverage);
+            let size = margin_to_raw(margin)?;
+            ensure!(
+                rust_decimal::Decimal::from(self.inner.config.leverage) * margin == notional,
+                "Notional cannot be represented as exact margin at this leverage"
+            );
+            ensure!(
+                U256::from(size) >= trading.minimum_trade_size_raw.0
+                    && notional >= trading.minimum_open_notional_raw.decimal()?
+                    && notional <= market.max_position_notional.decimal()?,
+                "Open violates margin or notional limits"
+            );
+            let oi = if order.order_side() == OrderSide::Buy {
+                market.long_oi
+            } else {
+                market.short_oi
+            };
+            let cap = if order.order_side() == OrderSide::Buy {
+                market.long_cap
+            } else {
+                market.short_cap
+            };
+            // OI counters are venue-native units, not dollar notional. The contract
+            // validates the requested increment at execution; do not add USD to them.
+            ensure!(oi.0 < cap.0, "No current OI headroom");
+            let pending = self
+                .inner
+                .journal
+                .entries()?
+                .into_iter()
+                .filter(|e| {
+                    e.action == "openPosition"
+                        && matches!(e.status, OrderStatus::Submitted | OrderStatus::Accepted)
+                        && !account
+                            .operations
+                            .iter()
+                            .any(|o| o.intent_id == e.intent_id)
+                        && !account
+                            .open_positions
+                            .iter()
+                            .any(|p| p.intent_id == Some(e.intent_id))
+                })
+                .try_fold(rust_decimal::Decimal::ZERO, |sum, e| {
+                    let amount = e.body["signed"]["size"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Corrupt reserved margin"))?;
+                    Ok::<_, anyhow::Error>(sum + crate::wire::scaled_decimal(amount, 18)?)
+                })?;
+            ensure!(
+                margin + pending <= account.funds.available_balance.decimal()?,
+                "Insufficient available cash after local reservations"
+            );
+            self.inner
+                .journal
+                .prepare(cmd, None, trading.indexed_through_block, |nonce| {
+                    self.inner.signer.sign_open(
+                        &OpenPosition {
+                            user: self.inner.wallet,
+                            instrumentId: market.id,
+                            isLong: order.order_side() == OrderSide::Buy,
+                            size,
+                            leverage: self.inner.config.leverage,
+                            useDebt: false,
+                            nonce,
+                            deadline,
+                        },
+                        now,
+                    )
+                })
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl ExecutionClient for PapertradeExecutionClient {
+    fn is_connected(&self) -> bool {
+        self.core.is_connected() && self.inner.live.load(Ordering::Acquire)
+    }
+    fn client_id(&self) -> ClientId {
+        self.core.client_id
+    }
+    fn account_id(&self) -> AccountId {
+        self.core.account_id
+    }
+    fn venue(&self) -> Venue {
+        Venue::from(PAPERTRADE)
+    }
+    fn oms_type(&self) -> OmsType {
+        OmsType::Hedging
+    }
+    fn get_account(&self) -> Option<AccountAny> {
+        self.core.cache().account_owned(&self.core.account_id)
+    }
+    fn provides_bulk_position_coverage(&self, _id: InstrumentId) -> bool {
+        self.inner.live.load(Ordering::Acquire)
+            && self
+                .inner
+                .bundle
+                .read()
+                .as_ref()
+                .is_some_and(|b| b.complete)
+    }
+    fn generate_account_state(
+        &self,
+        balances: Vec<AccountBalance>,
+        margins: Vec<MarginBalance>,
+        reported: bool,
+        ts: UnixNanos,
+        info: Option<Params>,
+    ) -> Result<()> {
+        self.inner
+            .emitter
+            .try_emit_account_state(balances, margins, reported, ts, info)
+    }
+    fn start(&mut self) -> Result<()> {
+        let mut emitter = self.inner.emitter.clone();
+        emitter.set_sender(get_exec_event_sender());
+        self.core.set_started();
+        self.cancellation = CancellationToken::new();
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<()> {
+        self.cancellation.cancel();
+        self.inner.live.store(false, Ordering::Release);
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+        for task in self.outbound.lock().iter() {
+            task.abort();
+        }
+        self.core.set_disconnected();
+        self.core.set_stopped();
+        Ok(())
+    }
+    async fn connect(&mut self) -> Result<()> {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let mut stream = self.inner.api.wallet_stream(self.inner.wallet).await?;
+        let snapshot = stream.next().await?;
+        self.auth(&snapshot)?;
+        crate::reconciliation::synchronize(&self.inner, snapshot.clone()).await?;
+        self.core.set_connected();
+        let inner = self.inner.clone();
+        let cancel = self.cancellation.clone();
+        self.task=Some(get_runtime().spawn(async move {
+            let mut latest=snapshot;
+            let mut interval=tokio::time::interval(Duration::from_millis(inner.config.poll_interval_ms));
+            loop {
+                let updated=tokio::select! {
+                    ()=cancel.cancelled()=>break,
+                    result=stream.next()=>match result {
+                        Ok(snapshot)=>{latest=snapshot;true},
+                        Err(e)=>{
+                            inner.live.store(false,Ordering::Release);
+                            log::warn!("papertrade_wallet_reconnecting error={e}");
+                            tokio::select!{()=cancel.cancelled()=>break,()=tokio::time::sleep(Duration::from_secs(1))=>{}}
+                            match inner.api.wallet_stream(inner.wallet).await {
+                                Ok(mut replacement)=>match replacement.next().await {
+                                    Ok(snapshot)=>{latest=snapshot;stream=replacement;true},
+                                    Err(e)=>{log::warn!("papertrade_wallet_snapshot_unavailable error={e}");false}
+                                },
+                                Err(e)=>{log::warn!("papertrade_wallet_connect_failed error={e}");false}
+                            }
+                        }
+                    },
+                    _=interval.tick()=>true,
+                };
+                if updated
+                    && let Err(e)=crate::reconciliation::synchronize(&inner,latest.clone()).await {
+                        inner.live.store(false,Ordering::Release);
+                        log::error!("papertrade_reconciliation_unavailable error={e}");
+                    }
+            }
+            inner.live.store(false,Ordering::Release);
+        }));
+        Ok(())
+    }
+    async fn disconnect(&mut self) -> Result<()> {
+        self.stop()?;
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+        let tasks = std::mem::take(&mut *self.outbound.lock());
+        for task in tasks {
+            let _ = task.await;
+        }
+        Ok(())
+    }
+    fn submit_order(&self, cmd: SubmitOrder) -> Result<()> {
+        if let Some(old) = self
+            .inner
+            .journal
+            .entries()?
+            .iter()
+            .find(|e| e.command.client_order_id == cmd.client_order_id)
+        {
+            ensure!(
+                old.command.order_init == cmd.order_init
+                    && old.command.position_id == cmd.position_id
+                    && old.command.params == cmd.params,
+                "Client order ID payload conflict"
+            );
+            return Ok(());
+        }
+        let order = self.core.get_order(&cmd.client_order_id)?;
+        let prepared = match self.prepare_order(&cmd, &order) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                self.deny(&order, &e);
+                return Ok(());
+            }
+        };
+        let (entry, new) = prepared;
+        if !new {
+            return Ok(());
+        }
+        self.inner.emitter.emit_order_submitted(&order);
+        let inner = self.inner.clone();
+        let task = get_runtime().spawn(async move {
+            let result = async {
+                let signed = entry.signed()?;
+                let now = inner.clock.get_time_ns().as_u64() / 1_000_000_000;
+                let outcome = inner.relayer.submit(&signed, now).await?;
+                if let SubmissionOutcome::Acknowledged(receipt) = outcome {
+                    let mut entry = entry;
+                    entry.status = match receipt.state {
+                        IntentState::Failed | IntentState::Reverted => OrderStatus::Rejected,
+                        IntentState::Expired => OrderStatus::Expired,
+                        IntentState::Cancelled => OrderStatus::Canceled,
+                        _ => OrderStatus::Accepted,
+                    };
+                    inner.journal.update(&entry)?;
+                }
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(e) = result {
+                log::error!("papertrade_submit_outcome_unknown error={e}");
+            }
+        });
+        self.track(task);
+        Ok(())
+    }
+    fn cancel_order(&self, cmd: CancelOrder) -> Result<()> {
+        let order = self.core.get_order(&cmd.client_order_id)?;
+        let entry = self
+            .inner
+            .journal
+            .entries()?
+            .into_iter()
+            .find(|e| e.command.client_order_id == cmd.client_order_id)
+            .ok_or_else(|| anyhow::anyhow!("Cancel target is not in journal"))?;
+        let account = self
+            .inner
+            .snapshot
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No current account"))?;
+        self.auth(&account)?;
+        ensure!(
+            matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted),
+            "Order is already terminal"
+        );
+        let now = self.now();
+        let cancel = self.inner.signer.sign_cancel(
+            &CancelIntent {
+                user: self.inner.wallet,
+                intentId: entry.intent_id,
+                deadline: U256::from(now + 3_600),
+            },
+            &entry.signed()?,
+            now,
+        )?;
+        let inner = self.inner.clone();
+        let task = get_runtime().spawn(async move {
+            if let Ok(SubmissionOutcome::Acknowledged(receipt)) =
+                inner.relayer.submit(&cancel, now).await
+                && receipt.state == IntentState::Cancelled
+            {
+                let mut entry = entry;
+                entry.status = OrderStatus::Canceled;
+                if inner.journal.update(&entry).is_ok() {
+                    inner.emitter.emit_order_canceled(
+                        &order,
+                        Some(VenueOrderId::from(format!("{:#x}", entry.intent_id))),
+                        inner.clock.get_time_ns(),
+                    );
+                }
+            }
+        });
+        self.track(task);
+        Ok(())
+    }
+    fn submit_order_list(&self, cmd: SubmitOrderList) -> Result<()> {
+        for order in self.core.get_orders_for_list(&cmd.order_list)? {
+            self.inner
+                .emitter
+                .emit_order_denied(&order, "Papertrade has no contingent order lists");
+        }
+        Ok(())
+    }
+    fn modify_order(&self, cmd: ModifyOrder) -> Result<()> {
+        let order = self.core.get_order(&cmd.client_order_id)?;
+        self.inner.emitter.emit_order_modify_rejected(
+            &order,
+            cmd.venue_order_id,
+            "Papertrade has no modify operation",
+            self.inner.clock.get_time_ns(),
+        );
+        Ok(())
+    }
+    fn cancel_all_orders(&self, cmd: CancelAllOrders) -> Result<()> {
+        let entries = self.inner.journal.entries()?;
+        for entry in entries.into_iter().filter(|e| {
+            e.command.instrument_id == cmd.instrument_id
+                && e.command.strategy_id == cmd.strategy_id
+                && cmd
+                    .order_side
+                    .is_none_or(|side| side == e.command.order_init.order_side)
+                && matches!(e.status, OrderStatus::Submitted | OrderStatus::Accepted)
+        }) {
+            self.cancel_order(CancelOrder::new(
+                cmd.trader_id,
+                cmd.client_id,
+                cmd.strategy_id,
+                cmd.instrument_id,
+                entry.command.client_order_id,
+                Some(VenueOrderId::from(format!("{:#x}", entry.intent_id))),
+                nautilus_core::UUID4::new(),
+                cmd.ts_init,
+                cmd.params.clone(),
+                cmd.correlation_id,
+            ))?;
+        }
+        Ok(())
+    }
+    fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> Result<()> {
+        for cancel in cmd.cancels {
+            self.cancel_order(cancel)?;
+        }
+        Ok(())
+    }
+    fn query_account(&self, _cmd: QueryAccount) -> Result<()> {
+        let inner = self.inner.clone();
+        let task = get_runtime().spawn(async move {
+            let result = async {
+                let snapshot = inner.api.snapshot(inner.wallet).await?;
+                crate::reconciliation::synchronize(&inner, snapshot).await
+            }
+            .await;
+            if let Err(e) = result {
+                inner.live.store(false, Ordering::Release);
+                log::error!("papertrade_account_query_failed error={e}");
+            }
+        });
+        self.track(task);
+        Ok(())
+    }
+    fn query_order(&self, cmd: QueryOrder) -> Result<()> {
+        self.query_account(QueryAccount::new(
+            cmd.trader_id,
+            cmd.client_id,
+            self.core.account_id,
+            cmd.command_id,
+            cmd.ts_init,
+            cmd.params,
+            cmd.correlation_id,
+        ))
+    }
+    async fn generate_order_status_report(
+        &self,
+        cmd: &GenerateOrderStatusReport,
+    ) -> Result<Option<OrderStatusReport>> {
+        Ok(self.bundle()?.orders.into_iter().find(|r| {
+            cmd.venue_order_id.is_some_and(|id| id == r.venue_order_id)
+                || cmd
+                    .client_order_id
+                    .is_some_and(|id| Some(id) == r.client_order_id)
+        }))
+    }
+    async fn generate_order_status_reports(
+        &self,
+        cmd: &GenerateOrderStatusReports,
+    ) -> Result<Vec<OrderStatusReport>> {
+        let bundle = self.bundle()?;
+        ensure!(
+            bundle.complete,
+            "Open order coverage includes unresolved venue intents"
+        );
+        Ok(bundle
+            .orders
+            .into_iter()
+            .filter(|r| {
+                cmd.instrument_id.is_none_or(|id| id == r.instrument_id)
+                    && cmd.start.is_none_or(|t| r.ts_last >= t)
+                    && cmd.end.is_none_or(|t| r.ts_last <= t)
+                    && (!cmd.open_only
+                        || !matches!(
+                            r.order_status,
+                            OrderStatus::Filled
+                                | OrderStatus::Canceled
+                                | OrderStatus::Rejected
+                                | OrderStatus::Expired
+                        ))
+            })
+            .collect())
+    }
+    async fn generate_fill_reports(&self, cmd: GenerateFillReports) -> Result<Vec<FillReport>> {
+        Ok(self
+            .bundle()?
+            .fills
+            .into_iter()
+            .filter(|r| {
+                cmd.instrument_id.is_none_or(|id| id == r.instrument_id)
+                    && cmd.start.is_none_or(|t| r.ts_event >= t)
+                    && cmd.end.is_none_or(|t| r.ts_event <= t)
+            })
+            .collect())
+    }
+    async fn generate_position_status_reports(
+        &self,
+        cmd: &GeneratePositionStatusReports,
+    ) -> Result<Vec<PositionStatusReport>> {
+        Ok(self
+            .bundle()?
+            .positions
+            .into_iter()
+            .filter(|r| cmd.instrument_id.is_none_or(|id| id == r.instrument_id))
+            .collect())
+    }
+    async fn generate_mass_status(
+        &self,
+        _lookback: Option<u64>,
+    ) -> Result<Option<ExecutionMassStatus>> {
+        let bundle = self.bundle()?;
+        let mut report = ExecutionMassStatus::new(
+            self.client_id(),
+            self.account_id(),
+            self.venue(),
+            self.inner.clock.get_time_ns(),
+            None,
+        );
+        report.add_order_reports(bundle.orders);
+        report.add_fill_reports(bundle.fills);
+        report.add_position_reports(bundle.positions);
+        report.set_report_window(None, bundle.complete);
+        Ok(Some(report))
+    }
+}

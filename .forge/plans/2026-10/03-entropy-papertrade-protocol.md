@@ -1,5 +1,7 @@
 # Entropy 接入与 Papertrade 协议适配
 
+状态：已完成原生 LiveNode 接线与本地恢复验收；真实资金交易未行使。
+
 日期：2026-10-21。开始时 revision 为 `ac86ec3c5f`，工作树为空。
 用户要求分析两个平台与 Hyperliquid 适配器的关系，并在本 fork 编写相应逻辑；用户随后明确要求继续网络搜索 Papertrade 的 API 资料。
 
@@ -8,12 +10,12 @@
 续做基线为 `d827cf79c8`，工作树为空。用户明确要求补齐 `LiveNode`、成交、仓位对账与重启恢复。
 本节扩展原来的协议层范围，不能把原协议层交付误报为完整适配器。
 
-- [ ] 核验并实现市场配置、分页成交历史、账户 SSE 快照及连续增量；保存公开响应 fixture。
-- [ ] 使用已有 redb 依赖持久化账户命名空间、nonce、本地命令、签名意图与确认过的成交。
-- [ ] 实现原生 Rust 数据和执行客户端、factories 与 PyO3 注册。
-- [ ] 实现以意图 ID 绑定链上 batch 结果的成交对账，覆盖清算、外部操作及历史分页。
-- [ ] 验证断流重连、版本缺口、重复事件、提交结果未知和重启恢复；不重签替代未知订单。
-- [ ] 构建 Python 扩展并验证真实 `LiveNode` 接线与公开只读路径，更新说明与验收边界。
+- [x] 核验并实现市场配置、分页成交历史、账户 SSE 快照及连续增量；保存公开响应 fixture。
+- [x] 使用已有 redb 依赖持久化账户命名空间、nonce、本地命令、签名意图与确认过的成交。
+- [x] 实现原生 Rust 数据和执行客户端、factories 与 PyO3 注册。
+- [x] 实现以意图 ID 绑定链上 batch 结果的成交对账，覆盖清算、外部操作及历史分页。
+- [x] 验证断流重连、版本缺口、重复事件、提交结果未知和重启恢复；不重签替代未知订单。
+- [x] 构建 Python 扩展并验证真实 `LiveNode` 接线与公开只读路径，更新说明与验收边界。
 
 交易能力明确限制为协议实际支持的保证金开仓和整仓平仓。开仓使用 quote quantity 表示美元名义金额，
 通过配置杠杆换算保证金；确认成交后把订单更新为按实际入场价计算的标的数量，再发送 fill。
@@ -34,11 +36,11 @@
 - [x] Papertrade 实现独立 Rust 签名意图协议层和 relayer 单次提交，不借用 HyperCore 下单接口。
 - [x] 增加独立签名向量、HTTP 异常结果测试、原生 node 构造和示例行为测试。
 - [x] 文档说明已验证能力、未完成边界和后续补齐路线。
-- [ ] Papertrade 的完整 `LiveNode` 数据与执行客户端尚未实现，不属于已完成或已通过实盘验收的能力。
+- [x] 后续授权已补齐原生 `LiveNode` 数据与执行客户端、对账与恢复；未进行真实资金下单验收。
 
-Papertrade 的最后一项需要定义数量订单到保证金仓位的语义，并实现账户流、链上成交证据、
-清算、付款队列及持久化恢复。当前协议层只有签名与 relayer 回执，不足以生成引擎成交事件。
-详细的缺项、原因、影响和下一步见 `docs_zh/integrations/papertrade.md`。
+原协议层交付仅包含签名与 relayer 回执；本轮按续做授权增加账户流、成交与仓位证据、清算历史
+和持久化恢复。付款队列保留原始债权字段，不当作可用现金。未行使的真实交易与资金操作边界
+见 `docs_zh/integrations/papertrade.md`。
 
 ## 实现与验证入口
 
@@ -53,3 +55,35 @@ Python 测试在 `python/` 下运行 `uv run --no-sync pytest tests/unit/adapter
 
 公开行情探针通过本机现有 Python 原生扩展读取到了 14 个 `io:` 市场；没有签名提交、真实成交或资金操作。
 离线签名交叉验证使用 `eth-account==0.13.7`，不新增为产品依赖。
+
+## 完成报告
+
+本轮新增独立 Papertrade 原生客户端、Python registry 与生成 stubs，保留 venue 的 hedging 仓位身份。
+请求先持久化再发送；不重签替代未知请求；重启结合完整快照、分页历史和逐意图链上结果恢复。
+quote quantity 在真实成交数量可知后通过原生更新事件转换为 base quantity，避免标志与数量单位不一致。
+公开账户流可直接读取；注册 session key 才能通过执行客户端的账户归属检查。
+
+### 验证结果
+
+- `cargo test -p nautilus-papertrade --locked`：68 项通过，含丢回执、版本缺口重连、数据库重开及重复命令恢复。
+- Clippy 对该 crate 的全部 targets 和 Python feature 检查通过；Ruff、Rustfmt、workspace test inventory 与 diff 检查通过。
+- `make build-debug SCCACHE=`：生成 stubs 并构建、安装 Python 开发扩展通过。
+  默认 sccache 构建被系统拒绝，沙箱外重试仍然拒绝，故使用 Makefile 文档已有的禁用缓存开关。
+  macOS linker 有大型 unwind table 提示，构建结果成功，不将提示当作测试通过证据。
+- Papertrade、Entropy 与原有 Hyperliquid 工厂相关 Python 测试共 15 项通过。
+  Papertrade 测试实际运行 `LiveNode`、执行引擎与缓存，恢复同标的的独立多空仓位。
+- `make pytest-collect-fast SCCACHE=`：5,185 项成功收集。这是导入与收集检查，不是执行了全部测试。
+- 公开 data-only 示例实际连接官方服务，连续收到 `BTC-USD-PERP.PAPERTRADE` 的零数量参考报价并正常退出。
+  本地日志为 `target/papertrade-public-node-smoke.log`；日志属于本次运行证据，不进入源码固定或历史收据门禁。
+
+### 功能验证（主路径）
+
+1. 运行 `uv run --project python --no-sync python examples/live/papertrade/data_tester.py`，确认收到 `PAPERTRADE` 参考报价；按 Ctrl+C 后应正常退出。
+2. 通过安全环境变量注入已注册 session key，按 `docs_zh/integrations/papertrade.md` 运行账户监控示例，确认钱包与独立仓位完成对账。示例没有下单策略。
+3. 为该账户持续使用同一 journal。重启后应保留原交易身份；读源失败或证据不足时应保留未决并阻断新开仓，而非重新发送请求或声称空仓。
+
+### 未行使的边界
+
+没有持有或使用真实账户私钥，没有发送生产签名开平仓、注册密钥、存提或桥接请求。
+真实资金与长期运行验收需要有权限的独立测试账户；本轮本地和公开只读证据不替代该验收。
+适配器恢复不替代策略内部状态持久化；公开前端接口也没有被当作已发现的版本化兼容承诺。

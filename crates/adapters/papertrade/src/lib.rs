@@ -13,17 +13,29 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Papertrade's HyperEVM signed-intent protocol.
+//! Native Papertrade data and execution clients with a durable signed-intent journal.
 //!
-//! This crate prepares authenticated relayer requests, not HyperCore exchange actions.
-//! It intentionally exposes no Nautilus live client or factory: acknowledgement and even
-//! a confirmed intent do not contain sufficient evidence to emit an OrderFilled event.
+//! Relayer acknowledgement alone never establishes a fill. Account positions, paginated
+//! close history and individually bound on-chain results supply reconciliation evidence.
 
 #![deny(unsafe_code)]
 #![deny(missing_debug_implementations)]
 
+pub mod api;
+pub mod chain;
+pub mod config;
+pub mod data;
+pub mod execution;
+pub mod factories;
 pub mod http;
+pub mod journal;
+#[cfg(feature = "python")]
+pub mod python;
+mod reconciliation;
+pub mod reports;
 pub mod signing;
+pub mod stream;
+pub mod wire;
 
 pub use http::{IntentReceipt, IntentState, PapertradeRelayerClient, SubmissionOutcome};
 pub use signing::{

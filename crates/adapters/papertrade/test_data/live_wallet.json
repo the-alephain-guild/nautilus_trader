@@ -1,0 +1,66 @@
+{
+  "address": "0x19ea302761c7ca11d4252f7e9ad2ca199d0e0380",
+  "indexedThroughBlock": 49134850,
+  "indexedThroughTimestamp": 1792586034,
+  "sessionKeys": [
+    [
+      "0x3d320e5947ec459f2c898043b2141cb3d6a1cf62",
+      "1794213971"
+    ]
+  ],
+  "walletRevision": 49055315,
+  "queueRevision": "108",
+  "balance": "13252103351923660851945",
+  "queued": "0",
+  "locked": "1000000000000000000000000",
+  "funds": {
+    "reservedBalance": "0",
+    "reservedQueued": "0",
+    "availableBalance": "13252103351923660851945",
+    "availableQueued": "0"
+  },
+  "queueNodeCount": 0,
+  "consumableDebt": "0",
+  "paper": {
+    "balance": "0",
+    "staked": "3045877863595407203213322",
+    "pendingBase": "306335559261511845",
+    "rewardDebt": "42177486800505538034466"
+  },
+  "lifetime": {
+    "depositedRaw": "1514401654564000000000000",
+    "withdrawnRaw": "536233467876000000000000",
+    "realizedPnlRaw": "-6754506038131230484183",
+    "feesPaidRaw": "538894997181298248647",
+    "tradedNotionalRaw": "79218695720000000000000000",
+    "paperRewardsClaimedRaw": "41838422702054891336128"
+  },
+  "openPositions": [
+    [
+      "1671873",
+      0,
+      true,
+      false,
+      "830005",
+      "500000000000000000000000",
+      20,
+      "788880",
+      1792507802000,
+      "0xadfae189b04060dcbef2af7322b00447844d8119b819e1820308e38e86339614"
+    ],
+    [
+      "1671870",
+      0,
+      false,
+      false,
+      "830025",
+      "500000000000000000000000",
+      20,
+      "871112",
+      1792507798000,
+      "0x57747c8d75eca3b99333c8e5616aca94691cba4bf2ed9c989064bb105c5a1609"
+    ]
+  ],
+  "operations": [],
+  "accountRevision": 1
+}

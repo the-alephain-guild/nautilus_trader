@@ -41,5 +41,35 @@
       "evidence": "X-Papertrade-Build source; build must be supplied explicitly, not assumed current"
     }
   ],
-  "scope": "Digests identify researched remote assets on this date, and do not pin current repository source bytes."
+  "scope": "Digests identify researched remote assets on this date, and do not pin current repository source bytes.",
+  "live_api": [
+    {
+      "url": "https://exchange.papertrade.xyz/state/trading",
+      "result": "Observed HTTP 200; schemaVersion 1; BTC and ETH market tuples"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/state/user/live?wallet=0x19ea302761c7ca11d4252f7e9ad2ca199d0e0380",
+      "result": "Observed public SSE with two opposite BTC positions and explicit intent IDs; fixture live_wallet.json"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/query/accounts/0xa23dadf056158c5ff1081654dbf8e167530fbf71/trades?filter=all&limit=75",
+      "result": "Observed nonempty close and liquidation records with null nextCursor; fixture live_history.json"
+    },
+    {
+      "url": "https://rpc.hyperliquid.xyz/evm",
+      "method": "eth_getTransactionReceipt",
+      "transaction": "0xcb71cadd4fc05d01b91c5413993b3f2781476afbb0d352bfd38324f3df5fd1e1",
+      "result": "Three signed Close calldata items independently decoded with eth-account; reconstructed IDs match individual result topics"
+    },
+    {
+      "url": "https://rpc.hyperliquid.xyz/evm",
+      "method": "eth_getTransactionReceipt",
+      "transaction": "0xdacaedb10467539d8ba56d570498346607a029cbddcd2408d2c557c27327ad73",
+      "result": "Open result returns position 1671873, bound to Exchange event and the public wallet snapshot"
+    },
+    {
+      "url": "https://exchange.papertrade.xyz/intents/0x5c74dc9be8abadf7272e2828b395dd406a65f1b8fa8df7ef4478328a1d7aa7c4",
+      "result": "GET returned HTTP 404; not used as an order status API"
+    }
+  ]
 }
