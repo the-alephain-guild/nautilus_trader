@@ -128,6 +128,10 @@ impl PapertradeExecutionClient {
             core.base_currency,
         );
         let journal = Journal::open(&config.journal_path, wallet, config.account_id.as_str())?;
+        let checkpoint = journal.snapshot()?;
+        if let Some(snapshot) = &checkpoint {
+            snapshot.validate(wallet)?;
+        }
         let inner = Inner {
             sent_orders: parking_lot::Mutex::new(std::collections::HashMap::new()),
             normalized: parking_lot::Mutex::new(std::collections::HashSet::new()),
@@ -144,7 +148,7 @@ impl PapertradeExecutionClient {
             wallet,
             signer: PapertradeSigner::new(signer),
             journal,
-            snapshot: RwLock::new(None),
+            snapshot: RwLock::new(checkpoint),
             trading: RwLock::new(None),
             bundle: RwLock::new(None),
             live: AtomicBool::new(false),

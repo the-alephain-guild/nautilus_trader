@@ -15,10 +15,8 @@
 
 //! Transactional pre-send journal. The database lock excludes concurrent writers.
 
-use crate::{
-    signing::{EXCHANGE, SignedIntent},
-    wire::{CloseRecord, Raw, VenuePosition},
-};
+use std::path::Path;
+
 use alloy_primitives::{Address, B256, U256};
 use anyhow::{Result, ensure};
 use nautilus_common::messages::execution::SubmitOrder;
@@ -27,7 +25,11 @@ use nautilus_model::{enums::OrderStatus, reports::FillReport};
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::Path;
+
+use crate::{
+    signing::{EXCHANGE, SignedIntent},
+    wire::{CloseRecord, Raw, VenuePosition},
+};
 
 const META: TableDefinition<&str, &str> = TableDefinition::new("metadata");
 const ORDERS: TableDefinition<&str, &str> = TableDefinition::new("orders");
@@ -108,6 +110,14 @@ impl Journal {
                 Ok(serde_json::from_str(value.value())?)
             })
             .collect()
+    }
+    pub(crate) fn snapshot(&self) -> Result<Option<crate::wire::AccountSnapshot>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(META)?;
+        table
+            .get("wallet_snapshot")?
+            .map(|value| serde_json::from_str(value.value()).map_err(Into::into))
+            .transpose()
     }
     pub fn checkpoint(&self, snapshot: &crate::wire::AccountSnapshot) -> Result<()> {
         let json = serde_json::to_string(snapshot)?;

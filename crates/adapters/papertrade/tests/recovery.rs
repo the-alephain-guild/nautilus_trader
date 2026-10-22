@@ -200,3 +200,68 @@ async fn silent_wallet_expires_despite_successful_polling() {
     assert!(client.generate_mass_status(None).await.is_err());
     client.disconnect().await.unwrap();
 }
+
+#[tokio::test]
+async fn restart_rejects_regressed_coverage_and_keeps_the_durable_checkpoint() {
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let current = harness.source.wallet.borrow().clone();
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    client.disconnect().await.unwrap();
+    drop(client);
+    let mut stale = current.clone();
+    stale["indexedThroughBlock"] = json!(current["indexedThroughBlock"].as_u64().unwrap() - 1);
+    stale["indexedThroughTimestamp"] =
+        json!(current["indexedThroughTimestamp"].as_u64().unwrap() - 1);
+    harness.source.wallet.send_replace(stale);
+    let mut restarted = harness.client();
+    restarted.start().unwrap();
+    assert!(
+        restarted.connect().await.is_err(),
+        "Restart accepted coverage older than its checkpoint"
+    );
+    assert!(!restarted.is_connected());
+    restarted.disconnect().await.unwrap();
+    drop(restarted);
+    harness.source.wallet.send_replace(current);
+    let mut recovered = harness.client();
+    recovered.start().unwrap();
+    recovered.connect().await.unwrap();
+    assert!(recovered.is_connected());
+    recovered.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_position_reconciliation_does_not_advance_restart_checkpoint() {
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let current = harness.source.wallet.borrow().clone();
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    client.disconnect().await.unwrap();
+    drop(client);
+    let mut missing = current.clone();
+    missing["indexedThroughBlock"] = json!(current["indexedThroughBlock"].as_u64().unwrap() + 10);
+    missing["indexedThroughTimestamp"] =
+        json!(current["indexedThroughTimestamp"].as_u64().unwrap() + 10);
+    missing["walletRevision"] = missing["indexedThroughBlock"].clone();
+    missing["openPositions"] = json!([]);
+    missing["locked"] = json!("0");
+    harness.source.wallet.send_replace(missing);
+    let mut failed = harness.client();
+    failed.start().unwrap();
+    assert!(failed.connect().await.is_err());
+    failed.disconnect().await.unwrap();
+    drop(failed);
+    harness.source.wallet.send_replace(current);
+    let mut recovered = harness.client();
+    recovered.start().unwrap();
+    recovered
+        .connect()
+        .await
+        .expect("A failed reconciliation poisoned the restart checkpoint");
+    recovered.disconnect().await.unwrap();
+}

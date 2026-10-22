@@ -15,12 +15,11 @@
 
 //! Synchronizes source state before publishing reports; failed reads never imply flatness.
 
-use crate::{
-    chain,
-    execution::{Inner, ReportBundle},
-    reports,
-    wire::AccountSnapshot,
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::Ordering,
 };
+
 use alloy_primitives::B256;
 use anyhow::{Result, ensure};
 use nautilus_model::{
@@ -29,9 +28,12 @@ use nautilus_model::{
     reports::OrderStatusReport,
     types::Quantity,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::atomic::Ordering,
+
+use crate::{
+    chain,
+    execution::{Inner, ReportBundle},
+    reports,
+    wire::AccountSnapshot,
 };
 
 pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Result<()> {
@@ -55,9 +57,10 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         .any(|e| matches!(e.status, OrderStatus::Submitted | OrderStatus::Accepted));
     // A complete history stays valid while the wallet revision is unchanged;
     // queued or ambiguous intents still require a fresh recovery pass.
-    let fresh_history = if previous
-        .as_ref()
-        .is_none_or(|old| old.wallet_revision != snapshot.wallet_revision)
+    let fresh_history = if inner.bundle.read().is_none()
+        || previous
+            .as_ref()
+            .is_none_or(|old| old.wallet_revision != snapshot.wallet_revision)
         || unsettled
     {
         inner.api.history(inner.wallet).await?
@@ -74,7 +77,6 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     inner
         .journal
         .remember(&snapshot.open_positions, &fresh_history)?;
-    inner.journal.checkpoint(&snapshot)?;
     let history = inner.journal.closes()?;
     let observed = inner.journal.observed()?;
     ensure!(
@@ -360,8 +362,10 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         "papertrade_account_revision".into(),
         serde_json::json!(snapshot.account_revision),
     );
+    let balances = reports::balances(&snapshot)?;
+    inner.journal.checkpoint(&snapshot)?;
     inner.emitter.try_emit_account_state(
-        reports::balances(&snapshot)?,
+        balances,
         Vec::new(),
         true,
         nautilus_core::UnixNanos::from(snapshot.indexed_through_timestamp * 1_000_000_000),
