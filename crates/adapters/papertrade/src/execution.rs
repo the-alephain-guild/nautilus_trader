@@ -15,15 +15,14 @@
 
 //! Native execution client with durable intent identity and evidence-based reconciliation.
 
-use crate::{
-    api::PapertradeApi,
-    config::{PAPERTRADE, PapertradeExecutionClientConfig},
-    http::{IntentState, PapertradeRelayerClient, SubmissionOutcome},
-    journal::Journal,
-    reports,
-    signing::{CancelIntent, Close, OpenPosition, PapertradeSigner, margin_to_raw},
-    wire::{AccountSnapshot, Raw, TradingState},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
+
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256};
 use anyhow::{Result, ensure};
@@ -51,14 +50,17 @@ use nautilus_model::{
     types::{AccountBalance, MarginBalance},
 };
 use parking_lot::RwLock;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
 use tokio_util::sync::CancellationToken;
+
+use crate::{
+    api::PapertradeApi,
+    config::{PAPERTRADE, PapertradeExecutionClientConfig},
+    http::{IntentState, PapertradeRelayerClient, SubmissionOutcome},
+    journal::Journal,
+    reports,
+    signing::{CancelIntent, Close, OpenPosition, PapertradeSigner, margin_to_raw},
+    wire::{AccountSnapshot, Raw, TradingState},
+};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReportBundle {
@@ -82,6 +84,7 @@ pub(crate) struct Inner {
     pub trading: RwLock<Option<TradingState>>,
     pub bundle: RwLock<Option<ReportBundle>>,
     pub live: AtomicBool,
+    pub stream_healthy: AtomicBool,
     pub sync: tokio::sync::Mutex<()>,
     pub emitter: ExecutionEventEmitter,
     pub clock: &'static AtomicTime,
@@ -145,6 +148,7 @@ impl PapertradeExecutionClient {
             trading: RwLock::new(None),
             bundle: RwLock::new(None),
             live: AtomicBool::new(false),
+            stream_healthy: AtomicBool::new(false),
             sync: tokio::sync::Mutex::new(()),
             emitter,
             clock,
@@ -167,7 +171,8 @@ impl PapertradeExecutionClient {
     }
     fn bundle(&self) -> Result<ReportBundle> {
         ensure!(
-            self.inner.live.load(Ordering::Acquire),
+            (self.inner.live.load(Ordering::Acquire)
+                && self.inner.stream_healthy.load(Ordering::Acquire)),
             "Papertrade source coverage unavailable"
         );
         self.inner
@@ -199,7 +204,8 @@ impl PapertradeExecutionClient {
         order: &OrderAny,
     ) -> Result<(crate::journal::JournalEntry, bool)> {
         ensure!(
-            self.inner.live.load(Ordering::Acquire),
+            (self.inner.live.load(Ordering::Acquire)
+                && self.inner.stream_healthy.load(Ordering::Acquire)),
             "Account stream unavailable"
         );
         let account = self
@@ -384,7 +390,9 @@ impl PapertradeExecutionClient {
 #[async_trait(?Send)]
 impl ExecutionClient for PapertradeExecutionClient {
     fn is_connected(&self) -> bool {
-        self.core.is_connected() && self.inner.live.load(Ordering::Acquire)
+        self.core.is_connected()
+            && (self.inner.live.load(Ordering::Acquire)
+                && self.inner.stream_healthy.load(Ordering::Acquire))
     }
     fn client_id(&self) -> ClientId {
         self.core.client_id
@@ -402,7 +410,8 @@ impl ExecutionClient for PapertradeExecutionClient {
         self.core.cache().account_owned(&self.core.account_id)
     }
     fn provides_bulk_position_coverage(&self, _id: InstrumentId) -> bool {
-        self.inner.live.load(Ordering::Acquire)
+        (self.inner.live.load(Ordering::Acquire)
+            && self.inner.stream_healthy.load(Ordering::Acquire))
             && self
                 .inner
                 .bundle
@@ -431,6 +440,7 @@ impl ExecutionClient for PapertradeExecutionClient {
     }
     fn stop(&mut self) -> Result<()> {
         self.cancellation.cancel();
+        self.inner.stream_healthy.store(false, Ordering::Release);
         self.inner.live.store(false, Ordering::Release);
         if let Some(task) = &self.task {
             task.abort();
@@ -447,43 +457,78 @@ impl ExecutionClient for PapertradeExecutionClient {
             task.abort();
             let _ = task.await;
         }
+        self.inner.stream_healthy.store(false, Ordering::Release);
+        self.inner.live.store(false, Ordering::Release);
         let mut stream = self.inner.api.wallet_stream(self.inner.wallet).await?;
         let snapshot = stream.next().await?;
         self.auth(&snapshot)?;
         crate::reconciliation::synchronize(&self.inner, snapshot.clone()).await?;
+        self.inner.stream_healthy.store(true, Ordering::Release);
         self.core.set_connected();
         let inner = self.inner.clone();
         let cancel = self.cancellation.clone();
-        self.task=Some(get_runtime().spawn(async move {
-            let mut latest=snapshot;
-            let mut interval=tokio::time::interval(Duration::from_millis(inner.config.poll_interval_ms));
-            loop {
-                let updated=tokio::select! {
-                    ()=cancel.cancelled()=>break,
-                    result=stream.next()=>match result {
-                        Ok(snapshot)=>{latest=snapshot;true},
-                        Err(e)=>{
-                            inner.live.store(false,Ordering::Release);
-                            log::warn!("papertrade_wallet_reconnecting error={e}");
-                            tokio::select!{()=cancel.cancelled()=>break,()=tokio::time::sleep(Duration::from_secs(1))=>{}}
-                            match inner.api.wallet_stream(inner.wallet).await {
-                                Ok(mut replacement)=>match replacement.next().await {
-                                    Ok(snapshot)=>{latest=snapshot;stream=replacement;true},
-                                    Err(e)=>{log::warn!("papertrade_wallet_snapshot_unavailable error={e}");false}
-                                },
-                                Err(e)=>{log::warn!("papertrade_wallet_connect_failed error={e}");false}
+        self.task = Some(get_runtime().spawn(async move {
+            let mut latest = snapshot;
+            let mut interval = tokio::time::interval(Duration::from_millis(inner.config.poll_interval_ms));
+            'connected: loop {
+                // Preserve the pending read and its idle deadline across poll ticks.
+                let result = {
+                    let incoming = stream.next();
+                    tokio::pin!(incoming);
+                    loop {
+                        tokio::select! {
+                            () = cancel.cancelled() => break 'connected,
+                            result = &mut incoming => break result,
+                            _ = interval.tick() => {
+                                if let Err(e) = crate::reconciliation::synchronize(&inner, latest.clone()).await {
+                                    inner.live.store(false, Ordering::Release);
+                                    log::error!("papertrade_reconciliation_unavailable error={e}");
+                                }
                             }
                         }
-                    },
-                    _=interval.tick()=>true,
+                    }
                 };
-                if updated
-                    && let Err(e)=crate::reconciliation::synchronize(&inner,latest.clone()).await {
-                        inner.live.store(false,Ordering::Release);
+                match result {
+                    Ok(snapshot) => latest = snapshot,
+                    Err(e) => {
+                        inner.stream_healthy.store(false, Ordering::Release);
+                        inner.live.store(false, Ordering::Release);
+                        log::warn!("papertrade_wallet_reconnecting error={e}");
+                        loop {
+                            tokio::select! {
+                                () = cancel.cancelled() => break 'connected,
+                                () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                            }
+                            let replacement = tokio::select! {
+                                () = cancel.cancelled() => break 'connected,
+                                result = async {
+                                    let mut stream = inner.api.wallet_stream(inner.wallet).await?;
+                                    let snapshot = stream.next().await?;
+                                    Ok::<_, anyhow::Error>((stream, snapshot))
+                                } => result,
+                            };
+                            match replacement {
+                                Ok((replacement, snapshot)) => {
+                                    stream = replacement;
+                                    latest = snapshot;
+                                    break;
+                                }
+                                Err(e) => log::warn!("papertrade_wallet_connect_failed error={e}"),
+                            }
+                        }
+                    }
+                }
+                inner.stream_healthy.store(true, Ordering::Release);
+                match crate::reconciliation::synchronize(&inner, latest.clone()).await {
+                    Ok(()) => {},
+                    Err(e) => {
+                        inner.live.store(false, Ordering::Release);
                         log::error!("papertrade_reconciliation_unavailable error={e}");
                     }
+                }
             }
-            inner.live.store(false,Ordering::Release);
+            inner.stream_healthy.store(false, Ordering::Release);
+            inner.live.store(false, Ordering::Release);
         }));
         Ok(())
     }

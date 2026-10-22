@@ -13,6 +13,17 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use std::{
+    cell::RefCell,
+    convert::Infallible,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::B256;
 use axum::{
@@ -43,16 +54,6 @@ use nautilus_papertrade::{
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::{
-    cell::RefCell,
-    convert::Infallible,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
 
 struct ServerState {
     attempt_id: Mutex<Option<B256>>,
@@ -228,7 +229,19 @@ async fn lost_acknowledgement_reconnect_and_restart_do_not_resubmit_or_duplicate
     };
     *state.attempt_id.lock() = Some(journal_id);
     tokio::time::timeout(Duration::from_secs(5), async {
-        while state.rpc_calls.load(Ordering::SeqCst) < 2 {
+        loop {
+            if state.rpc_calls.load(Ordering::SeqCst) >= 2
+                && client
+                    .generate_mass_status(None)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .order_reports()
+                    .values()
+                    .any(|r| r.client_order_id == Some(command.client_order_id))
+            {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
