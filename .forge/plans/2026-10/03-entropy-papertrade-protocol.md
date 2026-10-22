@@ -108,3 +108,32 @@ quote quantity 在真实成交数量可知后通过原生更新事件转换为 b
 最终缓存具有两张订单、两个稳定 Trade ID 和已关闭仓位；独立预设的实现净盈亏为 18.25 USDC，
 settlement adjustment 为 1.75 USDC，账户总额为 1018.25 USDC，冷恢复后保持一致。
 完整测试入口及策略认领配置边界见 `docs_zh/integrations/papertrade.md` 的故障恢复验证一节。
+
+
+## 第二轮复审修复验收（2026-10-22）
+
+基线为 `3d324bbe2e`。复审发现的三个 P1、两个 P2 均先由测试复现，再修改实现；
+代码验证截至 `9890630de6`，本段仅补充验收记录。
+
+- `4e88082dcb`：持久化链上及账户流成功证据，成功平仓不因历史滞后或重启变成过期。
+- `9ce74e7127`：失败对账保留的历史也必须经过当前账户覆盖检查。
+- `66bbe0d4fe`：原生执行引擎对已记账成交只恢复订单投影，拒绝身份或经济字段冲突。
+- `3f1f93ad39`：开仓与关闭证据双向校验，同轮证据验证后原子保存，随后才推进扫描位置。
+- `5fe38b80dd`：用独立流活动期限约束连接、报告和下单，慢历史读取不能延长旧账户的可用期。
+- `9890630de6`：旧未决日志缺少成功标记时重新扫描原区间，保留 nonce、意图 ID 和签名载荷。
+
+验收命令与结果：
+
+| 命令或检查                                                                                                  | 结果                              |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| `cargo test -p nautilus-papertrade --tests --locked`                                                   | 103 项通过，包含 6 个原生 LiveNode 恢复用例。 |
+| `cargo test -p nautilus-execution --test integration exec_engine:: --features high-precision --locked` | 267 项通过。                        |
+| `make build-debug SCCACHE=`                                                                            | 原生扩展重建和安装成功。                    |
+| Papertrade、Entropy 与 Hyperliquid 工厂 Python 回归                                                          | 17 项通过。                         |
+| Clippy、Rustfmt、Ruff、测试约定、workspace test inventory、diff 检查                                              | 通过。                             |
+
+LiveNode 测试分别覆盖保留开仓/平仓与缺失/落后订单、停机期间完成开平仓、历史先到、
+冲突隔离及纠正后恢复。Trade ID、佣金、仓位事件数和盈亏保持一致；已平仓样例的净盈亏
+为 18.25 USDC，结算调整为 1.75 USDC。保留快照由公有 Cache 接口装入并重建索引，
+未将这些结果扩大为 Redis/PostgreSQL 驱动的崩溃原子性或主网交易验收。
+详见 `docs_zh/integrations/papertrade.md` 的第二轮复审修复验证一节。
