@@ -53,7 +53,7 @@ use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    api::PapertradeApi,
+    api::{PapertradeApi, WalletActivity},
     config::{PAPERTRADE, PapertradeExecutionClientConfig},
     http::{IntentState, PapertradeRelayerClient, SubmissionOutcome},
     journal::Journal,
@@ -85,10 +85,23 @@ pub(crate) struct Inner {
     pub bundle: RwLock<Option<ReportBundle>>,
     pub live: AtomicBool,
     pub stream_healthy: AtomicBool,
+    stream_activity: RwLock<Option<WalletActivity>>,
     pub sync: tokio::sync::Mutex<()>,
     pub emitter: ExecutionEventEmitter,
     pub clock: &'static AtomicTime,
 }
+impl Inner {
+    fn available(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+            && self.stream_healthy.load(Ordering::Acquire)
+            && self
+                .stream_activity
+                .read()
+                .as_ref()
+                .is_some_and(WalletActivity::is_fresh)
+    }
+}
+
 #[derive(Debug)]
 pub struct PapertradeExecutionClient {
     core: ExecutionClientCore,
@@ -154,6 +167,7 @@ impl PapertradeExecutionClient {
             bundle: RwLock::new(None),
             live: AtomicBool::new(false),
             stream_healthy: AtomicBool::new(false),
+            stream_activity: RwLock::new(None),
             sync: tokio::sync::Mutex::new(()),
             emitter,
             clock,
@@ -176,8 +190,7 @@ impl PapertradeExecutionClient {
     }
     fn bundle(&self) -> Result<ReportBundle> {
         ensure!(
-            (self.inner.live.load(Ordering::Acquire)
-                && self.inner.stream_healthy.load(Ordering::Acquire)),
+            self.inner.available(),
             "Papertrade source coverage unavailable"
         );
         self.inner
@@ -208,11 +221,7 @@ impl PapertradeExecutionClient {
         cmd: &SubmitOrder,
         order: &OrderAny,
     ) -> Result<(crate::journal::JournalEntry, bool)> {
-        ensure!(
-            (self.inner.live.load(Ordering::Acquire)
-                && self.inner.stream_healthy.load(Ordering::Acquire)),
-            "Account stream unavailable"
-        );
+        ensure!(self.inner.available(), "Account stream unavailable");
         let account = self
             .inner
             .snapshot
@@ -395,9 +404,7 @@ impl PapertradeExecutionClient {
 #[async_trait(?Send)]
 impl ExecutionClient for PapertradeExecutionClient {
     fn is_connected(&self) -> bool {
-        self.core.is_connected()
-            && (self.inner.live.load(Ordering::Acquire)
-                && self.inner.stream_healthy.load(Ordering::Acquire))
+        self.core.is_connected() && self.inner.available()
     }
     fn client_id(&self) -> ClientId {
         self.core.client_id
@@ -415,8 +422,7 @@ impl ExecutionClient for PapertradeExecutionClient {
         self.core.cache().account_owned(&self.core.account_id)
     }
     fn provides_bulk_position_coverage(&self, _id: InstrumentId) -> bool {
-        (self.inner.live.load(Ordering::Acquire)
-            && self.inner.stream_healthy.load(Ordering::Acquire))
+        self.inner.available()
             && self
                 .inner
                 .bundle
@@ -467,6 +473,7 @@ impl ExecutionClient for PapertradeExecutionClient {
         let mut stream = self.inner.api.wallet_stream(self.inner.wallet).await?;
         let snapshot = stream.next().await?;
         self.auth(&snapshot)?;
+        *self.inner.stream_activity.write() = Some(stream.activity.clone());
         crate::reconciliation::synchronize(&self.inner, snapshot.clone()).await?;
         self.inner.stream_healthy.store(true, Ordering::Release);
         self.core.set_connected();
@@ -514,6 +521,7 @@ impl ExecutionClient for PapertradeExecutionClient {
                             };
                             match replacement {
                                 Ok((replacement, snapshot)) => {
+                                    *inner.stream_activity.write() = Some(replacement.activity.clone());
                                     stream = replacement;
                                     latest = snapshot;
                                     break;

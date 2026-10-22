@@ -15,7 +15,11 @@
 
 //! Read-only public API and account stream, using the shared HTTP transport.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use alloy_primitives::{Address, B256};
 use anyhow::{Result, ensure};
@@ -38,11 +42,29 @@ pub struct PapertradeApi {
     max_pages: usize,
 }
 
+const WALLET_IDLE_TIMEOUT: Duration = Duration::from_secs(35);
+
+#[derive(Debug, Clone)]
+pub(crate) struct WalletActivity(Arc<parking_lot::Mutex<Instant>>);
+
+impl WalletActivity {
+    fn new() -> Self {
+        Self(Arc::new(parking_lot::Mutex::new(Instant::now())))
+    }
+    fn received(&self) {
+        *self.0.lock() = Instant::now();
+    }
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.0.lock().elapsed() < WALLET_IDLE_TIMEOUT
+    }
+}
+
 #[derive(Debug)]
 pub struct WalletStream {
     response: HttpResponseStream,
     decoder: SseDecoder,
     state: WalletState,
+    pub(crate) activity: WalletActivity,
 }
 
 impl PapertradeApi {
@@ -107,6 +129,7 @@ impl PapertradeApi {
             response,
             decoder: SseDecoder::default(),
             state: WalletState::new(wallet),
+            activity: WalletActivity::new(),
         })
     }
     pub async fn snapshot(&self, wallet: Address) -> Result<AccountSnapshot> {
@@ -319,9 +342,10 @@ impl WalletStream {
     /// A disconnect discards this stream; the next stream always requires a full snapshot.
     pub async fn next(&mut self) -> Result<AccountSnapshot> {
         loop {
-            let chunk = tokio::time::timeout(Duration::from_secs(35), self.response.chunk())
+            let chunk = tokio::time::timeout(WALLET_IDLE_TIMEOUT, self.response.chunk())
                 .await??
                 .ok_or_else(|| anyhow::anyhow!("Wallet stream closed"))?;
+            self.activity.received();
             let mut changed = false;
             for event in self.decoder.push(&chunk)? {
                 if event.event == "wallet" {

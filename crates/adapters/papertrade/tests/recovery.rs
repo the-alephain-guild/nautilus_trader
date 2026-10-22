@@ -663,3 +663,79 @@ async fn retained_close_history_cannot_be_replayed_with_an_older_snapshot_after_
     assert_eq!(mass.fill_reports().values().map(Vec::len).sum::<usize>(), 4);
     recovered.disconnect().await.unwrap();
 }
+
+#[tokio::test]
+async fn slow_history_cannot_keep_a_silent_account_tradeable_past_the_idle_deadline() {
+    use nautilus_common::messages::{ExecutionEvent, execution::SubmitOrder};
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::{
+        enums::OrderType,
+        events::OrderEventAny,
+        identifiers::{ClientOrderId, InstrumentId},
+        orders::{Order, OrderTestBuilder},
+        types::Quantity,
+    };
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let calls = harness.source.history_calls.load(Ordering::SeqCst);
+    harness
+        .source
+        .history_delay_ms
+        .store(19_000, Ordering::SeqCst);
+    let mut snapshot = harness.source.wallet.borrow().clone();
+    snapshot["accountRevision"] = json!(2);
+    snapshot["indexedThroughBlock"] = json!(snapshot["indexedThroughBlock"].as_u64().unwrap() + 1);
+    snapshot["walletRevision"] = snapshot["indexedThroughBlock"].clone();
+    snapshot["balance"] = json!("50000000000000000000");
+    snapshot["funds"]["availableBalance"] = snapshot["balance"].clone();
+    harness.source.wallet.send_replace(snapshot);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while harness.source.history_calls.load(Ordering::SeqCst) <= calls {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    harness.source.unavailable.store(true, Ordering::SeqCst);
+    // Two independently bounded pages keep reconciliation busy beyond the stream deadline.
+    tokio::time::sleep(Duration::from_secs(36)).await;
+    let connected = client.is_connected();
+    let reports_unavailable = client.generate_mass_status(None).await.is_err();
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
+        .client_order_id(ClientOrderId::from("PT-STALE-ACCOUNT"))
+        .quantity(Quantity::from(1660))
+        .quote_quantity(true)
+        .build();
+    harness
+        .cache
+        .borrow_mut()
+        .add_order(order.clone(), None, None, false)
+        .unwrap();
+    let command = SubmitOrder::from_order(
+        &order,
+        TraderId::from("TESTER-001"),
+        None,
+        None,
+        UUID4::new(),
+        UnixNanos::from(1),
+    );
+    client.submit_order(command).unwrap();
+    let mut denied = false;
+    while let Ok(event) = harness._events.try_recv() {
+        if let ExecutionEvent::Order(OrderEventAny::Denied(event)) = event {
+            denied |= event.client_order_id == order.client_order_id()
+                && event.reason.contains("unavailable");
+        }
+    }
+    client.disconnect().await.unwrap();
+    assert!(
+        !connected,
+        "Slow reconciliation kept a silent account connected past its deadline"
+    );
+    assert!(reports_unavailable);
+    assert!(denied, "An order was admitted using the stale cash balance");
+}

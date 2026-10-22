@@ -19,14 +19,14 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
@@ -52,6 +52,8 @@ pub(crate) struct Source {
     pub(crate) history: Mutex<Value>,
     pub(crate) receipt: Mutex<Option<Value>>,
     pub(crate) block_timestamp: Mutex<Option<u64>>,
+    pub(crate) history_delay_ms: AtomicU64,
+    pub(crate) history_calls: AtomicUsize,
 }
 async fn wallet(State(source): State<Arc<Source>>) -> Response {
     if source.unavailable.load(Ordering::SeqCst) {
@@ -75,7 +77,15 @@ async fn wallet(State(source): State<Arc<Source>>) -> Response {
 async fn trading(State(source): State<Arc<Source>>) -> Json<Value> {
     Json(source.trading.lock().clone())
 }
-async fn history(State(source): State<Arc<Source>>) -> Json<Value> {
+async fn history(State(source): State<Arc<Source>>, uri: Uri) -> Json<Value> {
+    source.history_calls.fetch_add(1, Ordering::SeqCst);
+    let delay = source.history_delay_ms.load(Ordering::SeqCst);
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        if !uri.query().unwrap_or_default().contains("cursor=") {
+            return Json(json!({"items":[],"nextCursor":"slow-page"}));
+        }
+    }
     Json(source.history.lock().clone())
 }
 async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> Json<Value> {
@@ -127,7 +137,8 @@ pub(crate) struct Harness {
     pub(crate) config: PapertradeExecutionClientConfig,
     pub(crate) cache: Rc<RefCell<Cache>>,
     server: tokio::task::JoinHandle<()>,
-    _events: tokio::sync::mpsc::UnboundedReceiver<nautilus_common::messages::ExecutionEvent>,
+    pub(crate) _events:
+        tokio::sync::mpsc::UnboundedReceiver<nautilus_common::messages::ExecutionEvent>,
     _dir: tempfile::TempDir,
 }
 impl Harness {
@@ -147,6 +158,8 @@ impl Harness {
             history: Mutex::new(json!({"items":[],"nextCursor":null})),
             receipt: Mutex::new(None),
             block_timestamp: Mutex::new(None),
+            history_delay_ms: AtomicU64::new(0),
+            history_calls: AtomicUsize::new(0),
             trading: Mutex::new(
                 serde_json::from_str(include_str!("../../test_data/live_trading.json")).unwrap(),
             ),
