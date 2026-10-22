@@ -15,12 +15,13 @@
 
 //! Exact wire types for observed public account, market and history responses.
 
+use std::fmt;
+
 use alloy_primitives::{Address, B256, U256};
 use anyhow::{Result, ensure};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use std::fmt;
 
 /// A canonical decimal uint256. JSON numbers and hexadecimal amounts are rejected.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -396,7 +397,24 @@ impl CloseRecord {
                 && self.leverage > 0,
             "Invalid close values"
         );
+        ensure!(
+            self.opened_at_ms <= self.timestamp_ms && self.timestamp_ms <= u64::MAX / 1_000_000,
+            "Invalid close chronology"
+        );
         let _ = self.net_pnl()?;
+        Ok(())
+    }
+    pub(crate) fn validate_position(&self, position: &VenuePosition) -> Result<()> {
+        ensure!(
+            self.position_id == position.position_id
+                && self.instrument_id == position.instrument_id
+                && self.is_long == position.is_long
+                && self.entry_price_raw == position.entry_price
+                && self.margin_raw == position.margin
+                && self.leverage == position.leverage
+                && self.opened_at_ms == position.opened_at_ms,
+            "Close history disagrees with observed position identity"
+        );
         Ok(())
     }
     pub fn net_pnl(&self) -> Result<Decimal> {

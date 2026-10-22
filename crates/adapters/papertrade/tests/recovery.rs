@@ -598,3 +598,33 @@ async fn newer_chain_evidence_cannot_complete_an_older_empty_account_snapshot(
     );
     restarted.disconnect().await.unwrap();
 }
+
+#[rstest::rstest]
+#[case("symbol",json!("ETH_CHANGED"))]
+#[case("priceScaleRaw",json!("10"))]
+#[tokio::test]
+async fn invalid_history_market_does_not_poison_recovery(
+    #[case] field: &str,
+    #[case] invalid: Value,
+) {
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut history: Value =
+        serde_json::from_str(include_str!("../test_data/live_history.json")).unwrap();
+    let correct = history.clone();
+    history["items"][0][field] = invalid;
+    *harness.source.history.lock() = history;
+    let mut client = harness.client();
+    client.start().unwrap();
+    assert!(client.connect().await.is_err());
+    client.disconnect().await.unwrap();
+    drop(client);
+    *harness.source.history.lock() = correct;
+    let mut recovered = harness.client();
+    recovered.start().unwrap();
+    recovered
+        .connect()
+        .await
+        .expect("Invalid history was persisted before validation");
+    recovered.disconnect().await.unwrap();
+}

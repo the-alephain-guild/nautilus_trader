@@ -83,6 +83,16 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             .any(|p| p.position_id == r.position_id)),
         "Close history is ahead of the account snapshot"
     );
+    let markets: HashMap<_, _> = trading.instruments.iter().map(|m| (m.id, m)).collect();
+    for record in &fresh_history {
+        let market = markets
+            .get(&record.instrument_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown closed market"))?;
+        ensure!(
+            record.symbol == market.symbol && record.price_scale_raw == market.price_scale,
+            "Close history market identity or price scale changed"
+        );
+    }
     inner
         .journal
         .remember(&snapshot.open_positions, &fresh_history)?;
@@ -96,7 +106,6 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             || history.iter().any(|r| r.position_id == old.position_id)),
         "Position disappeared without a terminal history record"
     );
-    let markets: HashMap<_, _> = trading.instruments.iter().map(|m| (m.id, m)).collect();
     let mut entries = inner.journal.entries()?;
     let mut bundle = ReportBundle {
         complete: true,

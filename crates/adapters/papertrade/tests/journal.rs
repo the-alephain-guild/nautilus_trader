@@ -106,3 +106,50 @@ fn late_acknowledgement_does_not_erase_a_terminal_state() {
     journal.update(&late).unwrap();
     assert_eq!(journal.entries().unwrap()[0].status, OrderStatus::Rejected);
 }
+
+#[rstest]
+#[case("instrumentId")]
+#[case("isLong")]
+#[case("entryPriceRaw")]
+#[case("marginRaw")]
+#[case("leverage")]
+#[case("openedAtMs")]
+fn conflicting_close_identity_is_rejected_without_poisoning_the_journal(#[case] field: &str) {
+    use nautilus_papertrade::wire::{CloseRecord, VenuePosition};
+    use serde_json::{Value, json};
+    let source: Value =
+        serde_json::from_str(include_str!("../test_data/live_wallet.json")).unwrap();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let value = json!({"positionId":position.position_id,"instrumentId":position.instrument_id,
+        "symbol":"BTC","priceScaleRaw":"10","isLong":position.is_long,
+        "entryPriceRaw":position.entry_price,"marginRaw":position.margin,"leverage":position.leverage,
+        "openedAtMs":position.opened_at_ms,"timestampMs":position.opened_at_ms+1000,
+        "txHash":B256::repeat_byte(5),"kind":"PositionClosed","exitPriceRaw":position.entry_price,
+        "adjustedPnlRaw":"0","userPaidFeeRaw":"0"});
+    let correct: CloseRecord = serde_json::from_value(value.clone()).unwrap();
+    let mut changed = value;
+    changed[field] = match field {
+        "isLong" => json!(!position.is_long),
+        "instrumentId" => json!(position.instrument_id + 1),
+        "entryPriceRaw" => json!((position.entry_price.0 + U256::from(1)).to_string()),
+        "marginRaw" => json!((position.margin.0 + U256::from(1)).to_string()),
+        "leverage" => json!(position.leverage + 1),
+        "openedAtMs" => json!(position.opened_at_ms + 1),
+        _ => unreachable!(),
+    };
+    let conflict: CloseRecord = serde_json::from_value(changed).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let journal =
+        Journal::open(&dir.path().join("journal.redb"), WALLET, "PAPERTRADE-001").unwrap();
+    journal
+        .remember(std::slice::from_ref(&position), &[])
+        .unwrap();
+    assert!(
+        journal.remember(&[], &[conflict]).is_err(),
+        "Changed position economics were accepted as a close"
+    );
+    assert!(journal.closes().unwrap().is_empty());
+    journal.remember(&[], std::slice::from_ref(&correct)).unwrap();
+    assert_eq!(journal.closes().unwrap(), vec![correct]);
+}

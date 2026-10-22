@@ -136,8 +136,8 @@ impl Journal {
         {
             let mut table = tx.open_table(POSITIONS)?;
             for position in positions {
+                let mut position = position.clone();
                 let key = position.position_id.to_string();
-                let json = serde_json::to_string(position)?;
                 if let Some(old) = table.get(key.as_str())? {
                     let old: VenuePosition = serde_json::from_str(old.value())?;
                     ensure!(
@@ -145,15 +145,30 @@ impl Journal {
                             && old.margin == position.margin
                             && old.leverage == position.leverage
                             && old.is_long == position.is_long
-                            && old.instrument_id == position.instrument_id,
+                            && old.instrument_id == position.instrument_id
+                            && old.use_debt == position.use_debt
+                            && old.opened_at_ms == position.opened_at_ms
+                            && (old.intent_id.is_none()
+                                || position.intent_id.is_none()
+                                || old.intent_id == position.intent_id),
                         "Position identity changed"
                     );
+                    position.intent_id = position.intent_id.or(old.intent_id);
                 }
+                let json = serde_json::to_string(&position)?;
                 table.insert(key.as_str(), json.as_str())?;
             }
+        }
+        {
+            let positions = tx.open_table(POSITIONS)?;
             let mut table = tx.open_table(CLOSES)?;
             for record in closes {
+                record.validate()?;
                 let key = record.position_id.to_string();
+                if let Some(position) = positions.get(key.as_str())? {
+                    let position: VenuePosition = serde_json::from_str(position.value())?;
+                    record.validate_position(&position)?;
+                }
                 let json = serde_json::to_string(record)?;
                 if let Some(old) = table.get(key.as_str())? {
                     let old: CloseRecord = serde_json::from_str(old.value())?;
