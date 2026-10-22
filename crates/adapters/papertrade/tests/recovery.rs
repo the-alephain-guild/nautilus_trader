@@ -82,7 +82,41 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
     let result = if request["method"] == "eth_getTransactionReceipt" {
         source.receipt.lock().clone().unwrap_or(Value::Null)
     } else {
-        json!([])
+        let from = u64::from_str_radix(
+            request["params"][0]["fromBlock"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x"),
+            16,
+        )
+        .unwrap();
+        let to = u64::from_str_radix(
+            request["params"][0]["toBlock"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x"),
+            16,
+        )
+        .unwrap();
+        let receipt = source.receipt.lock();
+        let logs: Vec<Value> = receipt
+            .as_ref()
+            .and_then(|r| r["logs"].as_array())
+            .into_iter()
+            .flatten()
+            .filter(|log| {
+                let number = log["blockNumber"]
+                    .as_str()
+                    .and_then(|b| u64::from_str_radix(b.trim_start_matches("0x"), 16).ok());
+                number.is_some_and(|n| n >= from && n <= to)
+                    && request["params"][0]["topics"][3]
+                        .as_array()
+                        .unwrap()
+                        .contains(&log["topics"][3])
+            })
+            .cloned()
+            .collect();
+        json!(logs)
     };
     Json(json!({"jsonrpc":"2.0","id":1,"result":result}))
 }
@@ -399,4 +433,168 @@ async fn delayed_close_receipt_never_publishes_an_external_identity_for_a_local_
                 && r.order_status == OrderStatus::Filled)
     );
     recovered.disconnect().await.unwrap();
+}
+
+fn prepared_open(
+    harness: &Harness,
+    position: &nautilus_papertrade::wire::VenuePosition,
+    now: u64,
+    deadline: u64,
+) -> nautilus_papertrade::journal::JournalEntry {
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy_primitives::B256;
+    use nautilus_common::messages::execution::SubmitOrder;
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::{
+        enums::OrderType,
+        identifiers::{ClientOrderId, InstrumentId},
+        orders::OrderTestBuilder,
+        types::Quantity,
+    };
+    use nautilus_papertrade::{
+        journal::Journal,
+        signing::{OpenPosition, PapertradeSigner},
+    };
+    let wallet = harness.source.wallet.borrow();
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
+        .client_order_id(ClientOrderId::from("PT-OPEN-RECOVERY"))
+        .quantity(
+            Quantity::from_decimal_dp(
+                position.margin.decimal().unwrap() * rust_decimal::Decimal::from(position.leverage),
+                2,
+            )
+            .unwrap(),
+        )
+        .quote_quantity(true)
+        .build();
+    harness
+        .cache
+        .borrow_mut()
+        .add_order(order.clone(), None, None, false)
+        .unwrap();
+    let command = SubmitOrder::from_order(
+        &order,
+        TraderId::from("TESTER-001"),
+        None,
+        None,
+        UUID4::new(),
+        UnixNanos::from(1),
+    );
+    let signer =
+        PapertradeSigner::new(PrivateKeySigner::from_bytes(&B256::repeat_byte(17)).unwrap());
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        wallet["address"].as_str().unwrap().parse().unwrap(),
+        "PAPERTRADE-001",
+    )
+    .unwrap();
+    journal
+        .prepare(
+            &command,
+            None,
+            wallet["indexedThroughBlock"].as_u64().unwrap(),
+            |nonce| {
+                signer.sign_open(
+                    &OpenPosition {
+                        user: wallet["address"].as_str().unwrap().parse().unwrap(),
+                        instrumentId: position.instrument_id,
+                        isLong: position.is_long,
+                        size: u128::try_from(position.margin.0).unwrap(),
+                        leverage: position.leverage,
+                        useDebt: false,
+                        nonce,
+                        deadline,
+                    },
+                    now,
+                )
+            },
+        )
+        .unwrap()
+        .0
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn newer_chain_evidence_cannot_complete_an_older_empty_account_snapshot(
+    #[case] account_covers_execution: bool,
+) {
+    use alloy_primitives::b256;
+    use nautilus_papertrade::wire::VenuePosition;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let mut position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    source["openPositions"] = json!([]);
+    source["locked"] = json!("0");
+    let covered = source["indexedThroughBlock"].as_u64().unwrap();
+    harness.source.wallet.send_replace(source.clone());
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let entry = prepared_open(&harness, &position, now, now + 3600);
+    let mut receipt: Value =
+        serde_json::from_str(include_str!("../test_data/live_open_receipt.json")).unwrap();
+    let old_id = b256!("adfae189b04060dcbef2af7322b00447844d8119b819e1820308e38e86339614");
+    let execution_block = covered + u64::from(!account_covers_execution);
+    receipt["blockNumber"] = json!(format!("0x{execution_block:x}"));
+    for log in receipt["logs"].as_array_mut().unwrap() {
+        log["blockNumber"] = json!(format!("0x{execution_block:x}"));
+        if log["topics"][3] == json!(old_id) {
+            log["topics"][3] = json!(entry.intent_id);
+        }
+    }
+    *harness.source.receipt.lock() = Some(receipt);
+    harness.source.trading.lock()["indexedThroughBlock"] = json!(covered + 2);
+    let mut client = harness.client();
+    client.start().unwrap();
+    let connected = client.connect().await;
+    if account_covers_execution {
+        assert!(
+            connected.is_err(),
+            "Covered execution disappeared from the account without terminal history"
+        );
+    } else {
+        connected.unwrap();
+        let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+        assert!(
+            !mass.reports_complete(),
+            "Future chain fill was paired with authoritative empty positions"
+        );
+        assert!(mass.fill_reports().is_empty());
+        assert!(mass.position_reports().is_empty());
+    }
+    client.disconnect().await.unwrap();
+    drop(client);
+    position.intent_id = Some(entry.intent_id);
+    source["openPositions"] = json!([position]);
+    source["locked"] = json!(position.margin);
+    source["indexedThroughBlock"] = json!(covered + 2);
+    source["walletRevision"] = json!(covered + 1);
+    source["accountRevision"] = json!(2);
+    harness.source.wallet.send_replace(source);
+    let mut restarted = harness.client();
+    restarted.start().unwrap();
+    restarted.connect().await.unwrap();
+    let mass = restarted.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(mass.reports_complete());
+    assert_eq!(
+        mass.position_reports()
+            .values()
+            .map(Vec::len)
+            .sum::<usize>(),
+        1
+    );
+    assert_eq!(mass.fill_reports().values().map(Vec::len).sum::<usize>(), 1);
+    assert_eq!(
+        mass.fill_reports()
+            .values()
+            .flatten()
+            .next()
+            .unwrap()
+            .client_order_id,
+        Some(entry.command.client_order_id)
+    );
+    restarted.disconnect().await.unwrap();
 }

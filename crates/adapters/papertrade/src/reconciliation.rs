@@ -50,6 +50,9 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         );
     }
     let trading = inner.api.trading().await?;
+    let covered_block = trading
+        .indexed_through_block
+        .min(snapshot.indexed_through_block);
     let unsettled = inner
         .journal
         .entries()?
@@ -67,6 +70,12 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     } else {
         Vec::new()
     };
+    ensure!(
+        fresh_history
+            .iter()
+            .all(|r| r.timestamp_ms <= snapshot.indexed_through_timestamp * 1000),
+        "Close history exceeds account time coverage"
+    );
     ensure!(
         !fresh_history.iter().any(|r| snapshot
             .open_positions
@@ -134,7 +143,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     if let Some(start) = start {
         for receipt in inner
             .api
-            .intent_receipts(&pending_ids, start, trading.indexed_through_block)
+            .intent_receipts(&pending_ids, start, covered_block)
             .await?
         {
             let hash: B256 = serde_json::from_value(receipt["transactionHash"].clone())?;
@@ -163,9 +172,17 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 _ => {}
             }
         }
-        entry.scanned_through = entry.scanned_through.max(trading.indexed_through_block);
+        entry.scanned_through = entry.scanned_through.max(covered_block);
         inner.journal.update(entry)?;
     }
+    ensure!(
+        by_position.values().all(|p| snapshot
+            .open_positions
+            .iter()
+            .any(|current| current.position_id == p.position_id)
+            || history.iter().any(|r| r.position_id == p.position_id)),
+        "Recovered execution is not covered by account positions or terminal history"
+    );
     let mut open_clients = HashMap::new();
     let mut close_clients = HashMap::new();
     for entry in &mut entries {
@@ -237,6 +254,14 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                     slot.insert(inner.api.receipt(record.tx_hash).await?);
                 }
                 if let Some(receipt) = receipts.get(&record.tx_hash) {
+                    let block = receipt["blockNumber"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing close receipt block"))?;
+                    ensure!(
+                        u64::from_str_radix(block.trim_start_matches("0x"), 16)?
+                            <= snapshot.indexed_through_block,
+                        "Close receipt exceeds account block coverage"
+                    );
                     match chain::intent_result(receipt, entry.intent_id)? {
                         Some(true) => {
                             chain::verify_close(receipt, record, inner.wallet)?;
