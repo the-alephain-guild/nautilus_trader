@@ -322,3 +322,58 @@ async fn entropy_live_node_recovers_retained_positions_with_missing_or_lagging_o
     );
     restarted.dispose();
 }
+
+#[rstest]
+#[case::conflicting_cloid("cloid")]
+#[case::other_deployer_same_base_symbol("coin")]
+#[case::opposite_side("side")]
+#[tokio::test]
+async fn entropy_live_node_rejects_conflicting_retained_order_identity(#[case] field: &str) {
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new(false).await;
+    let (mut retained, _, fills, ids) = live_round_trip(&harness).await;
+    retained.orders.clear();
+    let mut rows = vec![history(&fills[1]), history(&fills[0])];
+    rows[1]["order"][field] = json!(match field {
+        "cloid" => "0x22222222222222222222222222222222",
+        "coin" => "xyz:SNDK",
+        "side" => "A",
+        _ => unreachable!(),
+    });
+    *harness.source.fills.lock() = fills;
+    *harness.source.history.lock() = rows;
+    let mut recovered = harness.node().await;
+    retained.restore(&recovered);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), recovered.run()).await;
+    assert!(!recovered.handle().is_running());
+    let result = result.expect("Identity conflict did not terminate startup");
+    let error = result.expect_err("Conflicting history must not authorize recovery");
+    assert!(
+        format!("{error:#}").contains("conflicts with retained"),
+        "Unexpected startup error: {error:#}"
+    );
+    {
+        let cache = recovered.kernel().cache();
+        let cache = cache.borrow();
+        assert!(cache.orders(None, None, None, None, None).is_empty());
+        let positions = cache.positions(None, None, None, None, None);
+        assert_eq!(positions.len(), 1);
+        let position = positions[0].as_ref();
+        assert_eq!(
+            position
+                .events
+                .iter()
+                .map(|e| e.trade_id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(position.events.len(), 2);
+        assert_eq!(
+            position.realized_pnl.unwrap().as_decimal(),
+            Decimal::from(20)
+        );
+        assert_eq!(position.commissions()[0].as_decimal(), Decimal::new(5, 1));
+    }
+    assert_eq!(harness.source.actions.lock().len(), 2);
+    recovered.dispose();
+}
