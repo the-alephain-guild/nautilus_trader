@@ -31,7 +31,10 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 #[path = "support/node.rs"]
 mod node;
-#[allow(dead_code, reason = "Shared source harness includes other recovery fixtures")]
+#[allow(
+    dead_code,
+    reason = "Shared source harness includes other recovery fixtures"
+)]
 mod support;
 use node::{RetainedCache, account_node, run_account_node};
 use support::{Harness, SERIAL};
@@ -325,5 +328,276 @@ async fn live_node_retries_a_visible_log_when_its_receipt_is_unavailable() {
         RetainedCache::capture(&restarted).positions[0].trade_ids,
         retained.positions[0].trade_ids
     );
+    restarted.dispose();
+}
+
+fn fill_identity(
+    node: &LiveNode,
+) -> Vec<(ClientOrderId, Vec<nautilus_model::identifiers::TradeId>)> {
+    let cache = node.kernel().cache();
+    let cache = cache.borrow();
+    let mut identity: Vec<_> = cache
+        .orders(None, None, None, None, None)
+        .into_iter()
+        .map(|order| {
+            (
+                order.client_order_id(),
+                order.trade_ids().into_iter().copied().collect(),
+            )
+        })
+        .collect();
+    identity.sort_by_key(|row| row.0);
+    identity
+}
+
+struct KillOnDrop(std::process::Child);
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+#[tokio::test]
+async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_coverage() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        process::{Command, Stdio},
+    };
+    const CHILD: &str = "PAPERTRADE_TEST_PARTIAL_CURSOR";
+    const READY: &str = "FIRST_CURSOR_COMMITTED";
+    if let Ok(value) = std::env::var(CHILD) {
+        let value: Value = serde_json::from_str(&value).unwrap();
+        let journal = Journal::open(
+            std::path::Path::new(value["path"].as_str().unwrap()),
+            value["wallet"].as_str().unwrap().parse().unwrap(),
+            "PAPERTRADE-001",
+        )
+        .unwrap();
+        let mut entries = journal.entries().unwrap();
+        let from = entries.iter().map(|e| e.scanned_through + 1).min().unwrap();
+        let to = from + 999;
+        let ids: Vec<_> = entries.iter().map(|e| e.intent_id).collect();
+        let api = nautilus_papertrade::api::PapertradeApi::new(
+            value["origin"].as_str().unwrap().parse().unwrap(),
+            format!("{}rpc", value["origin"].as_str().unwrap())
+                .parse()
+                .unwrap(),
+            1,
+        )
+        .unwrap();
+        assert!(
+            api.intent_receipts(&ids, from, to)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        entries[0].scanned_through = entries[0].scanned_through.max(to);
+        journal.update(&entries[0]).unwrap();
+        println!("{READY}");
+        std::io::stdout().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        panic!("The parent must terminate the writer before the next order commit");
+    }
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let initial = harness.source.wallet.borrow().clone();
+    let start = initial["indexedThroughBlock"].as_u64().unwrap();
+    let now = initial["indexedThroughTimestamp"].as_u64().unwrap();
+    let a = trade(&harness, 9001, true, now, start + 2200);
+    let b = trade(&harness, 9002, false, now, start + 5200);
+    let unused = support::prepared_open_with_id(
+        &harness,
+        &a.position,
+        "PT-OPEN-9003",
+        now - 1000,
+        now - 100,
+    );
+    support::mark_attempted(&harness, &unused);
+    {
+        let journal = journal(&harness);
+        for (entry, progress) in journal
+            .entries()
+            .unwrap()
+            .into_iter()
+            .zip([999, 1499, 3999])
+        {
+            let mut entry = entry;
+            entry.scanned_through = start + progress;
+            journal.update(&entry).unwrap();
+        }
+    }
+    *harness.source.receipts.lock() = vec![a.receipt.clone(), b.receipt.clone()];
+    publish(
+        &harness,
+        start + 5000,
+        now - 200,
+        &[],
+        std::slice::from_ref(&a.history),
+        "1018250000000000000000",
+    );
+    let mut child = KillOnDrop(Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", std::thread::current().name().unwrap(), "--nocapture"])
+        .env(CHILD, json!({"path":harness.config.journal_path,"wallet":harness.config.wallet_address,"origin":harness.config.origin}).to_string())
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap());
+    let stdout = child.0.stdout.take().unwrap();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if line.unwrap() == READY {
+                let _ = sender.send(());
+                return;
+            }
+        }
+    });
+    let reached = tokio::time::timeout(Duration::from_secs(8), receiver).await;
+    child.0.kill().unwrap();
+    let status = child.0.wait().unwrap();
+    reader.join().unwrap();
+    reached.unwrap().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(9));
+    }
+    assert!(!status.success());
+    {
+        let journal = journal(&harness);
+        let entries = journal.entries().unwrap();
+        for ((saved, original), progress) in entries
+            .iter()
+            .zip([&a.entry, &b.entry, &unused])
+            .zip([1999, 1499, 3999])
+        {
+            assert_eq!(saved.scanned_through, start + progress);
+            assert_eq!(saved.intent_id, original.intent_id);
+            assert_eq!(saved.body, original.body);
+            assert_eq!(saved.nonce, original.nonce);
+            assert!(saved.fills.is_empty());
+            assert!(
+                journal
+                    .begin_submission(saved.command.client_order_id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+    assert_eq!(
+        *harness.source.log_ranges.lock(),
+        vec![(start + 1000, start + 1999)]
+    );
+    harness.source.log_ranges.lock().clear();
+    let mut partial = account_node(&harness);
+    let cache = partial.kernel().cache();
+    run_until(&mut partial, || {
+        cache
+            .borrow()
+            .position(&PositionId::from("PT-9001"))
+            .is_some_and(|p| p.is_closed())
+    })
+    .await;
+    assert_eq!(
+        harness.source.log_ranges.lock()[0],
+        (start + 1500, start + 2499)
+    );
+    {
+        let cache = cache.borrow();
+        assert_eq!(cache.positions(None, None, None, None, None).len(), 1);
+        assert_eq!(
+            cache
+                .position(&PositionId::from("PT-9001"))
+                .unwrap()
+                .realized_pnl
+                .unwrap()
+                .as_decimal(),
+            a.pnl
+        );
+        for id in [
+            b.entry.command.client_order_id,
+            unused.command.client_order_id,
+        ] {
+            let order = cache.order(&id).unwrap();
+            assert!(matches!(
+                order.status(),
+                OrderStatus::Submitted | OrderStatus::Accepted
+            ));
+            assert!(order.trade_ids().is_empty());
+        }
+    }
+    let retained = RetainedCache::capture(&partial);
+    partial.dispose();
+    drop(partial);
+    let slow_cursor = {
+        let journal = journal(&harness);
+        let entries = journal.entries().unwrap();
+        assert!(
+            entries[2].scanned_through >= start + 3999,
+            "The advanced cursor regressed"
+        );
+        assert_eq!(entries[2].status, OrderStatus::Submitted);
+        entries[1].scanned_through
+    };
+    harness.source.log_ranges.lock().clear();
+    let mut recovered = account_node(&harness);
+    retained.restore(&recovered);
+    let cache = recovered.kernel().cache();
+    let advanced = std::cell::Cell::new(false);
+    run_until(&mut recovered, || {
+        if !advanced.get() && !harness.source.log_ranges.lock().is_empty() {
+            publish(
+                &harness,
+                start + 5500,
+                now,
+                &[],
+                &[a.history.clone(), b.history.clone()],
+                "1045250000000000000000",
+            );
+            *harness.source.block_timestamp.lock() = Some(now);
+            advanced.set(true);
+        }
+        let cache = cache.borrow();
+        advanced.get()
+            && cache
+                .position(&PositionId::from("PT-9002"))
+                .is_some_and(|p| p.is_closed())
+            && cache
+                .order(&unused.command.client_order_id)
+                .is_some_and(|o| o.status() == OrderStatus::Expired)
+    })
+    .await;
+    assert_eq!(harness.source.log_ranges.lock()[0].0, slow_cursor + 1);
+    assert!(
+        harness
+            .source
+            .log_ranges
+            .lock()
+            .iter()
+            .all(|(from, to)| to - from < 1000)
+    );
+    assert!(
+        harness
+            .source
+            .log_ranges
+            .lock()
+            .iter()
+            .any(|(_, to)| *to == start + 5500)
+    );
+    assert_economics(&recovered, &[&a, &b], 1);
+    let identity = fill_identity(&recovered);
+    recovered.dispose();
+    drop(recovered);
+    {
+        let entries = journal(&harness).entries().unwrap();
+        assert_eq!(entries[2].status, OrderStatus::Expired);
+        assert_eq!(entries[2].scanned_through, start + 5500);
+        assert!(entries[2].fills.is_empty());
+    }
+    let mut restarted = account_node(&harness);
+    run_account_node(&mut restarted).await;
+    assert_economics(&restarted, &[&a, &b], 1);
+    assert_eq!(fill_identity(&restarted), identity);
     restarted.dispose();
 }
