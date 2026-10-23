@@ -109,7 +109,6 @@ quote quantity 在真实成交数量可知后通过原生更新事件转换为 b
 settlement adjustment 为 1.75 USDC，账户总额为 1018.25 USDC，冷恢复后保持一致。
 完整测试入口及策略认领配置边界见 `docs_zh/integrations/papertrade.md` 的故障恢复验证一节。
 
-
 ## 第二轮复审修复验收（2026-10-22）
 
 基线为 `3d324bbe2e`。复审发现的三个 P1、两个 P2 均先由测试复现，再修改实现；
@@ -208,3 +207,28 @@ all-targets Clippy、Rustfmt、测试约定、workspace test inventory 和 diff 
 未向生产代码添加测试钩子。所有服务均为本地故障服务，没有真实下单或推送。
 详细记录见 `docs_zh/integrations/papertrade.md` 第五轮恢复覆盖补充一节及本地
 `target/papertrade-round5-*.log`。
+
+## 第六轮连续扫描覆盖补强（2026-10-23）
+
+基线 `604e7a94d8` 的混合游标测试存在一个 P2：页大小、恢复起点和最终上界正确，不能排除
+中间漏扫。本轮先临时注入游标跳过 2000 个区块的故障，原实际 LiveNode 用例通过；加入独立
+连续覆盖断言后，同一故障被 `Unscanned gap` 拒绝。撤销故障后测试通过，生产源码未改变。
+
+- `b86e785b1f`：保留跨重启 RPC 轨迹，按 intent 集合和成功读取区间重建覆盖，核对每张订单
+  的游标、上界及过期条件。新增六个校验器测试，包含漏页、其他订单的页面、日志或 receipt
+  失败，以及合法重叠补读。
+- `6d4a76d140`：在相对区块 3200 加入成功订单哨兵。先在该页注入 RPC 失败并停机，重启必须
+  从固定的 2500..3499 补读；覆盖上界增长后核对中间和后段成功订单归属，以及无成交订单过期。
+  保留缓存和冷启动均检查 Trade ID、费用、数量及盈亏不重复。
+
+最终在 `6d4a76d140` 上运行适配器 Rust 全套，137 项通过，零失败、零忽略，其中 19 项包含
+实际 LiveNode。Clippy、Rustfmt、测试约定、47 成员 workspace inventory、Markdown lint 与
+差异检查通过。混合游标场景为三个已关闭仓位、六笔唯一成交和一张无成交过期订单；净盈亏
+63.50 USDC，结算调整 6.50 USDC，账户余额 1063.50 USDC。账户余额是报告值，仓位经济数据
+由独立常数另行核对。
+
+初始游标是构造的持久化前缀，逐订单 SIGKILL 仍定位于生产 API 与 Journal 接口边界，随后
+执行完整 LiveNode 恢复；没有把此项扩大为真实 synchronize 内部中断或存储驱动掉电验收。
+未下真实订单，未操作资金，未推送；未修改 Python 绑定、未重建扩展或重跑 Python 测试。
+故障步骤、测试结果和边界详见 `docs_zh/integrations/papertrade.md` 第六轮一节及本地
+`target/papertrade-round6-*.log`。
