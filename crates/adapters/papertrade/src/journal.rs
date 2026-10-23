@@ -117,9 +117,17 @@ impl Journal {
                 }
                 let mut entry: JournalEntry = serde_json::from_value(raw)?;
                 if entry.fills.is_empty()
-                    && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
+                    && matches!(
+                        entry.status,
+                        OrderStatus::Submitted | OrderStatus::Accepted | OrderStatus::Expired
+                    )
                 {
-                    // Earlier readers advanced the cursor without retaining close success.
+                    // Earlier readers could expire executed intents after discarding success.
+                    // Recheck that terminal decision without ever resubmitting its payload.
+                    if entry.status == OrderStatus::Expired {
+                        entry.status = OrderStatus::Submitted;
+                        entry.send_attempted = true;
+                    }
                     entry.scanned_through = entry.submitted_block.saturating_sub(1);
                     legacy.push((key.value().to_owned(), serde_json::to_string(&entry)?));
                 }

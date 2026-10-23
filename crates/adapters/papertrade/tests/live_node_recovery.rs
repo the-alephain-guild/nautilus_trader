@@ -236,11 +236,13 @@ async fn live_node_retained_position_recovers_missing_or_lagging_orders_without_
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
 #[tokio::test]
 async fn live_node_recovers_closed_during_downtime_with_history_before_open_proof(
     #[case] conflict: bool,
+    #[case] legacy_expired: bool,
 ) {
     use alloy_primitives::{B256, U256};
     use nautilus_model::{enums::OrderStatus, identifiers::PositionId, orders::Order};
@@ -271,6 +273,9 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
     harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
     let entry = support::prepared_open(&harness, &position, now - 60, now + 3600 - 60);
     support::mark_attempted(&harness, &entry);
+    if legacy_expired {
+        support::write_legacy_expired(&harness.config.journal_path, &entry);
+    }
     let mut record = closed_history(&position, (now - 10) * 1000);
     record["exitPriceRaw"] = json!("840000");
     record["adjustedPnlRaw"] = json!("19000000000000000000");

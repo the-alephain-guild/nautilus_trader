@@ -318,3 +318,30 @@ pub(crate) fn mark_attempted(
         .unwrap()
         .unwrap();
 }
+
+pub(crate) fn write_legacy_expired(
+    path: &std::path::Path,
+    entry: &nautilus_papertrade::journal::JournalEntry,
+) {
+    use redb::{Database, TableDefinition};
+    let mut old = entry.clone();
+    old.status = nautilus_model::enums::OrderStatus::Expired;
+    old.send_attempted = true;
+    old.scanned_through = old.submitted_block + 100;
+    let mut value = serde_json::to_value(old).unwrap();
+    value.as_object_mut().unwrap().remove("execution_succeeded");
+    let db = Database::open(path).unwrap();
+    let tx = db.begin_write().unwrap();
+    {
+        let mut table = tx
+            .open_table(TableDefinition::<&str, &str>::new("orders"))
+            .unwrap();
+        table
+            .insert(
+                entry.command.client_order_id.as_str(),
+                value.to_string().as_str(),
+            )
+            .unwrap();
+    }
+    tx.commit().unwrap();
+}

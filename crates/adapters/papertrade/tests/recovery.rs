@@ -414,8 +414,13 @@ async fn restart_rejects_a_durable_order_that_never_started_submission() {
     client.disconnect().await.unwrap();
 }
 
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
-async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_deadline() {
+async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_deadline(
+    #[case] legacy_expired: bool,
+) {
     use nautilus_model::enums::OrderStatus;
     use nautilus_papertrade::wire::VenuePosition;
     let _serial = SERIAL.lock().await;
@@ -431,6 +436,9 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
     harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
     let entry = prepared_open(&harness, &position, now - 7200, deadline);
     mark_attempted(&harness, &entry);
+    if legacy_expired {
+        support::write_legacy_expired(&harness.config.journal_path, &entry);
+    }
     *harness.source.block_timestamp.lock() = Some(deadline - 1);
     let mut client = harness.client();
     client.start().unwrap();
@@ -474,8 +482,13 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
     restarted.disconnect().await.unwrap();
 }
 
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
-async fn successful_close_cannot_expire_while_history_is_delayed_across_restart() {
+async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
+    #[case] legacy_expired: bool,
+) {
     use alloy::signers::local::PrivateKeySigner;
     use alloy_primitives::{B256, U256};
     use nautilus_common::messages::execution::SubmitOrder;
@@ -561,6 +574,9 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
         "transactionHash":tx,"blockHash":block,"blockNumber":height,"removed":false,
         "data":format!("0x{exit:064x}{}","0".repeat(256))});
     let receipt = json!({"status":"0x1","transactionHash":tx,"blockHash":block,"blockNumber":height,"logs":[result,close]});
+    if legacy_expired {
+        support::write_legacy_expired(&harness.config.journal_path, &entry);
+    }
     *harness.source.receipt.lock() = Some(receipt.clone());
     for reconnect in 0..2 {
         let mut client = harness.client();
