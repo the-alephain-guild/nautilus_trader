@@ -300,3 +300,170 @@ fn legacy_unresolved_journal_rescans_results_without_changing_request_identity()
             .is_none()
     );
 }
+
+#[rstest]
+#[case("before_migration")]
+#[case("after_migration")]
+#[case("before_source")]
+#[case("after_source")]
+#[case("after_success")]
+fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary: &str) {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        process::{Child, Command, Stdio},
+        time::Duration,
+    };
+
+    use redb::{Database, ReadableDatabase, TableDefinition};
+    const CHILD_PATH: &str = "PAPERTRADE_TEST_CRASH_JOURNAL";
+    const READY: &str = "JOURNAL_BOUNDARY_READY";
+    struct KillOnDrop(Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    if let Some(path) = std::env::var_os(CHILD_PATH) {
+        let journal = (boundary != "before_migration")
+            .then(|| Journal::open(std::path::Path::new(&path), WALLET, "PAPERTRADE-001").unwrap());
+        if matches!(boundary, "after_source" | "after_success") {
+            let journal = journal.as_ref().unwrap();
+            let mut entry = journal.entries().unwrap().pop().unwrap();
+            let wallet: serde_json::Value =
+                serde_json::from_str(include_str!("../test_data/live_wallet.json")).unwrap();
+            let mut position: nautilus_papertrade::wire::VenuePosition =
+                serde_json::from_value(wallet["openPositions"][0].clone()).unwrap();
+            position.intent_id = Some(entry.intent_id);
+            journal.remember(&[position], &[]).unwrap();
+            if boundary == "after_success" {
+                entry.execution_succeeded = true;
+                entry.scanned_through = 200;
+                journal.update(&entry).unwrap();
+            }
+        }
+        println!("{READY}");
+        std::io::stdout().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        panic!("Child must be killed while the journal remains open");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.redb");
+    let original = {
+        let journal = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+        let (entry, _) = journal
+            .prepare(&command("PT-CRASH"), None, 100, sign)
+            .unwrap();
+        journal
+            .begin_submission(entry.command.client_order_id)
+            .unwrap()
+            .unwrap()
+    };
+    if boundary.ends_with("migration") {
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_succeeded");
+        legacy["status"] = serde_json::to_value(OrderStatus::Expired).unwrap();
+        legacy["scanned_through"] = serde_json::json!(200);
+        let db = Database::open(&path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut table = tx
+                .open_table(TableDefinition::<&str, &str>::new("orders"))
+                .unwrap();
+            table
+                .insert(
+                    original.command.client_order_id.as_str(),
+                    legacy.to_string().as_str(),
+                )
+                .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let mut child = KillOnDrop(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--nocapture",
+            ])
+            .env(CHILD_PATH, &path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if line.unwrap() == READY {
+                tx.send(()).unwrap();
+                return;
+            }
+        }
+    });
+    let ready = rx.recv_timeout(Duration::from_secs(10));
+    child.0.kill().unwrap();
+    let status = child.0.wait().unwrap();
+    reader.join().unwrap();
+    ready.expect("Child did not reach the requested commit boundary");
+    assert!(!status.success());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(9));
+    }
+    let raw: serde_json::Value = {
+        let db = Database::open(&path).unwrap();
+        let tx = db.begin_read().unwrap();
+        let table = tx
+            .open_table(TableDefinition::<&str, &str>::new("orders"))
+            .unwrap();
+        serde_json::from_str(
+            table
+                .get(original.command.client_order_id.as_str())
+                .unwrap()
+                .unwrap()
+                .value(),
+        )
+        .unwrap()
+    };
+    if boundary == "before_migration" {
+        assert!(raw.get("execution_succeeded").is_none());
+        assert_eq!(
+            raw["status"],
+            serde_json::to_value(OrderStatus::Expired).unwrap()
+        );
+        assert_eq!(raw["scanned_through"], 200);
+    } else {
+        assert_eq!(raw["execution_succeeded"], boundary == "after_success");
+        assert_eq!(
+            raw["scanned_through"],
+            if boundary == "after_success" { 200 } else { 99 }
+        );
+        assert_eq!(
+            raw["status"],
+            serde_json::to_value(OrderStatus::Submitted).unwrap()
+        );
+    }
+    let journal = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let saved = journal.entries().unwrap().pop().unwrap();
+    assert_eq!(saved.intent_id, original.intent_id);
+    assert_eq!(saved.body, original.body);
+    assert_eq!(saved.nonce, original.nonce);
+    assert_eq!(
+        journal.observed().unwrap().len(),
+        usize::from(matches!(boundary, "after_source" | "after_success"))
+    );
+    assert!(
+        journal
+            .begin_submission(saved.command.client_order_id)
+            .unwrap()
+            .is_none()
+    );
+}

@@ -483,11 +483,14 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
+#[case::chain(false, "chain")]
+#[case::legacy_expired(true, "chain")]
+#[case::account_snapshot(false, "snapshot")]
+#[case::account_patch(false, "patch")]
 #[tokio::test]
 async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     #[case] legacy_expired: bool,
+    #[case] success_source: &str,
 ) {
     use alloy::signers::local::PrivateKeySigner;
     use alloy_primitives::{B256, U256};
@@ -505,7 +508,7 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
         wire::{TradingState, VenuePosition},
     };
     let _serial = SERIAL.lock().await;
-    let harness = Harness::new().await;
+    let mut harness = Harness::new().await;
     let mut source = harness.source.wallet.borrow().clone();
     let position: VenuePosition =
         serde_json::from_value(source["openPositions"][0].clone()).unwrap();
@@ -577,11 +580,42 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     if legacy_expired {
         support::write_legacy_expired(&harness.config.journal_path, &entry);
     }
-    *harness.source.receipt.lock() = Some(receipt.clone());
+    if success_source == "snapshot" {
+        source["intentOutcomes"] = json!([[entry.intent_id, "succeeded"]]);
+        harness.source.wallet.send_replace(source.clone());
+    } else if success_source == "patch" {
+        *harness.source.block_timestamp.lock() = Some(now - 3601);
+    } else {
+        *harness.source.receipt.lock() = Some(receipt.clone());
+    }
     for reconnect in 0..2 {
         let mut client = harness.client();
         client.start().unwrap();
         client.connect().await.unwrap();
+        if success_source == "patch" && reconnect == 0 {
+            harness.source.wallet.send_replace(json!({
+                "address":source["address"], "baseAccountRevision":1, "accountRevision":2,
+                "state":{}, "intentOutcomes":[[entry.intent_id,"succeeded"]],
+                "addedPositions":[], "removedPositionIds":[], "addedOperations":[], "removedOperationIds":[]
+            }));
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if let Some(nautilus_common::messages::ExecutionEvent::Account(state)) =
+                        harness._events.recv().await
+                        && state
+                            .info
+                            .as_ref()
+                            .and_then(|info| info.get("papertrade_account_revision"))
+                            == Some(&json!(2))
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            *harness.source.block_timestamp.lock() = Some(now);
+        }
         let mass = client.generate_mass_status(None).await.unwrap().unwrap();
         let report = mass
             .order_reports()
@@ -598,8 +632,22 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
         assert!(!mass.reports_complete());
         client.disconnect().await.unwrap();
         drop(client);
+        let journal =
+            Journal::open(&harness.config.journal_path, wallet, "PAPERTRADE-001").unwrap();
+        let saved = journal.entries().unwrap().pop().unwrap();
+        assert!(saved.execution_succeeded);
+        assert_eq!(
+            saved.scanned_through,
+            source["indexedThroughBlock"].as_u64().unwrap()
+        );
+        drop(journal);
         // The next scan starts after this receipt; success must survive in the journal.
         *harness.source.receipt.lock() = None;
+        if success_source != "chain" {
+            source["intentOutcomes"] = json!([]);
+            source["accountRevision"] = json!(3);
+            harness.source.wallet.send_replace(source.clone());
+        }
     }
     *harness.source.history.lock() = json!({"items":[{"positionId":position.position_id,
         "instrumentId":position.instrument_id,"symbol":"BTC","priceScaleRaw":"10",
@@ -608,7 +656,7 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
         "txHash":tx,"kind":"PositionClosed","exitPriceRaw":exit.to_string(),"adjustedPnlRaw":"0","userPaidFeeRaw":"0"}],"nextCursor":null});
     source["openPositions"].as_array_mut().unwrap().remove(0);
     source["locked"] = source["openPositions"][0][5].clone();
-    source["accountRevision"] = json!(2);
+    source["accountRevision"] = json!(4);
     source["walletRevision"] = source["indexedThroughBlock"].clone();
     harness.source.wallet.send_replace(source);
     *harness.source.receipt.lock() = Some(receipt);
