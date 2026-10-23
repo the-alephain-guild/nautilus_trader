@@ -49,6 +49,13 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             "Account coverage regressed across source connections"
         );
     }
+    let successes: Vec<_> = snapshot
+        .intent_outcomes
+        .iter()
+        .filter(|(_, outcome)| outcome == "succeeded")
+        .map(|(id, _)| *id)
+        .collect();
+    inner.journal.observe_successes(&successes)?;
     let trading = inner.api.trading().await?;
     let covered_block = trading
         .indexed_through_block
@@ -238,11 +245,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                 "failed" => Some(OrderStatus::Rejected),
                 "expired" => Some(OrderStatus::Expired),
                 "cancelled" => Some(OrderStatus::Canceled),
-                "succeeded" => {
-                    entry.execution_succeeded = true;
-                    inner.journal.update(entry)?;
-                    None
-                }
+                "succeeded" => None,
                 "unknown" => None,
                 _ => anyhow::bail!("Unknown intent outcome"),
             };

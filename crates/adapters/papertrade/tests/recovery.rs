@@ -487,6 +487,8 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
 #[case::legacy_expired(true, "chain")]
 #[case::account_snapshot(false, "snapshot")]
 #[case::account_patch(false, "patch")]
+#[case::other_order_failure(false, "multi_order")]
+#[case::process_kill(false, "process_kill")]
 #[tokio::test]
 async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     #[case] legacy_expired: bool,
@@ -507,6 +509,40 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
         signing::{Close, PapertradeSigner},
         wire::{TradingState, VenuePosition},
     };
+    if let Ok(child) = std::env::var("PAPERTRADE_TEST_INTERRUPTED_SYNC") {
+        use nautilus_common::{
+            cache::Cache, factories::ExecutionClientFactory,
+            live::runner::replace_exec_event_sender,
+        };
+        use nautilus_papertrade::{
+            config::{PAPERTRADE, PapertradeExecutionClientConfig},
+            factories::PapertradeExecutionClientFactory,
+        };
+        let child: Value = serde_json::from_str(&child).unwrap();
+        let mut config = PapertradeExecutionClientConfig::new(
+            "PAPERTRADE-001".into(),
+            child["wallet"].as_str().unwrap().into(),
+            child["path"].as_str().unwrap().into(),
+            "test-build".into(),
+        );
+        config.origin = child["origin"].as_str().unwrap().into();
+        config.rpc_url = format!("{}rpc", config.origin);
+        config.session_private_key = Some(format!("0x{}", "11".repeat(32)).into());
+        let (sender, _events) = tokio::sync::mpsc::unbounded_channel();
+        replace_exec_event_sender(sender);
+        let cache = std::rc::Rc::new(std::cell::RefCell::new(Cache::default()));
+        let mut client = PapertradeExecutionClientFactory
+            .create(
+                TraderId::from("TESTER-001"),
+                PAPERTRADE,
+                &config,
+                cache.into(),
+            )
+            .unwrap();
+        client.start().unwrap();
+        client.connect().await.unwrap();
+        panic!("Parent must terminate the child at the blocked coverage RPC");
+    }
     let _serial = SERIAL.lock().await;
     let mut harness = Harness::new().await;
     let mut source = harness.source.wallet.borrow().clone();
@@ -580,17 +616,91 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     if legacy_expired {
         support::write_legacy_expired(&harness.config.journal_path, &entry);
     }
-    if success_source == "snapshot" {
+    if matches!(success_source, "snapshot" | "multi_order" | "process_kill") {
         source["intentOutcomes"] = json!([[entry.intent_id, "succeeded"]]);
         harness.source.wallet.send_replace(source.clone());
+        if matches!(success_source, "multi_order" | "process_kill") {
+            let other = prepared_open(&harness, &position, now - 7200, now - 3600);
+            mark_attempted(&harness, &other);
+            *harness.source.block_timestamp.lock() = None;
+        }
     } else if success_source == "patch" {
         *harness.source.block_timestamp.lock() = Some(now - 3601);
     } else {
         *harness.source.receipt.lock() = Some(receipt.clone());
     }
     for reconnect in 0..2 {
+        if success_source == "process_kill" && reconnect == 0 {
+            use std::process::{Command, Stdio};
+            harness.source.block_paused.store(true, Ordering::SeqCst);
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", std::thread::current().name().unwrap(), "--nocapture"])
+                .env("PAPERTRADE_TEST_INTERRUPTED_SYNC", json!({"wallet":source["address"], "path":harness.config.journal_path, "origin":harness.config.origin}).to_string())
+                .stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap();
+            let reached = tokio::time::timeout(Duration::from_secs(8), async {
+                while harness.source.block_calls.load(Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            child.kill().unwrap();
+            let status = child.wait().unwrap();
+            harness.source.block_paused.store(false, Ordering::SeqCst);
+            reached.unwrap();
+            assert!(!status.success());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                assert_eq!(status.signal(), Some(9));
+            }
+            let journal =
+                Journal::open(&harness.config.journal_path, wallet, "PAPERTRADE-001").unwrap();
+            let saved = journal
+                .entries()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.intent_id == entry.intent_id)
+                .unwrap();
+            assert_eq!(
+                saved.scanned_through,
+                source["indexedThroughBlock"].as_u64().unwrap()
+            );
+            assert!(
+                saved.execution_succeeded,
+                "Interrupted synchronization advanced coverage without retaining stream success"
+            );
+            drop(journal);
+            *harness.source.block_timestamp.lock() = Some(now);
+            source["intentOutcomes"] = json!([]);
+            source["accountRevision"] = json!(3);
+            harness.source.wallet.send_replace(source.clone());
+            continue;
+        }
         let mut client = harness.client();
         client.start().unwrap();
+        if success_source == "multi_order" && reconnect == 0 {
+            assert!(client.connect().await.is_err());
+            client.disconnect().await.unwrap();
+            drop(client);
+            let journal =
+                Journal::open(&harness.config.journal_path, wallet, "PAPERTRADE-001").unwrap();
+            let saved = journal
+                .entries()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.intent_id == entry.intent_id)
+                .unwrap();
+            assert!(
+                saved.execution_succeeded,
+                "Another order failure discarded an observed success"
+            );
+            drop(journal);
+            *harness.source.block_timestamp.lock() = Some(now);
+            source["intentOutcomes"] = json!([]);
+            source["accountRevision"] = json!(3);
+            harness.source.wallet.send_replace(source.clone());
+            continue;
+        }
         client.connect().await.unwrap();
         if success_source == "patch" && reconnect == 0 {
             harness.source.wallet.send_replace(json!({

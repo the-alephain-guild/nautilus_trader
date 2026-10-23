@@ -208,6 +208,39 @@ impl Journal {
         tx.commit()?;
         Ok(())
     }
+    /// Retains stream success before fallible reconciliation or scan advancement.
+    pub(crate) fn observe_successes(&self, successes: &[B256]) -> Result<()> {
+        let mut tx = self.db.begin_write()?;
+        tx.set_durability(Durability::Immediate)?;
+        let mut conflict = false;
+        {
+            let mut table = tx.open_table(ORDERS)?;
+            let mut changes = Vec::new();
+            for row in table.iter()? {
+                let (key, value) = row?;
+                let mut entry: JournalEntry = serde_json::from_str(value.value())?;
+                if !entry.execution_succeeded && successes.contains(&entry.intent_id) {
+                    entry.execution_succeeded = true;
+                    changes.push((key.value().to_owned(), serde_json::to_string(&entry)?));
+                }
+                conflict |= entry.execution_succeeded
+                    && matches!(
+                        entry.status,
+                        OrderStatus::Rejected | OrderStatus::Canceled | OrderStatus::Expired
+                    );
+            }
+            for (key, value) in changes {
+                table.insert(key.as_str(), value.as_str())?;
+            }
+        }
+        tx.commit()?;
+        // Contradictory order state blocks reconciliation without discarding other successes.
+        ensure!(
+            !conflict,
+            "Terminal failure contradicts observed execution success"
+        );
+        Ok(())
+    }
     pub fn remember(&self, positions: &[VenuePosition], closes: &[CloseRecord]) -> Result<()> {
         let mut tx = self.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;

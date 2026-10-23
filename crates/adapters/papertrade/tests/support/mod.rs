@@ -52,6 +52,8 @@ pub(crate) struct Source {
     pub(crate) history: Mutex<Value>,
     pub(crate) receipt: Mutex<Option<Value>>,
     pub(crate) block_timestamp: Mutex<Option<u64>>,
+    pub(crate) block_paused: AtomicBool,
+    pub(crate) block_calls: AtomicUsize,
     pub(crate) history_delay_ms: AtomicU64,
     pub(crate) history_calls: AtomicUsize,
 }
@@ -90,6 +92,10 @@ async fn history(State(source): State<Arc<Source>>, uri: Uri) -> Json<Value> {
 }
 async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> Json<Value> {
     let result = if request["method"] == "eth_getBlockByNumber" {
+        source.block_calls.fetch_add(1, Ordering::SeqCst);
+        while source.block_paused.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         source.block_timestamp.lock().map(|stamp| json!({"number":request["params"][0],"timestamp":format!("0x{stamp:x}"),"hash":format!("0x{}","11".repeat(32))})).unwrap_or(Value::Null)
     } else if request["method"] == "eth_getTransactionReceipt" {
         source.receipt.lock().clone().unwrap_or(Value::Null)
@@ -158,6 +164,8 @@ impl Harness {
             history: Mutex::new(json!({"items":[],"nextCursor":null})),
             receipt: Mutex::new(None),
             block_timestamp: Mutex::new(None),
+            block_paused: AtomicBool::new(false),
+            block_calls: AtomicUsize::new(0),
             history_delay_ms: AtomicU64::new(0),
             history_calls: AtomicUsize::new(0),
             trading: Mutex::new(
