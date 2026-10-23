@@ -122,11 +122,16 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         .map(|e| e.scanned_through.saturating_add(1))
         .min();
     let pending_ids: Vec<_> = pending.iter().map(|e| e.intent_id).collect();
+    // Bound each reconciliation round to one log page. Completed pages survive
+    // retries and restarts; expiry still requires coverage through the account bound.
+    let scanned_to = start.map_or(covered_block, |from| {
+        covered_block.min(from.saturating_add(999))
+    });
     let mut receipts: HashMap<B256, serde_json::Value> = HashMap::new();
     if let Some(start) = start {
         for receipt in inner
             .api
-            .intent_receipts(&pending_ids, start, covered_block)
+            .intent_receipts(&pending_ids, start, scanned_to)
             .await?
         {
             let hash: B256 = serde_json::from_value(receipt["transactionHash"].clone())?;
@@ -207,7 +212,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     // Commit mutually checked source rows before moving any scan cursor.
     for entry in &mut entries {
         if pending_ids.contains(&entry.intent_id) {
-            entry.scanned_through = entry.scanned_through.max(covered_block);
+            entry.scanned_through = entry.scanned_through.max(scanned_to);
             inner.journal.update(entry)?;
         }
     }

@@ -54,6 +54,8 @@ pub(crate) struct Source {
     pub(crate) block_timestamp: Mutex<Option<u64>>,
     pub(crate) block_paused: AtomicBool,
     pub(crate) block_calls: AtomicUsize,
+    pub(crate) log_ranges: Mutex<Vec<(u64, u64)>>,
+    pub(crate) log_fail_from: Mutex<Option<u64>>,
     pub(crate) history_delay_ms: AtomicU64,
     pub(crate) history_calls: AtomicUsize,
 }
@@ -117,6 +119,12 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
         )
         .unwrap();
         let receipt = source.receipt.lock();
+        source.log_ranges.lock().push((from, to));
+        if *source.log_fail_from.lock() == Some(from) {
+            return Json(
+                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Injected log failure"}}),
+            );
+        }
         let logs: Vec<Value> = receipt
             .as_ref()
             .and_then(|r| r["logs"].as_array())
@@ -166,6 +174,8 @@ impl Harness {
             block_timestamp: Mutex::new(None),
             block_paused: AtomicBool::new(false),
             block_calls: AtomicUsize::new(0),
+            log_ranges: Mutex::new(Vec::new()),
+            log_fail_from: Mutex::new(None),
             history_delay_ms: AtomicU64::new(0),
             history_calls: AtomicUsize::new(0),
             trading: Mutex::new(

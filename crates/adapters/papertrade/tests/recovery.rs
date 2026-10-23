@@ -831,6 +831,136 @@ async fn deferred_external_history_is_retried_after_local_open_is_proven_expired
     );
 }
 
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn legacy_scan_resumes_across_budget_and_failed_page_without_losing_late_success(
+    #[case] executed: bool,
+) {
+    use nautilus_model::enums::OrderStatus;
+    use nautilus_papertrade::{journal::Journal, wire::VenuePosition};
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    harness.config.max_history_pages = 1;
+    let mut snapshot = harness.source.wallet.borrow().clone();
+    let start = snapshot["indexedThroughBlock"].as_u64().unwrap();
+    let now = snapshot["indexedThroughTimestamp"].as_u64().unwrap();
+    let mut position: VenuePosition =
+        serde_json::from_value(snapshot["openPositions"][0].clone()).unwrap();
+    position.opened_at_ms = (now - 4000) * 1000;
+    let entry = prepared_open(&harness, &position, now - 7200, now - 3600);
+    mark_attempted(&harness, &entry);
+    support::write_legacy_expired(&harness.config.journal_path, &entry);
+    snapshot["openPositions"] = json!([]);
+    snapshot["locked"] = json!("0");
+    snapshot["indexedThroughBlock"] = json!(start + 2500);
+    snapshot["walletRevision"] = snapshot["indexedThroughBlock"].clone();
+    harness.source.wallet.send_replace(snapshot.clone());
+    harness.source.trading.lock()["indexedThroughBlock"] = snapshot["indexedThroughBlock"].clone();
+    *harness.source.block_timestamp.lock() = Some(now);
+    *harness.source.log_fail_from.lock() = Some(start + 1000);
+    if executed {
+        let mut receipt: Value =
+            serde_json::from_str(include_str!("../test_data/live_open_receipt.json")).unwrap();
+        let old_id = json!(position.intent_id.unwrap());
+        let height = json!(format!("0x{:x}", start + 2300));
+        receipt["blockNumber"] = height.clone();
+        for log in receipt["logs"].as_array_mut().unwrap() {
+            log["blockNumber"] = height.clone();
+            log["blockTimestamp"] = json!(format!("0x{:x}", now - 4000));
+            if log["topics"][3] == old_id {
+                log["topics"][3] = json!(entry.intent_id);
+            }
+        }
+        *harness.source.receipt.lock() = Some(receipt);
+        *harness.source.history.lock() =
+            json!({"items":[closed_history(&position, (now-1000)*1000)],"nextCursor":null});
+    }
+    let mut client = harness.client();
+    client.start().unwrap();
+    let connected = client.connect().await;
+    if connected.is_ok() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !harness
+                .source
+                .log_ranges
+                .lock()
+                .iter()
+                .any(|(from, _)| *from == start + 1000)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    client.disconnect().await.unwrap();
+    drop(client);
+    assert!(
+        connected.is_ok(),
+        "Legacy recovery rejected an interval larger than one scan budget: {connected:?}"
+    );
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        snapshot["address"].as_str().unwrap().parse().unwrap(),
+        "PAPERTRADE-001",
+    )
+    .unwrap();
+    let saved = journal.entries().unwrap().pop().unwrap();
+    assert_eq!(saved.scanned_through, start + 999);
+    assert_eq!(saved.status, OrderStatus::Submitted);
+    assert!(saved.fills.is_empty());
+    assert_eq!(saved.intent_id, entry.intent_id);
+    assert_eq!(saved.body, entry.body);
+    assert_eq!(saved.nonce, entry.nonce);
+    assert!(
+        journal
+            .begin_submission(saved.command.client_order_id)
+            .unwrap()
+            .is_none()
+    );
+    drop(journal);
+    harness.source.log_ranges.lock().clear();
+    *harness.source.log_fail_from.lock() = None;
+    let mut restarted = harness.client();
+    restarted.start().unwrap();
+    restarted.connect().await.unwrap();
+    let final_report = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let mass = restarted.generate_mass_status(None).await.unwrap().unwrap();
+            if mass.reports_complete() {
+                break mass;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    restarted.disconnect().await.unwrap();
+    let mass = final_report.unwrap();
+    assert_eq!(harness.source.log_ranges.lock()[0].0, start + 1000);
+    assert!(
+        harness
+            .source
+            .log_ranges
+            .lock()
+            .iter()
+            .all(|(from, to)| to - from < 1000)
+    );
+    assert!(mass.order_reports().values().any(|r| r.client_order_id
+        == Some(entry.command.client_order_id)
+        && r.order_status
+            == if executed {
+                OrderStatus::Filled
+            } else {
+                OrderStatus::Expired
+            }));
+    assert_eq!(
+        mass.fill_reports().values().map(Vec::len).sum::<usize>(),
+        if executed { 2 } else { 0 }
+    );
+}
+
 #[tokio::test]
 async fn retained_close_history_cannot_be_replayed_with_an_older_snapshot_after_failed_round() {
     use nautilus_papertrade::wire::VenuePosition;
