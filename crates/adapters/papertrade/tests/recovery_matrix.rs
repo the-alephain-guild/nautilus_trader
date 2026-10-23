@@ -37,7 +37,7 @@ mod node;
 )]
 mod support;
 use node::{RetainedCache, account_node, run_account_node};
-use support::scan::ScanCoverage;
+use support::scan::{ScanCoverage, ScanEvent};
 use support::{Harness, SERIAL};
 
 struct TradeCase {
@@ -436,10 +436,12 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         now - 100,
     );
     support::mark_attempted(&harness, &unused);
+    let sentinel = trade(&harness, 9004, true, now, start + 3200);
     let mut coverage = ScanCoverage::new([
         (a.entry.intent_id, start + 999),
         (b.entry.intent_id, start + 1499),
         (unused.intent_id, start + 3999),
+        (sentinel.entry.intent_id, start + 1499),
     ]);
     {
         let journal = journal(&harness);
@@ -447,21 +449,25 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
             .entries()
             .unwrap()
             .into_iter()
-            .zip([999, 1499, 3999])
+            .zip([999, 1499, 3999, 1499])
         {
             let mut entry = entry;
             entry.scanned_through = start + progress;
             journal.update(&entry).unwrap();
         }
     }
-    *harness.source.receipts.lock() = vec![a.receipt.clone(), b.receipt.clone()];
+    *harness.source.receipts.lock() = vec![
+        a.receipt.clone(),
+        b.receipt.clone(),
+        sentinel.receipt.clone(),
+    ];
     publish(
         &harness,
         start + 5000,
         now - 200,
         &[],
-        std::slice::from_ref(&a.history),
-        "1018250000000000000000",
+        &[a.history.clone(), sentinel.history.clone()],
+        "1036500000000000000000",
     );
     let mut child = KillOnDrop(Command::new(std::env::current_exe().unwrap())
         .args(["--exact", std::thread::current().name().unwrap(), "--nocapture"])
@@ -494,8 +500,8 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         let entries = journal.entries().unwrap();
         for ((saved, original), progress) in entries
             .iter()
-            .zip([&a.entry, &b.entry, &unused])
-            .zip([1999, 1499, 3999])
+            .zip([&a.entry, &b.entry, &unused, &sentinel.entry])
+            .zip([1999, 1499, 3999, 1499])
         {
             assert_eq!(saved.scanned_through, start + progress);
             assert_eq!(saved.intent_id, original.intent_id);
@@ -515,6 +521,9 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         vec![(start + 1000, start + 1999)]
     );
     harness.source.log_ranges.lock().clear();
+    // Hold the missing middle page at a real RPC failure until restart, so the
+    // retained cache boundary does not depend on racing the background poller.
+    *harness.source.log_fail_from.lock() = Some(start + 2500);
     let mut partial = account_node(&harness);
     let cache = partial.kernel().cache();
     run_until(&mut partial, || {
@@ -522,6 +531,9 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
             .borrow()
             .position(&PositionId::from("PT-9001"))
             .is_some_and(|p| p.is_closed())
+            && harness.source.scan_events.lock().iter().any(|event| {
+                matches!(event, ScanEvent::Logs { from, transactions: None, .. } if *from == start + 2500)
+            })
     })
     .await;
     assert_eq!(
@@ -543,6 +555,7 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         for id in [
             b.entry.command.client_order_id,
             unused.command.client_order_id,
+            sentinel.entry.command.client_order_id,
         ] {
             let order = cache.order(&id).unwrap();
             assert!(matches!(
@@ -553,19 +566,26 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         }
     }
     let retained = RetainedCache::capture(&partial);
+    let retained_identity: Vec<_> = fill_identity(&partial)
+        .into_iter()
+        .filter(|(_, trades)| !trades.is_empty())
+        .collect();
+    assert_eq!(retained_identity.len(), 2);
     partial.dispose();
     drop(partial);
     check_scan_coverage(&harness, &mut coverage, start + 5000);
-    let slow_cursor = {
+    {
         let journal = journal(&harness);
         let entries = journal.entries().unwrap();
-        assert!(
-            entries[2].scanned_through >= start + 3999,
-            "The advanced cursor regressed"
-        );
+        assert_eq!(entries[2].scanned_through, start + 3999);
         assert_eq!(entries[2].status, OrderStatus::Submitted);
-        entries[1].scanned_through
-    };
+        for entry in [&entries[1], &entries[3]] {
+            assert_eq!(entry.scanned_through, start + 2499);
+            assert_eq!(entry.status, OrderStatus::Submitted);
+            assert!(entry.fills.is_empty());
+        }
+    }
+    *harness.source.log_fail_from.lock() = None;
     harness.source.log_ranges.lock().clear();
     let mut recovered = account_node(&harness);
     retained.restore(&recovered);
@@ -578,8 +598,12 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
                 start + 5500,
                 now,
                 &[],
-                &[a.history.clone(), b.history.clone()],
-                "1045250000000000000000",
+                &[
+                    a.history.clone(),
+                    b.history.clone(),
+                    sentinel.history.clone(),
+                ],
+                "1063500000000000000000",
             );
             *harness.source.block_timestamp.lock() = Some(now);
             advanced.set(true);
@@ -594,7 +618,10 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
                 .is_some_and(|o| o.status() == OrderStatus::Expired)
     })
     .await;
-    assert_eq!(harness.source.log_ranges.lock()[0].0, slow_cursor + 1);
+    assert_eq!(
+        harness.source.log_ranges.lock()[0],
+        (start + 2500, start + 3499)
+    );
     assert!(
         harness
             .source
@@ -611,8 +638,22 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
             .iter()
             .any(|(_, to)| *to == start + 5500)
     );
-    assert_economics(&recovered, &[&a, &b], 1);
+    assert_economics(&recovered, &[&a, &b, &sentinel], 1);
+    let sentinel_tx =
+        serde_json::from_value::<B256>(sentinel.receipt["transactionHash"].clone()).unwrap();
+    assert!(harness.source.scan_events.lock().iter().any(|event| {
+        matches!(event, ScanEvent::Logs { from, to, intents, transactions: Some(hashes), .. }
+            if *from <= start + 3200 && *to >= start + 3200
+                && intents.contains(&sentinel.entry.intent_id)
+                && hashes.contains(&sentinel_tx))
+    }));
     let identity = fill_identity(&recovered);
+    for retained_order in &retained_identity {
+        assert!(
+            identity.contains(retained_order),
+            "Restart changed an already-applied Trade ID"
+        );
+    }
     recovered.dispose();
     drop(recovered);
     check_scan_coverage(&harness, &mut coverage, start + 5500);
@@ -621,10 +662,17 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         assert_eq!(entries[2].status, OrderStatus::Expired);
         assert_eq!(entries[2].scanned_through, start + 5500);
         assert!(entries[2].fills.is_empty());
+        let saved = entries
+            .iter()
+            .find(|entry| entry.intent_id == sentinel.entry.intent_id)
+            .unwrap();
+        assert_eq!(saved.status, OrderStatus::Filled);
+        assert!(saved.execution_succeeded);
+        assert_eq!(saved.fills.len(), 1);
     }
     let mut restarted = account_node(&harness);
     run_account_node(&mut restarted).await;
-    assert_economics(&restarted, &[&a, &b], 1);
+    assert_economics(&restarted, &[&a, &b, &sentinel], 1);
     assert_eq!(fill_identity(&restarted), identity);
     restarted.dispose();
     drop(restarted);
