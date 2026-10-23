@@ -163,3 +163,29 @@ LiveNode 逐项核对本地订单与 venue order 绑定、逐笔 Trade ID、订�
 保留已有的 macOS unwind table 链接器警告；Papertrade、Entropy 和 Hyperliquid 工厂相关
 Python 回归共 17 项通过，包含实际 LiveNode 进程强制终止、禁止重发及冷启动后的盈亏一致性。
 详细运行日志保存在本地 `target/papertrade-round3-*.log`；它们是本次验证记录，不固定后续源码字节。
+
+## 第四轮复审修复（2026-10-23）
+
+本轮基线为 `1519cc19e3`，修复审查发现的两个 P1 和一个 P2。三个问题分别先由失败测试复现，
+再修改实现；所有交易来源均为本地故障服务，没有下真实订单。
+
+| 问题 | 修复提交 | 失败复现与验收 |
+| --- | --- | --- |
+| succeeded 在扫描推进后丢失 | `df1cd31ac8` | 多订单 RPC 失败以及真实客户端对账途中被 SIGKILL 均先复现成功标记丢失；成功事实改为在后续 I/O 和扫描前批量保存。 |
+| 空意图 ID 的已观察仓位被提前归为外部成交 | `e4a1f36456` | 两个 LiveNode 用例先复现错误外部归属；未排除本地开仓关联前，成交与仓位报告暂缓发布，原始事实继续交叉验证。 |
+| 旧日志区间超过单轮预算 | `8ea683df52` | 一页预算下的 2,501 区块旧日志先报预算错误；改为每轮最多 1,000 区块，失败页重读，完成页跨重启保留。成功证据在最后一段时仍恢复成交。 |
+| 保留缓存与旧过期订单的组合验收 | `ae2b7b43b0` | 实际 LiveNode 生成缓存后，分别保留未平仓或已平仓仓位，并加载旧 Expired 订单；验证延迟证明、分段重扫、等待期间重启及最终冷启动。 |
+
+最终 127 项 Papertrade Rust 测试通过，其中 15 项直接运行 Rust LiveNode。保留仓位等待证明时，
+数量、入场均价、Trade ID、事件数、佣金和实现盈亏不变；证明到齐后仅补齐缺少事件。
+最终及冷启动后均为两张订单、两个稳定 Trade ID、已关闭仓位、18.25 USDC 净盈亏和
+1.75 USDC 结算调整。成功事实与另一订单终态发生矛盾时，测试确认对账持续阻断，已观察成功不丢失。
+
+强制终止测试通过本地 RPC 等待点定位真实 `synchronize` 的执行进度，再由父进程发送 SIGKILL；
+生产代码没有测试钩子。缓存通过公有接口加载；本轮不声称验证 Redis/PostgreSQL 驱动自身原子性
+或写盘途中掉电。详细日志保存在本地 `target/papertrade-round4-*.log`。
+
+代码验证截至 `ae2b7b43b0`。`make build-debug SCCACHE=` 成功重建并安装原生扩展，保留已有的
+macOS unwind table 链接器警告；Papertrade、Entropy 与 Hyperliquid 工厂相关 Python 回归
+17 项通过。all-targets Clippy、Rustfmt、测试约定、47 成员 workspace test inventory 和 diff
+检查通过。详细行为与边界见 `docs_zh/integrations/papertrade.md` 第四轮恢复修复一节。
