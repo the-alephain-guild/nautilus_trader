@@ -309,6 +309,34 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
             json!(source["indexedThroughBlock"].as_u64().unwrap() - 1);
     }
     let mut node = account_node(&harness);
+    if legacy_expired {
+        use nautilus_core::UUID4;
+        use nautilus_model::{
+            events::{OrderEventAny, OrderExpired},
+            identifiers::VenueOrderId,
+            orders::OrderAny,
+        };
+        let mut order = OrderAny::try_from(entry.command.order_init.clone()).unwrap();
+        order
+            .apply(OrderEventAny::Expired(OrderExpired::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                UUID4::new(),
+                entry.command.ts_init,
+                entry.command.ts_init,
+                true,
+                Some(VenueOrderId::from(format!("{:#x}", entry.intent_id))),
+                Some(harness.config.account_id),
+            )))
+            .unwrap();
+        node.kernel()
+            .cache()
+            .borrow_mut()
+            .add_order(order, None, None, false)
+            .unwrap();
+    }
     if delayed {
         use std::sync::atomic::Ordering;
         let cache = node.kernel().cache();

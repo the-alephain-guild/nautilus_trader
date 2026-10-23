@@ -280,6 +280,7 @@ impl OrderStatus {
             (Self::Filled, OrderEventAny::Updated(_)) => Self::Filled,
             (Self::Expired, OrderEventAny::FillVoided(_)) => Self::Expired,
             (Self::Expired, OrderEventAny::Updated(_)) => Self::Expired,
+            (Self::Expired, OrderEventAny::Filled(fill)) if fill.reconciliation => Self::Filled,
             (Self::Voided, OrderEventAny::FillVoided(_)) => Self::Voided,
             _ => return Err(OrderError::InvalidStateTransition),
         };
@@ -1278,8 +1279,8 @@ impl OrderCore {
         } else if new_leaves_qty.is_zero() && !self.voided_qty.is_zero() {
             self.status = OrderStatus::Voided;
             self.ts_closed = Some(event.ts_event);
-        } else if source_status == OrderStatus::Canceled {
-            self.status = OrderStatus::Canceled;
+        } else if matches!(source_status, OrderStatus::Canceled | OrderStatus::Expired) {
+            self.status = source_status;
         } else {
             self.status = OrderStatus::PartiallyFilled;
 
@@ -1331,8 +1332,11 @@ impl OrderCore {
                 && matches!(
                     source_status,
                     OrderStatus::Canceled | OrderStatus::PendingUpdate | OrderStatus::PendingCancel
-                )),
-            "Invariant: status must reflect the fill or preserve a pending source status after fill handler (status={:?})",
+                ))
+                || (self.status == OrderStatus::Expired
+                    && source_status == OrderStatus::Expired
+                    && event.reconciliation),
+            "Invariant: status must reflect the fill or preserve an eligible source status after fill handler (status={:?})",
             self.status
         );
         debug_assert!(
@@ -3841,6 +3845,60 @@ mod tests {
         assert_eq!(replayed.leaves_qty(), order.leaves_qty());
         assert_eq!(replayed.ts_closed(), order.ts_closed());
         assert_eq!(replayed.ts_last(), order.ts_last());
+    }
+
+    #[rstest]
+    fn test_expired_order_accepts_only_reconciled_fills_without_reopening_or_double_counting(
+        #[values(false, true)] reconciliation: bool,
+        #[values(40, 100)] quantity: u64,
+    ) {
+        let mut order: MarketOrder = OrderInitializedSpec::builder()
+            .quantity(Quantity::from(100))
+            .build()
+            .try_into()
+            .unwrap();
+        order
+            .apply(OrderEventAny::Expired(OrderExpiredSpec::builder().build()))
+            .unwrap();
+        let commission = Money::from_decimal(dec!(1.75), Currency::USD()).unwrap();
+        let fill = OrderEventAny::Filled(
+            OrderFilledSpec::builder()
+                .last_qty(Quantity::from(quantity))
+                .commission(commission)
+                .reconciliation(reconciliation)
+                .build(),
+        );
+        let result = order.apply(fill.clone());
+        if !reconciliation {
+            assert!(matches!(result, Err(OrderError::InvalidStateTransition)));
+            assert_eq!(order.status(), OrderStatus::Expired);
+            assert!(order.filled_qty().is_zero());
+            assert!(order.commissions().is_empty());
+            return;
+        }
+        result.unwrap();
+        assert_eq!(
+            order.status(),
+            if quantity == 100 {
+                OrderStatus::Filled
+            } else {
+                OrderStatus::Expired
+            }
+        );
+        assert!(order.is_closed());
+        assert_eq!(order.filled_qty(), Quantity::from(quantity));
+        assert_eq!(order.commissions().get(&Currency::USD()), Some(&commission));
+        assert!(matches!(
+            order.apply(fill),
+            Err(OrderError::DuplicateFill(_))
+        ));
+        assert_eq!(order.trade_ids().len(), 1);
+        assert_eq!(order.commissions().get(&Currency::USD()), Some(&commission));
+        let replayed =
+            OrderAny::from_events(order.events().into_iter().cloned().collect()).unwrap();
+        assert_eq!(replayed.status(), order.status());
+        assert_eq!(replayed.filled_qty(), order.filled_qty());
+        assert_eq!(replayed.commissions(), order.commissions());
     }
 
     #[rstest]
