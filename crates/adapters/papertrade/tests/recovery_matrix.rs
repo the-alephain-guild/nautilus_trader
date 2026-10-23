@@ -601,3 +601,238 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
     assert_eq!(fill_identity(&restarted), identity);
     restarted.dispose();
 }
+
+async fn wait_for(ready: impl Fn() -> bool) -> Result<(), tokio::time::error::Elapsed> {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
+#[rstest::rstest]
+#[case::long_proof_first(true)]
+#[case::short_proof_first(false)]
+#[tokio::test]
+async fn live_node_attributes_two_unbound_positions_independently_across_restart(
+    #[case] long_first: bool,
+) {
+    use std::sync::atomic::Ordering;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let initial = harness.source.wallet.borrow().clone();
+    let start = initial["indexedThroughBlock"].as_u64().unwrap();
+    let now = initial["indexedThroughTimestamp"].as_u64().unwrap();
+    let mut a = trade(
+        &harness,
+        9001,
+        true,
+        now,
+        start + if long_first { 10 } else { 20 },
+    );
+    let mut b = trade(
+        &harness,
+        9002,
+        false,
+        now,
+        start + if long_first { 20 } else { 10 },
+    );
+    for case in [&mut a, &mut b] {
+        let opened = now
+            - if case.position.is_long == long_first {
+                400
+            } else {
+                150
+            };
+        case.position.opened_at_ms = opened * 1000;
+        case.history["openedAtMs"] = json!(opened * 1000);
+        case.history["timestampMs"] = json!((now - 50) * 1000);
+        case.receipt["logs"][1]["blockTimestamp"] = json!(format!("0x{opened:x}"));
+    }
+    let (first, second) = if long_first { (&a, &b) } else { (&b, &a) };
+    let first_id = PositionId::from(format!("PT-{}", first.position.position_id));
+    let second_id = PositionId::from(format!("PT-{}", second.position.position_id));
+    *harness.source.receipts.lock() = vec![a.receipt.clone(), b.receipt.clone()];
+    publish(
+        &harness,
+        start + 30,
+        now,
+        &[a.position.clone(), b.position.clone()],
+        &[],
+        "585000000000000000000",
+    );
+    harness.source.trading.lock()["indexedThroughBlock"] = json!(start - 1);
+    let mut partial = account_node(&harness);
+    let cache = partial.kernel().cache();
+    let handle = partial.handle();
+    let empty_economics = || {
+        let cache = cache.borrow();
+        cache.positions(None, None, None, None, None).is_empty()
+            && cache.orders(None, None, None, None, None).len() == 2
+            && [&a, &b].iter().all(|case| {
+                cache
+                    .order(&case.entry.command.client_order_id)
+                    .is_some_and(|o| o.trade_ids().is_empty())
+            })
+    };
+    let advance = async {
+        let outcome = async {
+            wait_for(|| harness.source.history_calls.load(Ordering::SeqCst) >= 2).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let before_history = empty_economics();
+            let calls = harness.source.history_calls.load(Ordering::SeqCst);
+            publish(
+                &harness,
+                start + 30,
+                now,
+                &[],
+                &[a.history.clone(), b.history.clone()],
+                "1045250000000000000000",
+            );
+            harness.source.trading.lock()["indexedThroughBlock"] = json!(start - 1);
+            wait_for(|| harness.source.history_calls.load(Ordering::SeqCst) >= calls + 2).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let before_proof = empty_economics();
+            *harness.source.block_timestamp.lock() = Some(now - 400);
+            harness.source.trading.lock()["indexedThroughBlock"] = json!(start + 10);
+            wait_for(|| {
+                cache
+                    .borrow()
+                    .position(&first_id)
+                    .is_some_and(|p| p.is_closed())
+            })
+            .await?;
+            Ok::<_, tokio::time::error::Elapsed>((before_history, before_proof))
+        }
+        .await;
+        handle.stop();
+        outcome
+    };
+    let (run, stages) = tokio::join!(partial.run(), advance);
+    run.unwrap();
+    assert_eq!(
+        stages.unwrap(),
+        (true, true),
+        "Unbound positions were published before attribution was proven"
+    );
+    {
+        let cache = cache.borrow();
+        assert_eq!(cache.positions(None, None, None, None, None).len(), 1);
+        assert!(cache.position(&second_id).is_none());
+        let position = cache.position(&first_id).unwrap();
+        assert_eq!(position.realized_pnl.unwrap().as_decimal(), first.pnl);
+        assert_eq!(position.commissions()[0].as_decimal(), first.adjustment);
+        assert_eq!(position.events.len(), 2);
+        assert_eq!(
+            cache
+                .order(&first.entry.command.client_order_id)
+                .unwrap()
+                .position_id(),
+            Some(first_id)
+        );
+        assert!(
+            cache
+                .order(&second.entry.command.client_order_id)
+                .unwrap()
+                .trade_ids()
+                .is_empty()
+        );
+    }
+    let retained = RetainedCache::capture(&partial);
+    let first_trades = retained.positions[0].trade_ids.clone();
+    partial.dispose();
+    drop(partial);
+    {
+        let journal = journal(&harness);
+        let observed = journal.observed().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(
+            observed
+                .iter()
+                .find(|p| p.position_id == first.position.position_id)
+                .unwrap()
+                .intent_id,
+            Some(first.entry.intent_id)
+        );
+        assert!(
+            observed
+                .iter()
+                .find(|p| p.position_id == second.position.position_id)
+                .unwrap()
+                .intent_id
+                .is_none()
+        );
+        let entries = journal.entries().unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.intent_id == first.entry.intent_id)
+                .unwrap()
+                .status,
+            OrderStatus::Filled
+        );
+        assert!(
+            entries
+                .iter()
+                .find(|e| e.intent_id == second.entry.intent_id)
+                .unwrap()
+                .fills
+                .is_empty()
+        );
+    }
+    let calls = harness.source.history_calls.load(Ordering::SeqCst);
+    let mut recovered = account_node(&harness);
+    retained.restore(&recovered);
+    let cache = recovered.kernel().cache();
+    let handle = recovered.handle();
+    let finish = async {
+        let outcome = async {
+            wait_for(|| harness.source.history_calls.load(Ordering::SeqCst) >= calls + 2).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let retained_unchanged = {
+                let cache = cache.borrow();
+                let position = cache.position(&first_id).unwrap();
+                position.realized_pnl.unwrap().as_decimal() == first.pnl
+                    && position.commissions()[0].as_decimal() == first.adjustment
+                    && position.trade_ids == first_trades
+                    && position.events.len() == 2
+                    && cache.position(&second_id).is_none()
+                    && cache
+                        .order(&second.entry.command.client_order_id)
+                        .unwrap()
+                        .trade_ids()
+                        .is_empty()
+            };
+            *harness.source.block_timestamp.lock() = Some(now);
+            harness.source.trading.lock()["indexedThroughBlock"] = json!(start + 30);
+            wait_for(|| {
+                cache
+                    .borrow()
+                    .position(&second_id)
+                    .is_some_and(|p| p.is_closed())
+            })
+            .await?;
+            Ok::<_, tokio::time::error::Elapsed>(retained_unchanged)
+        }
+        .await;
+        handle.stop();
+        outcome
+    };
+    let (run, preserved) = tokio::join!(recovered.run(), finish);
+    run.unwrap();
+    assert!(
+        preserved.unwrap(),
+        "Restart changed the already-attributed position or prematurely attributed the remaining one"
+    );
+    assert_economics(&recovered, &[&a, &b], 0);
+    let identity = fill_identity(&recovered);
+    recovered.dispose();
+    drop(recovered);
+    harness.source.receipts.lock().clear();
+    let mut cold = account_node(&harness);
+    run_account_node(&mut cold).await;
+    assert_economics(&cold, &[&a, &b], 0);
+    assert_eq!(fill_identity(&cold), identity);
+    cold.dispose();
+}
