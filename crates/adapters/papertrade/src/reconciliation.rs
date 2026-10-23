@@ -163,30 +163,38 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
             && !source_positions
                 .iter()
+                .chain(&known_positions)
                 .any(|p| p.intent_id == Some(entry.intent_id))
     });
-    // A closed position can belong to a local open whose receipt coverage is lagging.
-    // Do not commit an external identity before that ambiguity has been resolved.
-    let deferred: HashSet<_> = fresh_history
+    let identified: HashSet<_> = source_positions
         .iter()
-        .chain(&retained_history)
-        .filter(|record| {
-            unresolved_open
-                && !source_positions
-                    .iter()
-                    .chain(&known_positions)
-                    .any(|p| p.position_id == record.position_id)
-        })
-        .map(|record| record.position_id)
+        .chain(&known_positions)
+        .filter(|p| p.intent_id.is_some())
+        .map(|p| p.position_id)
         .collect();
-    fresh_history.retain(|record| !deferred.contains(&record.position_id));
+    // Observation proves position economics, not external ownership. An unbound
+    // position may still belong to a local open whose receipt coverage is lagging.
+    let deferred: HashSet<_> = source_positions
+        .iter()
+        .chain(&known_positions)
+        .map(|p| p.position_id)
+        .chain(
+            fresh_history
+                .iter()
+                .chain(&retained_history)
+                .map(|r| r.position_id),
+        )
+        .filter(|id| unresolved_open && !identified.contains(id))
+        .collect();
+    fresh_history.retain(|record| {
+        !deferred.contains(&record.position_id)
+            || source_positions
+                .iter()
+                .chain(&known_positions)
+                .any(|p| p.position_id == record.position_id)
+    });
     inner.journal.remember(&source_positions, &fresh_history)?;
-    let history: Vec<_> = inner
-        .journal
-        .closes()?
-        .into_iter()
-        .filter(|record| !deferred.contains(&record.position_id))
-        .collect();
+    let history = inner.journal.closes()?;
     let observed = inner.journal.observed()?;
     ensure!(
         observed.iter().all(|old| snapshot
@@ -419,6 +427,9 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     }
     let mut fill_ids = HashSet::new();
     for position in by_position.values() {
+        if deferred.contains(&position.position_id) {
+            continue;
+        }
         let market = markets
             .get(&position.instrument_id)
             .ok_or_else(|| anyhow::anyhow!("Missing market for historical position"))?;
@@ -433,6 +444,9 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         }
     }
     for record in &history {
+        if deferred.contains(&record.position_id) {
+            continue;
+        }
         let market = markets
             .get(&record.instrument_id)
             .ok_or_else(|| anyhow::anyhow!("Missing market for close history"))?;
@@ -447,6 +461,9 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         }
     }
     for p in &snapshot.open_positions {
+        if deferred.contains(&p.position_id) {
+            continue;
+        }
         let market = markets
             .get(&p.instrument_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown open market"))?;

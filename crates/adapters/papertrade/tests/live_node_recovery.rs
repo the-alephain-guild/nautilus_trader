@@ -236,17 +236,20 @@ async fn live_node_retained_position_recovers_missing_or_lagging_orders_without_
 }
 
 #[rstest::rstest]
-#[case::same_round(false, false, false, false)]
-#[case::conflicting_proof(true, false, false, false)]
-#[case::legacy_expired(false, true, false, false)]
-#[case::later_round(false, false, true, false)]
-#[case::restart_between_rounds(false, false, true, true)]
+#[case::same_round(false, false, false, false, false)]
+#[case::conflicting_proof(true, false, false, false, false)]
+#[case::legacy_expired(false, true, false, false, false)]
+#[case::later_round(false, false, true, false, false)]
+#[case::restart_between_rounds(false, false, true, true, false)]
+#[case::unattributed_open(false, false, true, false, true)]
+#[case::unattributed_open_restart(false, false, true, true, true)]
 #[tokio::test]
 async fn live_node_recovers_closed_during_downtime_with_history_before_open_proof(
     #[case] conflict: bool,
     #[case] legacy_expired: bool,
     #[case] delayed: bool,
     #[case] restart: bool,
+    #[case] unattributed_open: bool,
 ) {
     use alloy_primitives::{B256, U256};
     use nautilus_model::{enums::OrderStatus, identifiers::PositionId, orders::Order};
@@ -273,7 +276,18 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
     source["locked"] = json!("0");
     source["balance"] = json!("1018250000000000000000");
     source["funds"]["availableBalance"] = source["balance"].clone();
-    harness.source.wallet.send_replace(source.clone());
+    if unattributed_open {
+        let mut observed = source.clone();
+        observed["openPositions"] = json!([position]);
+        observed["locked"] = json!(position.margin);
+        observed["balance"] = json!("834000000000000000000");
+        observed["funds"]["availableBalance"] = observed["balance"].clone();
+        harness.source.wallet.send_replace(observed);
+        source["accountRevision"] = json!(2);
+        source["walletRevision"] = source["indexedThroughBlock"].clone();
+    } else {
+        harness.source.wallet.send_replace(source.clone());
+    }
     harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
     let entry = support::prepared_open(&harness, &position, now - 60, now + 3600 - 60);
     support::mark_attempted(&harness, &entry);
@@ -288,7 +302,10 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
     if conflict {
         record["marginRaw"] = json!("332000000000000000000");
     }
-    *harness.source.history.lock() = json!({"items":[record],"nextCursor":null});
+    let history = json!({"items":[record],"nextCursor":null});
+    if !unattributed_open {
+        *harness.source.history.lock() = history.clone();
+    }
     let tx = B256::repeat_byte(42);
     let hash = B256::repeat_byte(43);
     let height = format!("0x{:x}", source["indexedThroughBlock"].as_u64().unwrap());
@@ -342,7 +359,7 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
         let cache = node.kernel().cache();
         let handle = node.handle();
         let advance = async {
-            let observed = tokio::time::timeout(Duration::from_secs(4), async {
+            let mut observed = tokio::time::timeout(Duration::from_secs(4), async {
                 while harness.source.history_calls.load(Ordering::SeqCst) < 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -355,6 +372,24 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
                     })
             })
             .await;
+            if unattributed_open && matches!(observed, Ok(true)) {
+                let calls = harness.source.history_calls.load(Ordering::SeqCst);
+                *harness.source.history.lock() = history.clone();
+                harness.source.wallet.send_replace(source.clone());
+                observed = tokio::time::timeout(Duration::from_secs(4), async {
+                    while harness.source.history_calls.load(Ordering::SeqCst) < calls + 2 {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let cache = cache.borrow();
+                    cache.positions(None, None, None, None, None).is_empty()
+                        && cache.orders(None, None, None, None, None).iter().all(|o| {
+                            o.client_order_id() == entry.command.client_order_id
+                                && o.trade_ids().is_empty()
+                        })
+                })
+                .await;
+            }
             if !restart && matches!(observed, Ok(true)) {
                 harness.source.trading.lock()["indexedThroughBlock"] =
                     source["indexedThroughBlock"].clone();
