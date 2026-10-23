@@ -37,6 +37,7 @@ mod node;
 )]
 mod support;
 use node::{RetainedCache, account_node, run_account_node};
+use support::scan::ScanCoverage;
 use support::{Harness, SERIAL};
 
 struct TradeCase {
@@ -157,6 +158,24 @@ fn journal(harness: &Harness) -> Journal {
         "PAPERTRADE-001",
     )
     .unwrap()
+}
+
+fn check_scan_coverage(harness: &Harness, coverage: &mut ScanCoverage, bound: u64) {
+    let checkpoints: Vec<_> = journal(harness)
+        .entries()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry.intent_id,
+                entry.scanned_through,
+                entry.status == OrderStatus::Expired,
+            )
+        })
+        .collect();
+    coverage
+        .verify(&harness.source.scan_events.lock(), &checkpoints, bound)
+        .unwrap();
 }
 
 async fn run_until(node: &mut LiveNode, ready: impl Fn() -> bool) {
@@ -417,6 +436,11 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         now - 100,
     );
     support::mark_attempted(&harness, &unused);
+    let mut coverage = ScanCoverage::new([
+        (a.entry.intent_id, start + 999),
+        (b.entry.intent_id, start + 1499),
+        (unused.intent_id, start + 3999),
+    ]);
     {
         let journal = journal(&harness);
         for (entry, progress) in journal
@@ -464,6 +488,7 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
         assert_eq!(status.signal(), Some(9));
     }
     assert!(!status.success());
+    check_scan_coverage(&harness, &mut coverage, start + 5000);
     {
         let journal = journal(&harness);
         let entries = journal.entries().unwrap();
@@ -530,6 +555,7 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
     let retained = RetainedCache::capture(&partial);
     partial.dispose();
     drop(partial);
+    check_scan_coverage(&harness, &mut coverage, start + 5000);
     let slow_cursor = {
         let journal = journal(&harness);
         let entries = journal.entries().unwrap();
@@ -589,6 +615,7 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
     let identity = fill_identity(&recovered);
     recovered.dispose();
     drop(recovered);
+    check_scan_coverage(&harness, &mut coverage, start + 5500);
     {
         let entries = journal(&harness).entries().unwrap();
         assert_eq!(entries[2].status, OrderStatus::Expired);
@@ -600,6 +627,8 @@ async fn live_node_recovers_mixed_cursors_after_a_partial_commit_and_growing_cov
     assert_economics(&restarted, &[&a, &b], 1);
     assert_eq!(fill_identity(&restarted), identity);
     restarted.dispose();
+    drop(restarted);
+    check_scan_coverage(&harness, &mut coverage, start + 5500);
 }
 
 async fn wait_for(ready: impl Fn() -> bool) -> Result<(), tokio::time::error::Elapsed> {

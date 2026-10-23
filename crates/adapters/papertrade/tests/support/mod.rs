@@ -43,6 +43,13 @@ use nautilus_papertrade::{
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
+#[allow(
+    dead_code,
+    reason = "Only scan coverage tests audit the shared RPC transcript"
+)]
+pub(crate) mod scan;
+use scan::ScanEvent;
+
 pub(crate) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(crate) struct Source {
@@ -58,6 +65,7 @@ pub(crate) struct Source {
     pub(crate) block_paused: AtomicBool,
     pub(crate) block_calls: AtomicUsize,
     pub(crate) log_ranges: Mutex<Vec<(u64, u64)>>,
+    pub(crate) scan_events: Mutex<Vec<ScanEvent>>,
     pub(crate) log_fail_from: Mutex<Option<u64>>,
     pub(crate) history_delay_ms: AtomicU64,
     pub(crate) history_calls: AtomicUsize,
@@ -105,7 +113,7 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
     } else if request["method"] == "eth_getTransactionReceipt" {
         let hash = request["params"][0].as_str().unwrap().to_owned();
         source.receipt_calls.lock().push(hash.clone());
-        if source.receipt_unavailable.lock().contains(&hash) {
+        let receipt = if source.receipt_unavailable.lock().contains(&hash) {
             Value::Null
         } else {
             source
@@ -116,7 +124,12 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
                 .find(|receipt| receipt["transactionHash"] == hash)
                 .cloned()
                 .unwrap_or(Value::Null)
-        }
+        };
+        source.scan_events.lock().push(ScanEvent::Receipt {
+            hash: hash.parse().unwrap(),
+            available: receipt.is_object() && receipt["status"] == "0x1",
+        });
+        receipt
     } else {
         let from = u64::from_str_radix(
             request["params"][0]["fromBlock"]
@@ -142,7 +155,28 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
             .cloned()
             .collect();
         source.log_ranges.lock().push((from, to));
+        let intents = request["params"][0]["topics"][3]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| serde_json::from_value(id.clone()).unwrap())
+            .collect();
+        let bound = source.trading.lock()["indexedThroughBlock"]
+            .as_u64()
+            .unwrap()
+            .min(
+                source.wallet.borrow()["indexedThroughBlock"]
+                    .as_u64()
+                    .unwrap(),
+            );
         if *source.log_fail_from.lock() == Some(from) {
+            source.scan_events.lock().push(ScanEvent::Logs {
+                from,
+                to,
+                intents,
+                bound,
+                transactions: None,
+            });
             return Json(
                 json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Injected log failure"}}),
             );
@@ -163,6 +197,17 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
             })
             .cloned()
             .collect();
+        source.scan_events.lock().push(ScanEvent::Logs {
+            from,
+            to,
+            intents,
+            bound,
+            transactions: Some(
+                logs.iter()
+                    .map(|log| serde_json::from_value(log["transactionHash"].clone()).unwrap())
+                    .collect(),
+            ),
+        });
         json!(logs)
     };
     Json(json!({"jsonrpc":"2.0","id":1,"result":result}))
@@ -199,6 +244,7 @@ impl Harness {
             block_paused: AtomicBool::new(false),
             block_calls: AtomicUsize::new(0),
             log_ranges: Mutex::new(Vec::new()),
+            scan_events: Mutex::new(Vec::new()),
             log_fail_from: Mutex::new(None),
             history_delay_ms: AtomicU64::new(0),
             history_calls: AtomicUsize::new(0),
