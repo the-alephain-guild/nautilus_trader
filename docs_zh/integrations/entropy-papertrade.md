@@ -74,6 +74,70 @@ Entropy 的不同产品可以有不同资金费率机制、市场开放状态、
 [官方 Margin Modes 文档](https://docs.entropy.io/risk-and-margining/margin-modes)介绍了不同模式；
 实际请求仍应以当前 API metadata 为准，不能把某个历史杠杆值或保证金模式写死。
 
+## Entropy LiveNode 执行与恢复验证（2026-10-23）
+
+本轮以 `d0df0c2a01` 为基线，新增
+`crates/adapters/hyperliquid/tests/entropy_live_node.rs` 与本地 HTTP/WebSocket 测试服务。
+测试使用原生 Rust LiveNode、Hyperliquid 工厂、执行引擎和缓存。节点进入 Running 后，执行
+引擎提交合成订单；服务检查实际签名请求，再分别发送提交响应、`orderUpdates` 与成交。
+所有测试请求均发往 `127.0.0.1` 临时端口，执行端的 info、exchange 与 WebSocket 地址均覆盖，
+签名使用固定测试密钥。
+
+八个用例覆盖：
+
+- 空账户缓存启动，依靠账户事件注册，节点必须进入 Running。
+- 交换 `io` 和另一个 deployer 的 metadata 顺序；两个 deployer 同时提供 `SNDK`，实际请求
+  的 asset ID 分别为 110000、120000，客户端、合约、CLOID、方向、数量和 reduce-only 均正确。
+  预期编号取自[官方 Asset IDs 规则](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids)，
+  没有调用待测的资产映射函数计算测试期望值。
+- WebSocket 在同一帧重复成交；重启后 REST 成交重复、历史反向到达，经济数据不重复。
+- 保留实际成交产生的仓位，分别移除订单、将订单恢复到 Accepted 且未记录成交；节点必须
+  找回原客户端订单 ID、venue order ID 和策略归属。恢复后再次重启仍保持相同 Trade ID。
+- 历史 CLOID 冲突、同名但属于 `xyz` 的合约、方向相反时，启动必须失败且给出身份冲突错误；
+  缓存没有新订单，保留仓位的事件、Trade ID、费用和盈亏保持不变。
+
+外部订单认领配置与执行示例的 `external_order_instrument_ids` 一致，认领策略为
+`ENTROPY-001`。缓存样本来自前一次 LiveNode 的真实本地事件处理结果，再通过公开缓存接口
+加载到新节点；较旧订单样本取自成交前保存的 Accepted 订单。成功恢复用例必须完成启动对账；
+冲突用例必须在启动期间返回指定身份冲突错误，不以请求计数或固定等待时间替代恢复完成。
+
+测试先复现了保留仓位但订单缺失时的故障：已成交限价单报告没有原始限价，节点虽然进入
+Running，却未恢复任何订单。日志包含 `` `price` is required for `LimitOrder` initialization ``。
+补回历史限价后，同一测试继续失败：订单 ID 变成线上 CLOID 哈希，原本地订单 ID 未恢复。
+最终修复保留历史限价，并通过已有 venue order ID 和保留成交事件恢复本地身份；账户、合约、
+方向或 CLOID 冲突会使该轮报告生成失败。生产代码没有测试开关。修复提交为 `37834f30bc`，
+冲突验证提交为 `3365606ab2`。
+
+经济断言使用独立常数：买入 2 单位，价格 100，卖出价格 110；原生仓位记录 `20 USD`
+价差盈亏，另行累计 `0.50 USDC` 佣金，两张订单佣金分别为 `0.20` 和 `0.30 USDC`。
+Hyperliquid 合约保留 USD 报价和 USDC 结算标识；Nautilus 此处按其原生 cost currency 规则
+分别累计这两个币种，测试不会把 `20 USD` 标成扣费后的 USDC 净盈亏，也不假设 USD/USDC
+汇率恒为 1。断言同时检查一个已关闭仓位、两张 Filled 订单、两笔不同 Trade ID、逐订单数量
+和费用，并在重启前后比较身份。没有仅凭账户报告余额来推断没有重复记账。
+
+复现日志包括 `target/entropy-livenode-retained-red.log`（缺少限价），
+`target/entropy-livenode-retained-price.log`（仅补限价后身份仍错误），以及
+`target/entropy-livenode-retained-green.log`（完整修复通过）。首个空账户缓存测试直接通过，
+没有修改账户注册逻辑。一次默认并行全套中的原有 WebSocket 取消测试出现共享额度等待超时；
+该测试单独复跑通过，串行全套也通过，未修改或忽略它。最终验证结果如下。
+
+验证代码截至 `3365606ab2`：
+
+- `cargo test -p nautilus-hyperliquid --tests --locked -- --test-threads=1`：1136 项通过、零失败，
+  两个原有忽略项未变；其中八项为本轮实际 LiveNode 用例。最终日志为
+  `target/entropy-livenode-suite-final.log`。
+- all-targets Clippy、新增测试目标 Clippy、Rustfmt、测试约定、47 成员 workspace inventory、
+  generated-file drift、Markdown lint 和 diff 检查通过。
+- `make build-debug SCCACHE=` 成功重新生成类型文件并重建、安装 Python 扩展；生成文件无漂移。
+  保留既有 macOS unwind table 链接器警告，未修改链接配置。
+- 重建后在 `python/` 运行
+  `uv run --no-sync pytest tests/unit/adapters/hyperliquid/test_entropy.py tests/unit/adapters/hyperliquid/test_hyperliquid_factories.py -q`：
+  13 项通过。构建与 Python 日志为 `target/entropy-livenode-python-build.log` 和
+  `target/entropy-livenode-python-tests.log`。
+
+本轮没有提交真实交易所订单或操作资金。实际运行的节点连接本地模拟服务；主网账户的
+订单接收、真实成交和资金结算仍需另行授权的账户验收。
+
 ## Papertrade 实现方式
 
 新增 crate 位于

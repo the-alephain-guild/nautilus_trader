@@ -232,3 +232,31 @@ all-targets Clippy、Rustfmt、测试约定、workspace test inventory 和 diff 
 未下真实订单，未操作资金，未推送；未修改 Python 绑定、未重建扩展或重跑 Python 测试。
 故障步骤、测试结果和边界详见 `docs_zh/integrations/papertrade.md` 第六轮一节及本地
 `target/papertrade-round6-*.log`。
+
+## Entropy LiveNode 执行与恢复补充（2026-10-23）
+
+基线 `d0df0c2a01`。新增实际原生 LiveNode 测试，使用本地 HTTP/WebSocket 服务和固定测试
+密钥，覆盖动态 HIP-3 asset ID、同名但不同 deployer 的市场、本地成交归因、重复 WebSocket
+成交、反向及重复 REST 历史，以及保留仓位加缺失或 Accepted 订单的跨节点恢复。
+
+测试先复现了两处问题：已成交限价单缺少重建所需的原始限价，节点进入 Running 但没有恢复
+订单；仅补回限价后，恢复订单 ID 仍变成 CLOID 哈希，原本地订单没有找回。
+`37834f30bc` 保留历史限价，并在报告发布前利用缓存 venue ID 和保留成交事件恢复本地身份，
+校验账户、合约、方向和 CLOID。实际空账户缓存启动直接通过，未修改账户注册逻辑。
+`3365606ab2` 验证 CLOID、deployer 和方向冲突均拒绝启动，且不修改保留仓位的经济数据。
+
+八个实际 LiveNode 用例通过；正常恢复必须得到两张原本地 Filled 订单、一个关闭仓位和
+两笔不同 Trade ID，重复重启保持不变。仓位按原生口径分别记录 20 USD 价差盈亏与 0.50 USDC
+佣金，订单佣金为 0.20 和 0.30 USDC，不把不同币种直接相减或称为 USDC 净收益。
+策略认领配置对应执行示例的 external_order_instrument_ids，缓存通过公开接口加载。
+
+完整复现过程、验证命令与边界见 `docs_zh/integrations/entropy-papertrade.md` 的 Entropy
+LiveNode 一节。本地日志位于 `target/entropy-livenode-*.log`。全部订单请求仅到本地模拟端点，
+未下真实订单，未操作资金，未推送。
+
+验证代码截至 `3365606ab2`：Hyperliquid Rust 串行全套 1136 项通过，零失败，两个原有忽略项
+未变，含本轮八项实际 LiveNode 用例。all-targets Clippy、测试目标 Clippy、Rustfmt、测试
+约定、47 成员 inventory、生成文件漂移检查、Markdown lint 与 diff 检查通过。
+一次默认并行全套中的旧 WebSocket 取消测试超时，单独复跑及串行全套通过，未修改该测试。
+`make build-debug SCCACHE=` 成功重建并安装原生扩展，保留既有 macOS unwind table 警告；
+重建后的 Entropy 与 Hyperliquid 工厂 Python 接线回归 13 项通过。
