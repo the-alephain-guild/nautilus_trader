@@ -60,7 +60,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         .any(|e| matches!(e.status, OrderStatus::Submitted | OrderStatus::Accepted));
     // A complete history stays valid while the wallet revision is unchanged;
     // queued or ambiguous intents still require a fresh recovery pass.
-    let fresh_history = if inner.bundle.read().is_none()
+    let mut fresh_history = if inner.bundle.read().as_ref().is_none_or(|b| !b.complete)
         || previous
             .as_ref()
             .is_none_or(|old| old.wallet_revision != snapshot.wallet_revision)
@@ -149,8 +149,37 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
             // survive the scan cursor even while account history is still lagging.
         }
     }
+    let known_positions = inner.journal.observed()?;
+    let unresolved_open = entries.iter().any(|entry| {
+        entry.action == "openPosition"
+            && entry.fills.is_empty()
+            && matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted)
+            && !source_positions
+                .iter()
+                .any(|p| p.intent_id == Some(entry.intent_id))
+    });
+    // A closed position can belong to a local open whose receipt coverage is lagging.
+    // Do not commit an external identity before that ambiguity has been resolved.
+    let deferred: HashSet<_> = fresh_history
+        .iter()
+        .chain(&retained_history)
+        .filter(|record| {
+            unresolved_open
+                && !source_positions
+                    .iter()
+                    .chain(&known_positions)
+                    .any(|p| p.position_id == record.position_id)
+        })
+        .map(|record| record.position_id)
+        .collect();
+    fresh_history.retain(|record| !deferred.contains(&record.position_id));
     inner.journal.remember(&source_positions, &fresh_history)?;
-    let history = inner.journal.closes()?;
+    let history: Vec<_> = inner
+        .journal
+        .closes()?
+        .into_iter()
+        .filter(|record| !deferred.contains(&record.position_id))
+        .collect();
     let observed = inner.journal.observed()?;
     ensure!(
         observed.iter().all(|old| snapshot
@@ -168,7 +197,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         }
     }
     let mut bundle = ReportBundle {
-        complete: true,
+        complete: deferred.is_empty(),
         ..Default::default()
     };
     if snapshot.operations.iter().any(|o| {

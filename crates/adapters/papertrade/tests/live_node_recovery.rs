@@ -236,13 +236,17 @@ async fn live_node_retained_position_recovers_missing_or_lagging_orders_without_
 }
 
 #[rstest::rstest]
-#[case(false, false)]
-#[case(true, false)]
-#[case(false, true)]
+#[case::same_round(false, false, false, false)]
+#[case::conflicting_proof(true, false, false, false)]
+#[case::legacy_expired(false, true, false, false)]
+#[case::later_round(false, false, true, false)]
+#[case::restart_between_rounds(false, false, true, true)]
 #[tokio::test]
 async fn live_node_recovers_closed_during_downtime_with_history_before_open_proof(
     #[case] conflict: bool,
     #[case] legacy_expired: bool,
+    #[case] delayed: bool,
+    #[case] restart: bool,
 ) {
     use alloy_primitives::{B256, U256};
     use nautilus_model::{enums::OrderStatus, identifiers::PositionId, orders::Order};
@@ -300,7 +304,66 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
     *harness.source.receipt.lock() = Some(
         json!({"status":"0x1","transactionHash":tx,"blockHash":hash,"blockNumber":height,"logs":[result,open]}),
     );
+    if delayed {
+        harness.source.trading.lock()["indexedThroughBlock"] =
+            json!(source["indexedThroughBlock"].as_u64().unwrap() - 1);
+    }
     let mut node = account_node(&harness);
+    if delayed {
+        use std::sync::atomic::Ordering;
+        let cache = node.kernel().cache();
+        let handle = node.handle();
+        let advance = async {
+            let observed = tokio::time::timeout(Duration::from_secs(4), async {
+                while harness.source.history_calls.load(Ordering::SeqCst) < 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let cache = cache.borrow();
+                cache.positions(None, None, None, None, None).is_empty()
+                    && cache.orders(None, None, None, None, None).iter().all(|o| {
+                        o.client_order_id() == entry.command.client_order_id
+                            && o.trade_ids().is_empty()
+                    })
+            })
+            .await;
+            if !restart && matches!(observed, Ok(true)) {
+                harness.source.trading.lock()["indexedThroughBlock"] =
+                    source["indexedThroughBlock"].clone();
+                let recovered = tokio::time::timeout(Duration::from_secs(4), async {
+                    loop {
+                        if cache
+                            .borrow()
+                            .order(&entry.command.client_order_id)
+                            .is_some_and(|o| o.status() == OrderStatus::Filled)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await;
+                handle.stop();
+                recovered.unwrap();
+            } else {
+                handle.stop();
+            }
+            observed
+        };
+        let (run, observed) = tokio::join!(node.run(), advance);
+        run.unwrap();
+        assert!(
+            observed.unwrap(),
+            "History was attributed externally before local open proof coverage"
+        );
+        if restart {
+            node.dispose();
+            drop(node);
+            harness.source.trading.lock()["indexedThroughBlock"] =
+                source["indexedThroughBlock"].clone();
+            node = account_node(&harness);
+        }
+    }
     if conflict {
         let handle = node.handle();
         let stop = async {
@@ -334,7 +397,9 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
         harness.source.history.lock()["items"][0]["marginRaw"] = json!(position.margin);
         node = account_node(&harness);
     }
-    run_account_node(&mut node).await;
+    if !delayed || restart {
+        run_account_node(&mut node).await;
+    }
     {
         let cache = node.kernel().cache();
         let cache = cache.borrow();
@@ -350,9 +415,63 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
             Decimal::new(175, 2)
         );
         assert_eq!(recovered.trade_ids().len(), 2);
+        assert_eq!(cache.orders(None, None, None, None, None).len(), 2);
         let order = cache.order(&entry.command.client_order_id).unwrap();
         assert_eq!(order.status(), OrderStatus::Filled);
+        assert_eq!(
+            order.venue_order_id().unwrap().as_str(),
+            format!("{:#x}", entry.intent_id)
+        );
         assert_eq!(order.trade_ids().len(), 1);
     }
+    let before = {
+        let cache = node.kernel().cache();
+        let cache = cache.borrow();
+        let mut orders: Vec<_> = cache
+            .orders(None, None, None, None, None)
+            .into_iter()
+            .map(|o| {
+                (
+                    o.client_order_id(),
+                    o.venue_order_id(),
+                    o.trade_ids().into_iter().copied().collect::<Vec<_>>(),
+                    o.commissions().clone(),
+                )
+            })
+            .collect();
+        orders.sort_by_key(|o| o.0);
+        orders
+    };
     node.dispose();
+    drop(node);
+    let mut restarted = account_node(&harness);
+    run_account_node(&mut restarted).await;
+    {
+        let cache = restarted.kernel().cache();
+        let cache = cache.borrow();
+        let mut orders: Vec<_> = cache
+            .orders(None, None, None, None, None)
+            .into_iter()
+            .map(|o| {
+                (
+                    o.client_order_id(),
+                    o.venue_order_id(),
+                    o.trade_ids().into_iter().copied().collect::<Vec<_>>(),
+                    o.commissions().clone(),
+                )
+            })
+            .collect();
+        orders.sort_by_key(|o| o.0);
+        assert_eq!(orders, before);
+        assert_eq!(cache.positions(None, None, None, None, None).len(), 1);
+        let position = cache.position(&PositionId::from("PT-9001")).unwrap();
+        assert_eq!(position.trade_ids().len(), 2);
+        assert_eq!(position.events.len(), 2);
+        assert_eq!(
+            position.realized_pnl.unwrap().as_decimal(),
+            Decimal::new(1825, 2)
+        );
+        assert_eq!(position.commissions()[0].as_decimal(), Decimal::new(175, 2));
+    }
+    restarted.dispose();
 }

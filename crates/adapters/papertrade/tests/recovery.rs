@@ -627,6 +627,53 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
 }
 
 #[tokio::test]
+async fn deferred_external_history_is_retried_after_local_open_is_proven_expired() {
+    use nautilus_model::enums::OrderStatus;
+    use nautilus_papertrade::wire::VenuePosition;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    source["openPositions"] = json!([]);
+    source["locked"] = json!("0");
+    harness.source.wallet.send_replace(source.clone());
+    harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
+    let entry = prepared_open(&harness, &position, now - 7200, now - 3600);
+    mark_attempted(&harness, &entry);
+    *harness.source.block_timestamp.lock() = Some(now - 3601);
+    *harness.source.history.lock() =
+        json!({"items":[closed_history(&position, now * 1000)],"nextCursor":null});
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(!mass.reports_complete());
+    assert!(mass.fill_reports().is_empty());
+    *harness.source.block_timestamp.lock() = Some(now);
+    let recovered = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+            if mass.reports_complete() {
+                break mass;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    client.disconnect().await.unwrap();
+    let mass = recovered.unwrap();
+    assert_eq!(mass.fill_reports().values().map(Vec::len).sum::<usize>(), 2);
+    assert!(
+        mass.order_reports()
+            .values()
+            .any(|r| r.client_order_id == Some(entry.command.client_order_id)
+                && r.order_status == OrderStatus::Expired)
+    );
+}
+
+#[tokio::test]
 async fn retained_close_history_cannot_be_replayed_with_an_older_snapshot_after_failed_round() {
     use nautilus_papertrade::wire::VenuePosition;
     let _serial = SERIAL.lock().await;
