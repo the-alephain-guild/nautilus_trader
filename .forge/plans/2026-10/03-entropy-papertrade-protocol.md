@@ -137,3 +137,29 @@ LiveNode 测试分别覆盖保留开仓/平仓与缺失/落后订单、停机期
 为 18.25 USDC，结算调整为 1.75 USDC。保留快照由公有 Cache 接口装入并重建索引，
 未将这些结果扩大为 Redis/PostgreSQL 驱动的崩溃原子性或主网交易验收。
 详见 `docs_zh/integrations/papertrade.md` 的第二轮复审修复验证一节。
+
+## 第三轮复审修复（2026-10-23）
+
+基线为 `a7bcb86594`，目标是修复旧版已误判过期的日志，以及关闭历史早于开仓扫描覆盖
+跨轮次到达时的成交归属。全部交易来源均为本地故障服务，没有提交真实订单。
+
+| 逻辑单元 | 提交 | 失败复现与修复 |
+| --- | --- | --- |
+| 旧日志过期纠正 | `9798f27ab0` | 旧格式 `Expired` 加成功 receipt 的测试先失败。迁移恢复待核实状态并重扫，不改变原签名身份、不重发；真正过期的订单仍按完整证据结束。 |
+| 历史跨轮次归因 | `5117c1d04a` | 连续运行和等待期间重启两个 LiveNode 用例均先观察到错误外部成交。未排除本地开仓归属的历史延迟保存和发布；意图结束后主动重读历史。 |
+| 保留过期订单的引擎恢复 | `d0a859bc98` | LiveNode 保留 `Expired` 缓存时先出现未关闭仓位；模型对账成交的完整、部分成交测试也先失败。仅 reconciliation 成交可纠正过期结果，部分成交保留过期状态，重复 Trade ID 不重复收费。 |
+| 强制终止与流成功恢复 | `d7f3d7d47e` | 五个子进程在 journal 提交边界被 `SIGKILL` 后检查持久化状态。账户流 snapshot 与 patch 的 `succeeded` 各自跨无 outcome 的重连恢复。 |
+
+Rust 验证结果：116 项 Papertrade 测试通过，其中 9 项直接运行 Rust LiveNode；
+订单模型全套 3,353 项通过，1 项原有的文档再生成测试按其声明忽略；267 项执行引擎回归通过。
+模型与适配器的 all-targets Clippy、Rustfmt、测试约定和 47 个成员的 workspace inventory 检查通过。
+
+LiveNode 逐项核对本地订单与 venue order 绑定、逐笔 Trade ID、订单佣金、仓位事件数和净盈亏。
+跨轮次、中途重启和随后冷启动均保持两张订单、两个 Trade ID、已关闭仓位、18.25 USDC
+净盈亏与 1.75 USDC 结算调整。五个强制终止用例定位公开 journal 操作的提交前后，
+没有向生产代码增加测试钩子；这不覆盖写盘途中掉电或 Redis/PostgreSQL 驱动的原子性。
+
+代码验证截至 `d7f3d7d47e`。`make build-debug SCCACHE=` 重建并安装 Python 原生扩展成功，
+保留已有的 macOS unwind table 链接器警告；Papertrade、Entropy 和 Hyperliquid 工厂相关
+Python 回归共 17 项通过，包含实际 LiveNode 进程强制终止、禁止重发及冷启动后的盈亏一致性。
+详细运行日志保存在本地 `target/papertrade-round3-*.log`；它们是本次验证记录，不固定后续源码字节。
