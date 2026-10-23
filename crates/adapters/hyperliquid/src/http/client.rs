@@ -2392,6 +2392,7 @@ impl HyperliquidHttpClient {
                 None if is_market => OrderType::Market,
                 None => OrderType::Limit,
             };
+            let limit_px = entry.order.limit_px;
             let order = WsBasicOrderData {
                 coin: entry.order.coin,
                 side: entry.order.side,
@@ -2422,6 +2423,19 @@ impl HyperliquidHttpClient {
             ) {
                 Ok(mut report) => {
                     report.order_type = historical_order_type;
+                    // Historical rows reconstruct missing orders. Their original
+                    // limit remains required even when real fills supply execution prices.
+                    if matches!(
+                        historical_order_type,
+                        OrderType::Limit | OrderType::StopLimit
+                    ) {
+                        report.price = Some(
+                            Price::from_decimal_dp(limit_px, instrument.price_precision())
+                                .map_err(|e| {
+                                    Error::decode(format!("Invalid historical limit price: {e}"))
+                                })?,
+                        );
+                    }
                     report.ts_last = UnixNanos::from(entry.status_timestamp * 1_000_000);
                     reports.push(report);
                 }

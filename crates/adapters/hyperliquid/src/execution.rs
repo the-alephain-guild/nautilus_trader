@@ -434,6 +434,64 @@ impl HyperliquidExecutionClient {
         Ok(())
     }
 
+    fn rebind_retained_order_reports(
+        &self,
+        reports: &mut [OrderStatusReport],
+    ) -> anyhow::Result<()> {
+        let cache = self.core.cache();
+        let positions = cache.positions(
+            Some(&self.core.venue),
+            None,
+            None,
+            Some(&self.core.account_id),
+            None,
+        );
+        for report in reports {
+            let mut original = cache.client_order_id(&report.venue_order_id).copied();
+            if let Some(order) = original.and_then(|id| cache.order(&id)) {
+                anyhow::ensure!(
+                    order.instrument_id() == report.instrument_id
+                        && Some(order.order_side()) == report.order_side
+                        && order.account_id().is_none_or(|id| id == report.account_id),
+                    "Historical order {} conflicts with its cached identity",
+                    report.venue_order_id,
+                );
+            }
+            // A retained position can outlive its orders. Its fill events retain
+            // the original client ID and immutable venue identity across restart.
+            for fill in positions
+                .iter()
+                .flat_map(|p| &p.events)
+                .filter(|fill| fill.venue_order_id == report.venue_order_id)
+            {
+                anyhow::ensure!(
+                    fill.account_id == report.account_id
+                        && fill.instrument_id == report.instrument_id
+                        && Some(fill.order_side) == report.order_side
+                        && original.is_none_or(|id| id == fill.client_order_id),
+                    "Historical order {} conflicts with retained fills",
+                    report.venue_order_id,
+                );
+                original = Some(fill.client_order_id);
+            }
+            if let Some(original) = original {
+                let cloid = self
+                    .http_client
+                    .cached_client_order_id_cloid(&original)
+                    .unwrap_or_else(|| Cloid::from_client_order_id(original));
+                anyhow::ensure!(
+                    report
+                        .client_order_id
+                        .is_none_or(|id| id == original || id.as_str() == cloid.to_hex()),
+                    "Historical order {} CLOID conflicts with retained identity",
+                    report.venue_order_id,
+                );
+                report.client_order_id = Some(original);
+            }
+        }
+        Ok(())
+    }
+
     async fn refresh_account_state(&self) -> anyhow::Result<()> {
         let account_address = self.get_account_address()?;
 
@@ -2144,6 +2202,8 @@ impl ExecutionClient for HyperliquidExecutionClient {
             });
             order_reports.extend(historical_reports);
         }
+
+        self.rebind_retained_order_reports(&mut order_reports)?;
 
         let mut mass_status = ExecutionMassStatus::new(
             self.core.client_id,
