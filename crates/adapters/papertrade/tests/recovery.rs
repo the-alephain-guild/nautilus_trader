@@ -489,6 +489,7 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
 #[case::account_patch(false, "patch")]
 #[case::other_order_failure(false, "multi_order")]
 #[case::process_kill(false, "process_kill")]
+#[case::contradictory_order(false, "conflicting_success")]
 #[tokio::test]
 async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     #[case] legacy_expired: bool,
@@ -616,13 +617,36 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
     if legacy_expired {
         support::write_legacy_expired(&harness.config.journal_path, &entry);
     }
-    if matches!(success_source, "snapshot" | "multi_order" | "process_kill") {
+    if matches!(
+        success_source,
+        "snapshot" | "multi_order" | "process_kill" | "conflicting_success"
+    ) {
         source["intentOutcomes"] = json!([[entry.intent_id, "succeeded"]]);
         harness.source.wallet.send_replace(source.clone());
-        if matches!(success_source, "multi_order" | "process_kill") {
+        if matches!(
+            success_source,
+            "multi_order" | "process_kill" | "conflicting_success"
+        ) {
             let other = prepared_open(&harness, &position, now - 7200, now - 3600);
             mark_attempted(&harness, &other);
             *harness.source.block_timestamp.lock() = None;
+            if success_source == "conflicting_success" {
+                let journal =
+                    Journal::open(&harness.config.journal_path, wallet, "PAPERTRADE-001").unwrap();
+                let mut failed = journal
+                    .entries()
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| e.intent_id == other.intent_id)
+                    .unwrap();
+                failed.status = OrderStatus::Rejected;
+                journal.update(&failed).unwrap();
+                source["intentOutcomes"] = json!([
+                    [other.intent_id, "succeeded"],
+                    [entry.intent_id, "succeeded"]
+                ]);
+                harness.source.wallet.send_replace(source.clone());
+            }
         }
     } else if success_source == "patch" {
         *harness.source.block_timestamp.lock() = Some(now - 3601);
@@ -678,6 +702,28 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
         }
         let mut client = harness.client();
         client.start().unwrap();
+        if success_source == "conflicting_success" {
+            assert!(
+                client.connect().await.is_err(),
+                "Contradictory source evidence must block recovery"
+            );
+            client.disconnect().await.unwrap();
+            drop(client);
+            let journal =
+                Journal::open(&harness.config.journal_path, wallet, "PAPERTRADE-001").unwrap();
+            let records = journal.entries().unwrap();
+            assert!(records.iter().all(|e| e.execution_succeeded));
+            assert!(
+                records
+                    .iter()
+                    .any(|e| e.intent_id == entry.intent_id && e.status == OrderStatus::Submitted)
+            );
+            drop(journal);
+            source["intentOutcomes"] = json!([]);
+            source["accountRevision"] = json!(3);
+            harness.source.wallet.send_replace(source.clone());
+            continue;
+        }
         if success_source == "multi_order" && reconnect == 0 {
             assert!(client.connect().await.is_err());
             client.disconnect().await.unwrap();
@@ -758,6 +804,9 @@ async fn successful_close_cannot_expire_while_history_is_delayed_across_restart(
             source["accountRevision"] = json!(3);
             harness.source.wallet.send_replace(source.clone());
         }
+    }
+    if success_source == "conflicting_success" {
+        return;
     }
     *harness.source.history.lock() = json!({"items":[{"positionId":position.position_id,
         "instrumentId":position.instrument_id,"symbol":"BTC","priceScaleRaw":"10",

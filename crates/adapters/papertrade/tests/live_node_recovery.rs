@@ -22,6 +22,44 @@ use serde_json::json;
 mod support;
 use support::{Harness, SERIAL, closed_history};
 
+struct RetainedCache {
+    orders: Vec<nautilus_model::orders::OrderAny>,
+    positions: Vec<nautilus_model::position::Position>,
+}
+
+impl RetainedCache {
+    fn capture(node: &nautilus_live::node::LiveNode) -> Self {
+        let cache = node.kernel().cache();
+        let cache = cache.borrow();
+        Self {
+            orders: cache
+                .orders(None, None, None, None, None)
+                .into_iter()
+                .map(|o| o.clone())
+                .collect(),
+            positions: cache
+                .positions(None, None, None, None, None)
+                .into_iter()
+                .map(|p| p.cloned())
+                .collect(),
+        }
+    }
+    fn restore(&self, node: &nautilus_live::node::LiveNode) {
+        let cache = node.kernel().cache();
+        let mut cache = cache.borrow_mut();
+        for order in &self.orders {
+            cache.add_order(order.clone(), None, None, false).unwrap();
+        }
+        for position in &self.positions {
+            cache
+                .add_position_without_order(position, nautilus_model::enums::OmsType::Hedging)
+                .unwrap();
+        }
+        cache.clear_index();
+        cache.build_index();
+    }
+}
+
 fn account_node(harness: &Harness) -> nautilus_live::node::LiveNode {
     use nautilus_common::enums::Environment;
     use nautilus_papertrade::{reports, wire::TradingState};
@@ -236,13 +274,17 @@ async fn live_node_retained_position_recovers_missing_or_lagging_orders_without_
 }
 
 #[rstest::rstest]
-#[case::same_round(false, false, false, false, false)]
-#[case::conflicting_proof(true, false, false, false, false)]
-#[case::legacy_expired(false, true, false, false, false)]
-#[case::later_round(false, false, true, false, false)]
-#[case::restart_between_rounds(false, false, true, true, false)]
-#[case::unattributed_open(false, false, true, false, true)]
-#[case::unattributed_open_restart(false, false, true, true, true)]
+#[case::same_round(false, false, false, false, false, false)]
+#[case::conflicting_proof(true, false, false, false, false, false)]
+#[case::legacy_expired(false, true, false, false, false, false)]
+#[case::later_round(false, false, true, false, false, false)]
+#[case::restart_between_rounds(false, false, true, true, false, false)]
+#[case::unattributed_open(false, false, true, false, true, false)]
+#[case::unattributed_open_restart(false, false, true, true, true, false)]
+#[case::retained_expired(false, true, true, false, false, true)]
+#[case::retained_expired_restart(false, true, true, true, false, true)]
+#[case::retained_open_expired(false, true, true, false, true, true)]
+#[case::retained_open_expired_restart(false, true, true, true, true, true)]
 #[tokio::test]
 async fn live_node_recovers_closed_during_downtime_with_history_before_open_proof(
     #[case] conflict: bool,
@@ -250,13 +292,14 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
     #[case] delayed: bool,
     #[case] restart: bool,
     #[case] unattributed_open: bool,
+    #[case] retained_cache: bool,
 ) {
     use alloy_primitives::{B256, U256};
     use nautilus_model::{enums::OrderStatus, identifiers::PositionId, orders::Order};
     use nautilus_papertrade::wire::VenuePosition;
     use rust_decimal::Decimal;
     let _serial = SERIAL.lock().await;
-    let harness = Harness::new().await;
+    let mut harness = Harness::new().await;
     let mut source = harness.source.wallet.borrow().clone();
     let now = source["indexedThroughTimestamp"].as_u64().unwrap();
     let position: VenuePosition = serde_json::from_value(json!([
@@ -289,7 +332,18 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
         harness.source.wallet.send_replace(source.clone());
     }
     harness.source.trading.lock()["indexedThroughBlock"] = source["indexedThroughBlock"].clone();
+    let initial_snapshot = harness.source.wallet.borrow().clone();
+    if retained_cache {
+        harness.config.max_history_pages = 1;
+        let mut submission = initial_snapshot.clone();
+        submission["indexedThroughBlock"] =
+            json!(source["indexedThroughBlock"].as_u64().unwrap() - 2500);
+        harness.source.wallet.send_replace(submission);
+    }
     let entry = support::prepared_open(&harness, &position, now - 60, now + 3600 - 60);
+    if retained_cache {
+        harness.source.wallet.send_replace(initial_snapshot);
+    }
     support::mark_attempted(&harness, &entry);
     if legacy_expired {
         support::write_legacy_expired(&harness.config.journal_path, &entry);
@@ -321,6 +375,50 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
     *harness.source.receipt.lock() = Some(
         json!({"status":"0x1","transactionHash":tx,"blockHash":hash,"blockNumber":height,"logs":[result,open]}),
     );
+    let retained = if retained_cache {
+        let path = harness.config.journal_path.clone();
+        let seed_path = path.with_file_name("seed.redb");
+        std::fs::copy(&path, &seed_path).unwrap();
+        harness.config.journal_path = seed_path;
+        let mut seed = account_node(&harness);
+        harness.config.journal_path = path;
+        let cache = seed.kernel().cache();
+        let handle = seed.handle();
+        let stop = async {
+            let ready = tokio::time::timeout(Duration::from_secs(8), async {
+                while cache
+                    .borrow()
+                    .position(&PositionId::from("PT-9001"))
+                    .is_none()
+                    || !cache
+                        .borrow()
+                        .order(&entry.command.client_order_id)
+                        .is_some_and(|o| o.status() == OrderStatus::Filled)
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            handle.stop();
+            ready
+        };
+        let (run, ready) = tokio::join!(seed.run(), stop);
+        run.unwrap();
+        ready.unwrap();
+        let retained = RetainedCache::capture(&seed);
+        assert_eq!(retained.positions.len(), 1);
+        assert_eq!(retained.orders.len(), if unattributed_open { 1 } else { 2 });
+        assert_eq!(retained.positions[0].is_open(), unattributed_open);
+        seed.dispose();
+        drop(seed);
+        harness
+            .source
+            .history_calls
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        Some(retained)
+    } else {
+        None
+    };
     if delayed {
         harness.source.trading.lock()["indexedThroughBlock"] =
             json!(source["indexedThroughBlock"].as_u64().unwrap() - 1);
@@ -333,7 +431,24 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
             identifiers::VenueOrderId,
             orders::OrderAny,
         };
-        let mut order = OrderAny::try_from(entry.command.order_init.clone()).unwrap();
+        let mut order = if let Some(retained) = &retained {
+            let original = retained
+                .orders
+                .iter()
+                .find(|o| o.client_order_id() == entry.command.client_order_id)
+                .unwrap();
+            OrderAny::from_events(
+                original
+                    .events()
+                    .into_iter()
+                    .filter(|e| !matches!(e, OrderEventAny::Filled(_)))
+                    .cloned()
+                    .collect(),
+            )
+            .unwrap()
+        } else {
+            OrderAny::try_from(entry.command.order_init.clone()).unwrap()
+        };
         order
             .apply(OrderEventAny::Expired(OrderExpired::new(
                 order.trader_id(),
@@ -354,22 +469,55 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
             .add_order(order, None, None, false)
             .unwrap();
     }
+    if let Some(retained) = &retained {
+        RetainedCache {
+            orders: retained
+                .orders
+                .iter()
+                .filter(|o| o.client_order_id() != entry.command.client_order_id)
+                .cloned()
+                .collect(),
+            positions: retained.positions.clone(),
+        }
+        .restore(&node);
+    }
     if delayed {
         use std::sync::atomic::Ordering;
         let cache = node.kernel().cache();
         let handle = node.handle();
+        let unchanged = || {
+            let cache = cache.borrow();
+            if let Some(retained) = &retained {
+                let original = &retained.positions[0];
+                cache.positions(None, None, None, None, None).len() == 1
+                    && cache.position(&original.id).is_some_and(|p| {
+                        p.realized_pnl == original.realized_pnl
+                            && p.quantity == original.quantity
+                            && p.avg_px_open == original.avg_px_open
+                            && p.trade_ids == original.trade_ids
+                            && p.events.len() == original.events.len()
+                            && p.commissions() == original.commissions()
+                    })
+                    && cache
+                        .order(&entry.command.client_order_id)
+                        .is_some_and(|o| {
+                            o.status() == OrderStatus::Expired && o.trade_ids().is_empty()
+                        })
+            } else {
+                cache.positions(None, None, None, None, None).is_empty()
+                    && cache.orders(None, None, None, None, None).iter().all(|o| {
+                        o.client_order_id() == entry.command.client_order_id
+                            && o.trade_ids().is_empty()
+                    })
+            }
+        };
         let advance = async {
             let mut observed = tokio::time::timeout(Duration::from_secs(4), async {
                 while harness.source.history_calls.load(Ordering::SeqCst) < 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let cache = cache.borrow();
-                cache.positions(None, None, None, None, None).is_empty()
-                    && cache.orders(None, None, None, None, None).iter().all(|o| {
-                        o.client_order_id() == entry.command.client_order_id
-                            && o.trade_ids().is_empty()
-                    })
+                unchanged()
             })
             .await;
             if unattributed_open && matches!(observed, Ok(true)) {
@@ -381,12 +529,7 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    let cache = cache.borrow();
-                    cache.positions(None, None, None, None, None).is_empty()
-                        && cache.orders(None, None, None, None, None).iter().all(|o| {
-                            o.client_order_id() == entry.command.client_order_id
-                                && o.trade_ids().is_empty()
-                        })
+                    unchanged()
                 })
                 .await;
             }
@@ -420,11 +563,13 @@ async fn live_node_recovers_closed_during_downtime_with_history_before_open_proo
             "History was attributed externally before local open proof coverage"
         );
         if restart {
+            let before_restart = RetainedCache::capture(&node);
             node.dispose();
             drop(node);
             harness.source.trading.lock()["indexedThroughBlock"] =
                 source["indexedThroughBlock"].clone();
             node = account_node(&harness);
+            before_restart.restore(&node);
         }
     }
     if conflict {
