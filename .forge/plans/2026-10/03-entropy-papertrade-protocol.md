@@ -189,3 +189,22 @@ Python 回归共 17 项通过，包含实际 LiveNode 进程强制终止、禁�
 macOS unwind table 链接器警告；Papertrade、Entropy 与 Hyperliquid 工厂相关 Python 回归
 17 项通过。all-targets Clippy、Rustfmt、测试约定、47 成员 workspace test inventory 和 diff
 检查通过。详细行为与边界见 `docs_zh/integrations/papertrade.md` 第四轮恢复修复一节。
+
+## 第五轮恢复覆盖补充（2026-10-23）
+
+基线为 `b64b636929`，补齐复审指出的三个测试缺口。现有实现通过新增场景，本轮没有修改生产源码。
+
+- `6d408d3831`：将日志可见性和 receipt 可用性分开控制；实际 LiveNode 在 receipt 不可读时
+  不推进扫描位置、不发布经济事件，恢复后重读并验证保留缓存重启。
+- `56d4cade51`：三个不同扫描游标，首个订单提交后强制终止子进程，再通过实际 LiveNode
+  验证缺口补读、较快游标不回退、扫描途中上界增长、后段成功与最终过期。
+- `158f181d63`：两个无意图关联仓位、多空两张本地开仓、两种证明先后顺序；验证分批归因，
+  中途保留缓存重启和最终冷启动不改变 Trade ID、佣金或盈亏。
+
+验证截至 `158f181d63`：适配器 Rust 全套 131 项通过，其中 19 项包含实际 LiveNode；
+all-targets Clippy、Rustfmt、测试约定、workspace test inventory 和 diff 检查通过。
+双仓位样例共四笔唯一成交，净盈亏 45.25 USDC、结算调整 4.75 USDC、最终余额 1045.25 USDC。
+逐订单中断发生在子进程调用生产 API 和 Journal 逐条写入的边界；恢复使用完整 LiveNode，
+未向生产代码添加测试钩子。所有服务均为本地故障服务，没有真实下单或推送。
+详细记录见 `docs_zh/integrations/papertrade.md` 第五轮恢复覆盖补充一节及本地
+`target/papertrade-round5-*.log`。

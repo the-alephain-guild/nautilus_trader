@@ -291,6 +291,31 @@ test inventory 和 diff 检查通过。日志保存在本地 `target/papertrade-
 保留缓存由实际 LiveNode 生成，通过公有 Cache 接口重新加载；不把这项验收扩大为
 Redis/PostgreSQL 驱动自身的崩溃原子性或磁盘掉电验收。
 
+## 第五轮恢复覆盖补充（2026-10-23）
+
+基线为 `b64b636929`。本轮补齐只读复审提出的三个覆盖缺口，新增四个实际 LiveNode 用例；
+现有生产实现全部通过，改动仅涉及测试、共享测试工具与本节记录。
+
+| 提交 | 场景与检查 |
+| --- | --- |
+| `6d408d3831` | `getLogs` 已返回可见日志，但相应 receipt 返回 null。检查 receipt 请求确实发生、游标未推进、无经济事件发布；恢复 receipt 后重读原区间，保留缓存重启仍保持成交与盈亏。 |
+| `56d4cade51` | 三个订单具有不同游标。子进程使用生产 API 读完无成交日志页，再通过 `Journal.update` 提交首个订单；父进程在下一订单提交前执行 SIGKILL。LiveNode 从较慢游标的缺口恢复，较快游标不回退，并在扫描途中推进覆盖上界；后到成功和最终过期分别成立。 |
+| `158f181d63` | 两个 `intent_id=None` 仓位和两张本地开仓并存，分别覆盖多头证明先到、空头证明先到。只有已证明的仓位发布成交；中途保留缓存重启后，该仓位经济状态不变，另一仓位继续等待，直到其证明到齐。 |
+
+新用例位于 `crates/adapters/papertrade/tests/recovery_matrix.rs`。两个仓位使用不同方向、数量、
+费用和盈亏，逐笔核对客户端订单 ID、venue order ID、仓位 ID、Trade ID、佣金和数量。
+双仓位最终为四笔唯一成交，实现净盈亏分别为 18.25 和 27 USDC，结算调整分别为
+1.75 和 3 USDC，账户余额为 1045.25 USDC；保留缓存与冷启动后仍一致。混合游标用例另有
+一张未执行订单，必须在覆盖增长后的完整扫描结束后才过期，且没有成交或经济仓位。
+
+验证截至 `158f181d63`：`cargo test -p nautilus-papertrade --tests --locked` 共 131 项通过，
+其中 19 项包含实际 Rust LiveNode。all-targets Clippy、Rustfmt、测试约定、47 成员 workspace
+test inventory 与 diff 检查通过。日志保存在本地 `target/papertrade-round5-*.log`。
+
+故障注入只使用本地服务和测试子进程，没有下真实订单。逐订单提交中断定位的是生产
+`Journal` 接口的持久化边界，恢复阶段执行完整 LiveNode；没有在生产 `synchronize` 内加入
+测试钩子，也不将该用例扩大为磁盘掉电或 Redis/PostgreSQL 驱动验收。
+
 ## 验证与尚未行使的边界
 
 本次验证包括独立 `eth-account==0.13.7` 签名向量、实际公开非空账户和成交记录、
