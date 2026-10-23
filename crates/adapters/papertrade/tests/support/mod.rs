@@ -51,6 +51,9 @@ pub(crate) struct Source {
     pub(crate) trading: Mutex<Value>,
     pub(crate) history: Mutex<Value>,
     pub(crate) receipt: Mutex<Option<Value>>,
+    pub(crate) receipts: Mutex<Vec<Value>>,
+    pub(crate) receipt_unavailable: Mutex<std::collections::HashSet<String>>,
+    pub(crate) receipt_calls: Mutex<Vec<String>>,
     pub(crate) block_timestamp: Mutex<Option<u64>>,
     pub(crate) block_paused: AtomicBool,
     pub(crate) block_calls: AtomicUsize,
@@ -100,7 +103,20 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
         }
         source.block_timestamp.lock().map(|stamp| json!({"number":request["params"][0],"timestamp":format!("0x{stamp:x}"),"hash":format!("0x{}","11".repeat(32))})).unwrap_or(Value::Null)
     } else if request["method"] == "eth_getTransactionReceipt" {
-        source.receipt.lock().clone().unwrap_or(Value::Null)
+        let hash = request["params"][0].as_str().unwrap().to_owned();
+        source.receipt_calls.lock().push(hash.clone());
+        if source.receipt_unavailable.lock().contains(&hash) {
+            Value::Null
+        } else {
+            source
+                .receipts
+                .lock()
+                .iter()
+                .chain(source.receipt.lock().iter())
+                .find(|receipt| receipt["transactionHash"] == hash)
+                .cloned()
+                .unwrap_or(Value::Null)
+        }
     } else {
         let from = u64::from_str_radix(
             request["params"][0]["fromBlock"]
@@ -118,17 +134,22 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
             16,
         )
         .unwrap();
-        let receipt = source.receipt.lock();
+        let receipts: Vec<_> = source
+            .receipts
+            .lock()
+            .iter()
+            .chain(source.receipt.lock().iter())
+            .cloned()
+            .collect();
         source.log_ranges.lock().push((from, to));
         if *source.log_fail_from.lock() == Some(from) {
             return Json(
                 json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Injected log failure"}}),
             );
         }
-        let logs: Vec<Value> = receipt
-            .as_ref()
-            .and_then(|r| r["logs"].as_array())
-            .into_iter()
+        let logs: Vec<Value> = receipts
+            .iter()
+            .filter_map(|r| r["logs"].as_array())
             .flatten()
             .filter(|log| {
                 let number = log["blockNumber"]
@@ -171,6 +192,9 @@ impl Harness {
             unavailable: AtomicBool::new(false),
             history: Mutex::new(json!({"items":[],"nextCursor":null})),
             receipt: Mutex::new(None),
+            receipts: Mutex::new(Vec::new()),
+            receipt_unavailable: Mutex::new(std::collections::HashSet::new()),
+            receipt_calls: Mutex::new(Vec::new()),
             block_timestamp: Mutex::new(None),
             block_paused: AtomicBool::new(false),
             block_calls: AtomicUsize::new(0),
@@ -247,12 +271,22 @@ pub(crate) fn prepared_open(
     now: u64,
     deadline: u64,
 ) -> nautilus_papertrade::journal::JournalEntry {
+    prepared_open_with_id(harness, position, "PT-OPEN-RECOVERY", now, deadline)
+}
+
+pub(crate) fn prepared_open_with_id(
+    harness: &Harness,
+    position: &nautilus_papertrade::wire::VenuePosition,
+    client_id: &str,
+    now: u64,
+    deadline: u64,
+) -> nautilus_papertrade::journal::JournalEntry {
     use alloy::signers::local::PrivateKeySigner;
     use alloy_primitives::B256;
     use nautilus_common::messages::execution::SubmitOrder;
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::{
-        enums::OrderType,
+        enums::{OrderSide, OrderType},
         identifiers::{ClientOrderId, InstrumentId},
         orders::OrderTestBuilder,
         types::Quantity,
@@ -264,7 +298,12 @@ pub(crate) fn prepared_open(
     let wallet = harness.source.wallet.borrow();
     let order = OrderTestBuilder::new(OrderType::Market)
         .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
-        .client_order_id(ClientOrderId::from("PT-OPEN-RECOVERY"))
+        .client_order_id(ClientOrderId::from(client_id))
+        .side(if position.is_long {
+            OrderSide::Buy
+        } else {
+            OrderSide::Sell
+        })
         .quantity(
             Quantity::from_decimal_dp(
                 position.margin.decimal().unwrap() * rust_decimal::Decimal::from(position.leverage),
