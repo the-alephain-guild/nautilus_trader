@@ -933,6 +933,7 @@ pub struct HyperliquidHttpClient {
     /// Mapping from spot fill coin (`@{pair_index}`) to instrument symbol.
     spot_fill_coins: Arc<AtomicMap<Ustr, Ustr>>,
     client_order_id_cloids: Arc<Mutex<AHashMap<ClientOrderId, Cloid>>>,
+    pub(crate) fill_aliases: Arc<Mutex<crate::fill_identity::FillAliases>>,
     account_id: Option<AccountId>,
     /// Optional override address for queries (agent wallet / API sub-key support).
     /// When set, used for balance queries, position reports, and WS subscriptions
@@ -989,6 +990,7 @@ impl HyperliquidHttpClient {
             asset_indices: Arc::new(AtomicMap::new()),
             spot_fill_coins: Arc::new(AtomicMap::new()),
             client_order_id_cloids: Arc::new(Mutex::new(AHashMap::new())),
+            fill_aliases: Arc::default(),
             account_id: None,
             account_address: None,
             normalize_prices: true,
@@ -1082,6 +1084,7 @@ impl HyperliquidHttpClient {
             asset_indices: Arc::new(AtomicMap::new()),
             spot_fill_coins: Arc::new(AtomicMap::new()),
             client_order_id_cloids: Arc::new(Mutex::new(AHashMap::new())),
+            fill_aliases: Arc::default(),
             account_id: None,
             account_address: None,
             normalize_prices: true,
@@ -1160,6 +1163,7 @@ impl HyperliquidHttpClient {
                     asset_indices: Arc::new(AtomicMap::new()),
                     spot_fill_coins: Arc::new(AtomicMap::new()),
                     client_order_id_cloids: Arc::new(Mutex::new(AHashMap::new())),
+                    fill_aliases: Arc::default(),
                     account_id: None,
                     account_address,
                     normalize_prices: true,
@@ -1204,6 +1208,7 @@ impl HyperliquidHttpClient {
             asset_indices: Arc::new(AtomicMap::new()),
             spot_fill_coins: Arc::new(AtomicMap::new()),
             client_order_id_cloids: Arc::new(Mutex::new(AHashMap::new())),
+            fill_aliases: Arc::default(),
             account_id: None,
             account_address: None,
             normalize_prices: true,
@@ -2722,7 +2727,23 @@ impl HyperliquidHttpClient {
 
             // Parse to FillReport
             match parse_fill_report(&fill, &instrument, account_id, ts_init) {
-                Ok(report) => reports.push(report),
+                Ok(mut report) => {
+                    self.fill_aliases
+                        .lock()
+                        .resolve(
+                            &crate::fill_identity::FillIdentity {
+                                hash: &fill.hash,
+                                oid: fill.oid,
+                                px: fill.px,
+                                sz: fill.sz,
+                                time: fill.time,
+                                start: fill.start_position,
+                            },
+                            &mut report,
+                        )
+                        .map_err(|e| Error::decode(e.to_string()))?;
+                    reports.push(report);
+                }
                 Err(e) => {
                     log::error!("Failed to parse fill report: {e}");
                     complete = false;

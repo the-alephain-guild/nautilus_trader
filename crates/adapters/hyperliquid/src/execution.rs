@@ -151,6 +151,7 @@ impl HyperliquidExecutionClient {
     }
 
     fn validate_order_submission(&self, order: &OrderAny) -> anyhow::Result<()> {
+        self.http_client.fill_aliases.lock().check()?;
         validate_order_for_hyperliquid(order)
     }
 
@@ -159,7 +160,7 @@ impl HyperliquidExecutionClient {
         order: &OrderAny,
         slippage_bps: u32,
     ) -> anyhow::Result<HyperliquidExchangePlaceOrderRequest> {
-        validate_order_for_hyperliquid(order)?;
+        self.validate_order_submission(order)?;
 
         let symbol = order.instrument_id().symbol.inner();
         let asset = self
@@ -377,6 +378,7 @@ impl HyperliquidExecutionClient {
             Some(*HYPERLIQUID_VENUE),
             USER_STREAMS_ENDPOINT,
         ));
+        ws_client.fill_aliases = Arc::clone(&http_client.fill_aliases);
         ws_client.set_post_timeout(Duration::from_secs(config.ws_post_timeout_secs));
 
         let clock = get_atomic_clock_realtime();
@@ -447,6 +449,7 @@ impl HyperliquidExecutionClient {
             None,
         );
         let mut cloid_orders = AHashMap::new();
+
         for order in cache.orders(Some(&self.core.venue), None, None, None, None) {
             let id = order.client_order_id();
             if order.account_id() != Some(self.core.account_id)
@@ -468,6 +471,7 @@ impl HyperliquidExecutionClient {
                 "Ambiguous cached CLOID for {id}",
             );
         }
+
         for report in reports {
             let mut original = cache.client_order_id(&report.venue_order_id).copied();
             if let Some(id) = report
@@ -482,6 +486,7 @@ impl HyperliquidExecutionClient {
                 );
                 original = Some(id);
             }
+
             if let Some(order) = original.and_then(|id| cache.order(&id)) {
                 anyhow::ensure!(
                     order.instrument_id() == report.instrument_id
@@ -760,7 +765,7 @@ impl HyperliquidExecutionClient {
 #[async_trait(?Send)]
 impl ExecutionClient for HyperliquidExecutionClient {
     fn is_connected(&self) -> bool {
-        self.core.is_connected()
+        self.core.is_connected() && self.http_client.fill_aliases.lock().check().is_ok()
     }
 
     fn client_id(&self) -> ClientId {
@@ -1181,6 +1186,7 @@ impl ExecutionClient for HyperliquidExecutionClient {
     }
 
     fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
+        self.http_client.fill_aliases.lock().check()?;
         log::debug!("Modifying order: {cmd}");
 
         let client_order_id = cmd.client_order_id;
@@ -1902,6 +1908,14 @@ impl ExecutionClient for HyperliquidExecutionClient {
             });
 
         self.ensure_instruments_initialized_async().await?;
+        let retained = crate::cache_recovery::retained_fills(
+            &self.core.cache(),
+            self.core.client_id,
+            self.core.account_id,
+            *HYPERLIQUID_VENUE,
+        )?;
+        *self.http_client.fill_aliases.lock() =
+            crate::fill_identity::FillAliases::from_retained(retained);
         let ready_bracket_parents = self.restore_staged_brackets();
 
         if let Err(e) = self.start_ws_stream().await {
@@ -2150,6 +2164,7 @@ impl ExecutionClient for HyperliquidExecutionClient {
         &self,
         lookback_mins: Option<u64>,
     ) -> anyhow::Result<Option<ExecutionMassStatus>> {
+        self.http_client.fill_aliases.lock().check()?;
         let ts_init = self.clock.get_time_ns();
         let account_address = self.get_account_address()?;
 
@@ -2253,6 +2268,17 @@ impl ExecutionClient for HyperliquidExecutionClient {
 
         self.rebind_retained_order_reports(&mut order_reports)?;
         crate::cache_recovery::ensure_fill_coverage(&order_reports, &fill_reports)?;
+        // Hyperliquid labels a still-resting, partially executed order as `open`.
+        // Recovery must replay its proved fills even when the local order is missing.
+        for report in &mut order_reports {
+            if matches!(
+                report.order_status,
+                OrderStatus::Accepted | OrderStatus::Triggered
+            ) && !report.filled_qty.is_zero()
+            {
+                report.order_status = OrderStatus::PartiallyFilled;
+            }
+        }
 
         let mut mass_status = ExecutionMassStatus::new(
             self.core.client_id,

@@ -103,7 +103,8 @@ use crate::{
 /// identifier consistent across both data sources for the same physical fill.
 /// Includes `start_position` (running position before each fill) to disambiguate
 /// multiple partial fills within the same transaction at the same price/size.
-/// Format: `{fnv_hex}-{oid_hex}` (exactly 33 chars, within 36-char limit).
+/// Decimal scales are normalized and numeric fields are separated.
+/// Format: `HL-{fnv_hex}-{oid_hex}` (exactly 36 chars).
 pub fn make_fill_trade_id(
     hash: &str,
     oid: u64,
@@ -112,38 +113,15 @@ pub fn make_fill_trade_id(
     time: u64,
     start_position: Decimal,
 ) -> TradeId {
-    // FNV-1a with fixed seed for deterministic output
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in hash.as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
+    crate::fill_identity::FillIdentity {
+        hash,
+        oid,
+        px,
+        sz,
+        time,
+        start: start_position,
     }
-
-    for b in oid.to_le_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-
-    for &b in px.to_string().as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-
-    for &b in sz.to_string().as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-
-    for b in time.to_le_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-
-    for &b in start_position.to_string().as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    TradeId::new(format!("{h:016x}-{oid:016x}"))
+    .trade_id()
 }
 
 /// Round price down to the nearest valid tick size.
@@ -1164,8 +1142,7 @@ mod tests {
 
     #[rstest]
     fn test_make_fill_trade_id_is_stable() {
-        // Pins the deterministic FNV output so the Decimal `Display` hashing
-        // stays stable for reconciliation dedup across the String->Decimal change.
+        // Pins the versioned, scale-independent identity used by WS and REST.
         let id = make_fill_trade_id(
             "0xabc123",
             12345,
@@ -1174,7 +1151,20 @@ mod tests {
             1704470400000,
             dec!(0.0),
         );
-        assert_eq!(id.to_string(), "a846ae6f557868e9-0000000000003039");
+        assert_eq!(id.to_string(), "HL-7f22113f573e6c57-0000000000003039");
+    }
+
+    #[rstest]
+    fn fill_identity_ignores_scale_but_separates_partial_executions() {
+        let identity =
+            |px, sz, start| make_fill_trade_id("0xabc123", 12345, px, sz, 1704470400000, start);
+        let first = identity(dec!(100.00), dec!(1.00), dec!(0.00));
+        assert_eq!(first, identity(dec!(100), dec!(1), dec!(0)));
+        assert_ne!(first, identity(dec!(100), dec!(1), dec!(1)));
+        assert_ne!(
+            identity(dec!(1), dec!(23), dec!(0)),
+            identity(dec!(12), dec!(3), dec!(0))
+        );
     }
 
     #[derive(Serialize, Deserialize)]

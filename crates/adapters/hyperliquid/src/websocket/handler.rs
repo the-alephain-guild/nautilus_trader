@@ -247,6 +247,7 @@ pub(super) struct FeedHandler {
     message_buffer: VecDeque<NautilusWsMessage>,
     instruments: AHashMap<Ustr, InstrumentAny>,
     cloid_cache: CloidCache,
+    pub(super) fill_aliases: Arc<parking_lot::Mutex<crate::fill_identity::FillAliases>>,
     bar_types_cache: AHashMap<String, BarType>,
     bar_cache: AHashMap<String, CandleData>,
     asset_context_subs: AHashMap<Ustr, AHashSet<AssetContextDataType>>,
@@ -301,6 +302,7 @@ impl FeedHandler {
             message_buffer: VecDeque::new(),
             instruments: AHashMap::new(),
             cloid_cache,
+            fill_aliases: Arc::default(),
             bar_types_cache: AHashMap::new(),
             bar_cache: AHashMap::new(),
             asset_context_subs: AHashMap::new(),
@@ -566,6 +568,7 @@ impl FeedHandler {
                                         msg,
                                         &self.instruments,
                                         &self.cloid_cache,
+                                        &self.fill_aliases,
                                         &self.bar_types_cache,
                                         self.account_id,
                                         ts_init,
@@ -682,6 +685,7 @@ impl FeedHandler {
         msg: HyperliquidWsMessage,
         instruments: &AHashMap<Ustr, InstrumentAny>,
         cloid_cache: &CloidCache,
+        fill_aliases: &Arc<parking_lot::Mutex<crate::fill_identity::FillAliases>>,
         bar_types: &AHashMap<String, BarType>,
         account_id: Option<AccountId>,
         ts_init: UnixNanos,
@@ -737,6 +741,7 @@ impl FeedHandler {
                                 account_id,
                                 ts_init,
                                 processed_trade_ids,
+                                fill_aliases,
                             ) {
                                 log::debug!("Successfully created fill message");
                                 result.push(msg);
@@ -773,6 +778,7 @@ impl FeedHandler {
                         account_id,
                         ts_init,
                         processed_trade_ids,
+                        fill_aliases,
                     )
                 {
                     result.push(msg);
@@ -932,8 +938,10 @@ impl FeedHandler {
         account_id: AccountId,
         ts_init: UnixNanos,
         processed_trade_ids: &mut FifoCache<u64, 10_000>,
+        fill_aliases: &Arc<parking_lot::Mutex<crate::fill_identity::FillAliases>>,
     ) -> Option<NautilusWsMessage> {
         let mut exec_reports = Vec::new();
+        let mut parsed_ids = Vec::new();
 
         for fill in fills {
             if processed_trade_ids.contains(&fill.tid) {
@@ -947,9 +955,6 @@ impl FeedHandler {
                 log::debug!("Found instrument for fill coin={}", fill.coin);
                 match parse_ws_fill_report(fill, instrument, account_id, ts_init) {
                     Ok(mut report) => {
-                        // Mark processed only after successful parse
-                        processed_trade_ids.add(fill.tid);
-
                         if let Some(cloid) = &fill.cloid {
                             let cloid_ustr = Ustr::from(cloid.as_str());
                             let resolved = cloid_cache.lock().get(&cloid_ustr).copied();
@@ -960,6 +965,29 @@ impl FeedHandler {
                                 );
                                 report.client_order_id = Some(real_client_order_id);
                             }
+                        }
+                        let retained = match fill_aliases.lock().resolve(
+                            &crate::fill_identity::FillIdentity {
+                                hash: &fill.hash,
+                                oid: fill.oid,
+                                px: fill.px,
+                                sz: fill.sz,
+                                time: fill.time,
+                                start: fill.start_position,
+                            },
+                            &mut report,
+                        ) {
+                            Ok(retained) => retained,
+                            Err(e) => return Some(NautilusWsMessage::Error(e.to_string())),
+                        };
+                        // Commit replay markers only after the entire frame passes identity checks.
+                        if parsed_ids.contains(&fill.tid) {
+                            continue;
+                        }
+                        parsed_ids.push(fill.tid);
+
+                        if retained {
+                            continue;
                         }
                         log::debug!(
                             "Parsed fill report: venue_order_id={:?}, trade_id={:?}",
@@ -976,6 +1004,10 @@ impl FeedHandler {
                 // Not marked as processed so fill is retried if instrument loads later
                 log::warn!("No instrument found for fill coin={}", fill.coin);
             }
+        }
+
+        for tid in parsed_ids {
+            processed_trade_ids.add(tid);
         }
 
         if exec_reports.is_empty() {
@@ -2543,5 +2575,77 @@ mod tests {
         assert!(caches.index_price.get(&coin).is_none());
         assert_eq!(caches.funding_rate.get(&coin).copied(), Some(dec!(0.0001)));
         assert!(caches.open_interest.get(&coin).is_none());
+    }
+    #[rstest]
+    fn fill_identity_failure_does_not_consume_other_rows_in_the_frame() {
+        use super::super::{messages::WsFillData, parse::parse_ws_fill_report};
+        use crate::fill_identity::FillAliases;
+        use nautilus_common::cache::fifo::FifoCache;
+        use nautilus_core::UUID4;
+        use nautilus_model::{
+            enums::OrderType,
+            events::OrderFilled,
+            identifiers::{AccountId, StrategyId, TraderId},
+        };
+        let instrument = btc_perp();
+        let instruments = AHashMap::from_iter([(Ustr::from("BTC"), instrument.clone())]);
+        let account = AccountId::from("HYPERLIQUID-001");
+        let wire = json!({"coin":"BTC","px":"50000.00","sz":"0.10","side":"B","time":1704470400000u64,"startPosition":"0.00","dir":"Open Long","closedPnl":"0","hash":"0xabc123","oid":12345,"tid":101,"crossed":true,"fee":"0.10","feeToken":"USDC"});
+        let fill: WsFillData = serde_json::from_value(wire.clone()).unwrap();
+        let report =
+            parse_ws_fill_report(&fill, &instrument, account, UnixNanos::default()).unwrap();
+        let proof = OrderFilled::new(
+            TraderId::from("TESTER-001"),
+            StrategyId::from("ENTROPY-001"),
+            report.instrument_id,
+            ClientOrderId::from("ENTROPY-OPEN"),
+            report.venue_order_id,
+            account,
+            report.trade_id,
+            report.order_side,
+            OrderType::Limit,
+            report.last_qty,
+            report.last_px,
+            Currency::USD(),
+            report.liquidity_side,
+            UUID4::new(),
+            report.ts_event,
+            report.ts_init,
+            false,
+            None,
+            Some(report.commission),
+            None,
+        );
+        let aliases = Arc::new(Mutex::new(FillAliases::from_retained(vec![proof])));
+        let mut fresh = wire.clone();
+        fresh["oid"] = json!(12346);
+        fresh["tid"] = json!(102);
+        let fresh: WsFillData = serde_json::from_value(fresh).unwrap();
+        let mut conflict = wire;
+        conflict["fee"] = json!("0.20");
+        let conflict: WsFillData = serde_json::from_value(conflict).unwrap();
+        let cloids = Arc::new(Mutex::new(FifoCacheMap::new()));
+        let mut processed = FifoCache::new();
+        let result = FeedHandler::handle_user_fills(
+            &[fresh.clone(), conflict],
+            &instruments,
+            &cloids,
+            account,
+            UnixNanos::default(),
+            &mut processed,
+            &aliases,
+        );
+        assert!(
+            matches!(result,Some(NautilusWsMessage::Error(message)) if message.contains("Conflicting retained execution"))
+        );
+        assert!(!processed.contains(&101));
+        assert!(!processed.contains(&102));
+        assert!(aliases.lock().check().is_err());
+        // A fresh recovery session can still deliver the uncommitted row.
+        *aliases.lock() = FillAliases::default();
+        assert!(
+            matches!(FeedHandler::handle_user_fills(&[fresh],&instruments,&cloids,account,UnixNanos::default(),&mut processed,&aliases),Some(NautilusWsMessage::ExecutionReports(rows)) if rows.len()==1)
+        );
+        assert!(processed.contains(&102));
     }
 }

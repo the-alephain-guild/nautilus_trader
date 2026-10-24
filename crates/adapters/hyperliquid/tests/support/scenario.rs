@@ -30,6 +30,10 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 
 pub(crate) fn local_order(close: bool) -> OrderAny {
+    local_order_with_quantity(close, Quantity::from("2.00"))
+}
+
+pub(crate) fn local_order_with_quantity(close: bool, quantity: Quantity) -> OrderAny {
     OrderAny::Limit(LimitOrder::new(
         TraderId::from("TESTER-001"),
         StrategyId::from("ENTROPY-001"),
@@ -44,7 +48,7 @@ pub(crate) fn local_order(close: bool) -> OrderAny {
         } else {
             OrderSide::Buy
         },
-        Quantity::from("2.00"),
+        quantity,
         Price::from(if close { "110.00" } else { "100.00" }),
         TimeInForce::Gtc,
         None,
@@ -113,6 +117,7 @@ impl Retained {
                 .add_order(order.clone(), None, Some(*HYPERLIQUID_CLIENT_ID), false)
                 .unwrap();
         }
+
         for position in &self.positions {
             cache
                 .add_position_without_order(position, OmsType::Netting)

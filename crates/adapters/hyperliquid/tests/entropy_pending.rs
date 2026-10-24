@@ -49,6 +49,7 @@ async fn submitted_without_venue_id_recovers_original_cloid(#[case] filled: bool
     let drive = async {
         let result = async {
             wait_for(|| handle.is_running()).await?;
+
             for order in [&open, &close] {
                 if order.client_order_id() == close.client_order_id() {
                     harness
@@ -66,6 +67,7 @@ async fn submitted_without_venue_id_recovers_original_cloid(#[case] filled: bool
                         UUID4::new(),
                         UnixNanos::default(),
                     )));
+
                 if order.client_order_id() == open.client_order_id() {
                     wait_for(|| {
                         cache
@@ -142,6 +144,7 @@ async fn submitted_without_venue_id_recovers_original_cloid(#[case] filled: bool
     } else {
         vec![history(&open_fill)]
     };
+
     if !filled {
         *harness.source.open_orders.lock() = vec![harness.source.order_rows.lock()[1].clone()];
         *harness.source.perp_positions.lock() = vec![

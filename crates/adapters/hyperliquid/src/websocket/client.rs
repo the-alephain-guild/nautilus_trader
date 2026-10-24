@@ -138,6 +138,7 @@ pub struct HyperliquidWebSocketClient {
     asset_context_subs: Arc<DashMap<Ustr, AHashSet<AssetContextDataType>>>,
     all_dex_asset_ctxs_instrument_ids: Arc<AtomicMap<Ustr, Vec<Option<InstrumentId>>>>,
     cloid_cache: CloidCache,
+    pub(crate) fill_aliases: Arc<Mutex<crate::fill_identity::FillAliases>>,
     post_router: Arc<PostRouter>,
     post_ids: Arc<PostIds>,
     rate_limits: Arc<WebSocketRateLimits>,
@@ -172,6 +173,7 @@ impl Clone for HyperliquidWebSocketClient {
             asset_context_subs: Arc::clone(&self.asset_context_subs),
             all_dex_asset_ctxs_instrument_ids: Arc::clone(&self.all_dex_asset_ctxs_instrument_ids),
             cloid_cache: Arc::clone(&self.cloid_cache),
+            fill_aliases: Arc::clone(&self.fill_aliases),
             post_router: Arc::clone(&self.post_router),
             post_ids: Arc::clone(&self.post_ids),
             rate_limits: Arc::clone(&self.rate_limits),
@@ -224,6 +226,7 @@ impl HyperliquidWebSocketClient {
             asset_context_subs: Arc::new(DashMap::new()),
             all_dex_asset_ctxs_instrument_ids: Arc::new(AtomicMap::new()),
             cloid_cache: Arc::new(Mutex::new(FifoCacheMap::new())),
+            fill_aliases: Arc::default(),
             post_router: PostRouter::with_inflight(Arc::clone(&rate_limits.post_slots)),
             post_ids: Arc::new(PostIds::new(1)),
             rate_limits,
@@ -395,6 +398,7 @@ impl HyperliquidWebSocketClient {
         let book_streams = self.book_streams.clone();
         let cmd_tx_for_reconnect = cmd_tx.clone();
         let cloid_cache = Arc::clone(&self.cloid_cache);
+        let fill_aliases = Arc::clone(&self.fill_aliases);
         let post_router = Arc::clone(&self.post_router);
         let rate_limits = Arc::clone(&self.rate_limits);
         let client_id = self.client_id;
@@ -413,6 +417,8 @@ impl HyperliquidWebSocketClient {
                 Arc::clone(&rate_limits),
                 client_id,
             );
+
+            handler.fill_aliases = fill_aliases;
 
             let resubscribe_all = || {
                 let topics = subscriptions.all_topics();

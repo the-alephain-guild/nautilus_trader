@@ -24,14 +24,9 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport},
 };
 
-type FillKey = (InstrumentId, VenueOrderId, TradeId);
+use crate::fill_identity::{is_venue_id, venue_millis};
 
-// Legacy typed fills converted millisecond venue time through floating-point
-// nanoseconds. Compare their timestamps at the venue's actual resolution.
-fn venue_millis(time: nautilus_core::UnixNanos) -> u64 {
-    let nanos = time.as_u64();
-    nanos / 1_000_000 + u64::from(nanos % 1_000_000 >= 500_000)
-}
+type FillKey = (InstrumentId, VenueOrderId, TradeId);
 
 fn same_execution(a: &FillReport, b: &FillReport) -> bool {
     a.account_id == b.account_id
@@ -61,6 +56,7 @@ fn push_unique(
             "Conflicting retained fill proof for {}",
             row.trade_id
         );
+
         if rows[i].client_order_id.is_none() {
             rows[i].client_order_id = row.client_order_id;
         }
@@ -81,6 +77,7 @@ pub(crate) fn retained_fills(
     for position in cache.positions(Some(&venue), None, None, Some(&account), None) {
         candidates.extend(position.events.iter().cloned());
     }
+
     for order in cache.orders(Some(&venue), None, None, None, None) {
         for event in order.events() {
             if let OrderEventAny::Filled(fill) = event {
@@ -91,6 +88,7 @@ pub(crate) fn retained_fills(
     let mut result = Vec::new();
     let mut index = AHashMap::new();
     let mut reports = Vec::new();
+
     for fill in candidates {
         if fill.account_id != account
             || fill.instrument_id.venue != venue
@@ -104,11 +102,8 @@ pub(crate) fn retained_fills(
         let Ok(oid) = fill.venue_order_id.as_str().parse::<u64>() else {
             continue;
         };
-        let id = fill.trade_id.as_str();
-        if id.len() != 33
-            || !id.as_bytes()[..16].iter().all(|b| b.is_ascii_hexdigit())
-            || !id.ends_with(&format!("-{oid:016x}"))
-        {
+
+        if !is_venue_id(fill.trade_id, oid) {
             continue;
         }
         let Some(commission) = fill.commission else {
@@ -153,6 +148,7 @@ pub(crate) fn merge_retained_fills(
     for row in fills.drain(..) {
         push_unique(&mut rows, &mut index, row)?;
     }
+
     for fill in retained
         .iter()
         .filter(|fill| seen.contains(&fill.venue_order_id))

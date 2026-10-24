@@ -56,6 +56,7 @@ pub(crate) fn check(
     if !expected_ids.is_empty() {
         assert_eq!(ids, expected_ids);
     }
+
     for (id, oid, trades, fee, avg) in [
         (
             "ENTROPY-OPEN",
@@ -103,6 +104,7 @@ pub(crate) async fn round_trip(
         let result = async {
             wait_for(|| handle.is_running()).await?;
             let mut accepted = Vec::new();
+
             for (index, order) in orders.iter().enumerate() {
                 engine
                     .borrow()
@@ -129,6 +131,7 @@ pub(crate) async fn round_trip(
                         .clone(),
                 );
                 let time = nautilus_core::time::get_atomic_clock_realtime().get_time_ms();
+
                 for (leg, open_price) in
                     prices
                         .iter()

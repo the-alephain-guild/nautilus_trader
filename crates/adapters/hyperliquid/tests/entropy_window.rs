@@ -59,6 +59,7 @@ async fn truncated_fill_window_never_infers_execution_at_the_limit(#[case] proof
     close["order"]["limitPx"] = json!("110.00");
     *harness.source.history.lock() = vec![close, open];
     *harness.source.fills.lock() = truncated(&fills);
+
     if proof {
         retained.orders.clear();
     } else {
