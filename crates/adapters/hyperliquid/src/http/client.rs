@@ -2427,7 +2427,7 @@ impl HyperliquidHttpClient {
                     // limit remains required even when real fills supply execution prices.
                     if matches!(
                         historical_order_type,
-                        OrderType::Limit | OrderType::StopLimit
+                        OrderType::Limit | OrderType::StopLimit | OrderType::LimitIfTouched
                     ) {
                         report.price = Some(
                             Price::from_decimal_dp(limit_px, instrument.price_precision())

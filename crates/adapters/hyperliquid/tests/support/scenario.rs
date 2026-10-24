@@ -172,11 +172,18 @@ pub(crate) fn economics(node: &LiveNode) -> Vec<TradeId> {
 pub(crate) async fn live_round_trip(
     harness: &Harness,
 ) -> (Retained, Vec<OrderAny>, Vec<Value>, Vec<TradeId>) {
+    live_round_trip_with_close(harness, local_order(true)).await
+}
+
+pub(crate) async fn live_round_trip_with_close(
+    harness: &Harness,
+    close: OrderAny,
+) -> (Retained, Vec<OrderAny>, Vec<Value>, Vec<TradeId>) {
     let mut node = harness.node().await;
     let cache = node.kernel().cache();
     let engine = node.kernel().exec_engine().clone();
     let handle = node.handle();
-    let orders = [local_order(false), local_order(true)];
+    let orders = [local_order(false), close];
     let mut fills = Vec::new();
     let drive = async {
         let result=async {
