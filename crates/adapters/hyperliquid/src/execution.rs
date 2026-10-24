@@ -2215,6 +2215,20 @@ impl ExecutionClient for HyperliquidExecutionClient {
             fill_reports.retain(|r| r.ts_event >= start);
         }
 
+        let retained = crate::cache_recovery::retained_fills(
+            &self.core.cache(),
+            self.core.client_id,
+            self.core.account_id,
+            self.core.venue,
+        )?;
+        let seen = historical_orders
+            .iter()
+            .map(|entry| VenueOrderId::new(entry.order.oid.to_string()))
+            .chain(order_reports.iter().map(|report| report.venue_order_id))
+            .chain(fill_reports.iter().map(|fill| fill.venue_order_id))
+            .collect();
+        crate::cache_recovery::merge_retained_fills(&mut fill_reports, &retained, &seen)?;
+
         if !fill_reports.is_empty() {
             let filled_order_ids: ahash::AHashSet<_> = fill_reports
                 .iter()
@@ -2238,6 +2252,7 @@ impl ExecutionClient for HyperliquidExecutionClient {
         }
 
         self.rebind_retained_order_reports(&mut order_reports)?;
+        crate::cache_recovery::ensure_fill_coverage(&order_reports, &fill_reports)?;
 
         let mut mass_status = ExecutionMassStatus::new(
             self.core.client_id,

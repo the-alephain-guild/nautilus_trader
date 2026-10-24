@@ -53,6 +53,7 @@
 #![allow(clippy::clone_on_copy)]
 
 pub mod account;
+mod cache_recovery;
 pub mod common;
 pub mod config;
 pub mod data;
