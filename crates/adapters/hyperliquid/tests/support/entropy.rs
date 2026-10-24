@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -56,6 +56,10 @@ pub(crate) struct Source {
     pub(crate) queries: Mutex<Vec<Value>>,
     pub(crate) messages: tokio::sync::broadcast::Sender<Value>,
     pub(crate) subscriptions: AtomicUsize,
+    pub(crate) hold_order_updates: AtomicBool,
+    pub(crate) order_rows: Mutex<Vec<Value>>,
+    pub(crate) open_orders: Mutex<Vec<Value>>,
+    pub(crate) perp_positions: Mutex<Vec<Value>>,
 }
 
 async fn info(State(source): State<Arc<Source>>, Json(query): Json<Value>) -> Json<Value> {
@@ -70,9 +74,13 @@ async fn info(State(source): State<Arc<Source>>, Json(query): Json<Value>) -> Js
         "clearinghouseState" => json!({
             "marginSummary":{"accountValue":"1000", "totalMarginUsed":"0", "totalNtlPos":"0", "totalRawUsd":"1000"},
             "crossMarginSummary":{"accountValue":"1000", "totalMarginUsed":"0", "totalNtlPos":"0", "totalRawUsd":"1000"},
-            "crossMaintenanceMarginUsed":"0", "withdrawable":"1000", "assetPositions":[]
+            "crossMaintenanceMarginUsed":"0", "withdrawable":"1000", "assetPositions": if query["dex"]=="io" { source.perp_positions.lock().clone() } else { Vec::new() }
         }),
-        "openOrders" | "frontendOpenOrders" => json!([]),
+        "openOrders" | "frontendOpenOrders" => json!(if query["dex"] == "io" {
+            source.open_orders.lock().clone()
+        } else {
+            Vec::new()
+        }),
         "userFills" => json!(source.fills.lock().clone()),
         "historicalOrders" => json!(source.history.lock().clone()),
         "orderStatus" => json!({"status":"unknownOid"}),
@@ -109,8 +117,10 @@ async fn serve_socket(mut socket: WebSocket, source: Arc<Source>) {
                                 order_update = Some(json!({"channel":"orderUpdates", "data":[{
                                     "order":{"coin":"io:SNDK", "side":if order["b"]==true {"B"} else {"A"},
                                     "limitPx":order["p"], "sz":order["s"], "origSz":order["s"], "oid":oid,
-                                    "timestamp":now, "cloid":order["c"]}, "status":"open", "statusTimestamp":now
+                                    "timestamp":now, "cloid":order["c"], "reduceOnly":order["r"], "tif":order["t"]["limit"]["tif"]}, "status":"open", "statusTimestamp":now
                                 }]}));
+                                source.order_rows.lock().push(order_update.as_ref().unwrap()["data"][0]["order"].clone());
+                                if source.hold_order_updates.load(Ordering::SeqCst) { order_update = None; }
                                 Some(json!({"channel":"post", "data":{"id":value["id"], "response":{"type":"action", "payload":{
                                     "status":"ok", "response":{"type":"order", "data":{"statuses":[{"resting":{"oid":oid}}]}}
                                 }}}}))
@@ -169,6 +179,10 @@ impl Harness {
             queries: Mutex::new(Vec::new()),
             messages: tokio::sync::broadcast::channel(32).0,
             subscriptions: AtomicUsize::new(0),
+            hold_order_updates: AtomicBool::new(false),
+            order_rows: Mutex::new(Vec::new()),
+            open_orders: Mutex::new(Vec::new()),
+            perp_positions: Mutex::new(Vec::new()),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());

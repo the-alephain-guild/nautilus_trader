@@ -446,8 +446,42 @@ impl HyperliquidExecutionClient {
             Some(&self.core.account_id),
             None,
         );
+        let mut cloid_orders = AHashMap::new();
+        for order in cache.orders(Some(&self.core.venue), None, None, None, None) {
+            let id = order.client_order_id();
+            if order.account_id() != Some(self.core.account_id)
+                || cache
+                    .client_id(&id)
+                    .is_some_and(|client| *client != self.core.client_id)
+            {
+                continue;
+            }
+            let cloid = self
+                .http_client
+                .cached_client_order_id_cloid(&id)
+                .unwrap_or_else(|| Cloid::from_client_order_id(id))
+                .to_hex();
+            anyhow::ensure!(
+                cloid_orders
+                    .insert(cloid, id)
+                    .is_none_or(|previous| previous == id),
+                "Ambiguous cached CLOID for {id}",
+            );
+        }
         for report in reports {
             let mut original = cache.client_order_id(&report.venue_order_id).copied();
+            if let Some(id) = report
+                .client_order_id
+                .and_then(|cloid| cloid_orders.get(cloid.as_str()))
+                .copied()
+            {
+                anyhow::ensure!(
+                    original.is_none_or(|previous| previous == id),
+                    "Historical order {} CLOID conflicts with cached identity",
+                    report.venue_order_id
+                );
+                original = Some(id);
+            }
             if let Some(order) = original.and_then(|id| cache.order(&id)) {
                 anyhow::ensure!(
                     order.instrument_id() == report.instrument_id
