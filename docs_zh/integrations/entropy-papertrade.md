@@ -138,6 +138,73 @@ Hyperliquid 合约保留 USD 报价和 USDC 结算标识；Nautilus 此处按其
 本轮没有提交真实交易所订单或操作资金。实际运行的节点连接本地模拟服务；主网账户的
 订单接收、真实成交和资金结算仍需另行授权的账户验收。
 
+## Entropy 第二轮恢复修复（2026-10-24）
+
+本轮基线为 `16ec38e4db`，修复复审指出的两个 P1 与两个 P2。仍使用原生 Rust LiveNode、
+实际 Hyperliquid 工厂和执行引擎，订单请求仅发往本地 HTTP/WebSocket 故障服务。
+`d4abf94dbc` 先提取共享场景，原有八个 LiveNode 用例继续通过。
+
+| 问题                       | 修复提交         | 失败复现与最终行为                                                                                |
+| ------------------------ | ------------ | ---------------------------------------------------------------------------------------- |
+| P1：Submitted 没有 venue ID | `5f2f443f65` | 服务已收到请求，但扣住 Accepted 通知；原实现跨重启产生第三张影子订单。修复按原 CLOID 找回本地订单，分别验证仍挂单与已成交的平仓，并再次重启。          |
+| P1：成交窗口截断                | `e0a576e41a` | 2,000 行窗口缺少第一笔开仓成交，原实现使用限价生成推断成交。修复只合并已核验的缓存成交证明；证据不足时启动失败，订单、仓位和佣金不增加。补齐历史后可以恢复。        |
+| P2：LimitIfTouched 历史恢复   | `8bce89e7a9` | 只有最终 Take Profit Limit 历史行时，原实现丢失限价，订单无法重建。恢复报告保留限价 109.50、触发价 110.00，实际成交价仍为 110.00。    |
+| P2：跨编码 Trade ID          | `4bb745a8a5` | 等值小数的不同位数导致原实现把已成交量从 2 重放到 4。新成交使用规范化指纹，旧缓存通过旧指纹验证保留原 ID；同时修正部分成交挂单仍被报告为 Accepted 的恢复状态。 |
+
+窗口测试使用两笔开仓 `1 @ 90`、`1 @ 95` 和平仓 `2 @ 115`，原始限价分别为 100 和 110。
+恢复与再次重启均必须得到三个原始 Trade ID，开仓均价 92.5，平仓均价 115，价差盈亏
+45 USD，订单佣金分别为 0.20 与 0.30 USDC。窗口中的其他行来自当前 metadata 无法解析的
+退市市场，不能用它们证明 Entropy 成交完整。保留仓位证明可以补齐本单缺少的成交，
+但不会把达到端点上限的全局扫描标记改成完整。没有证明时不按限价估算缺少的成交。
+
+跨编码测试分为新旧缓存与保留订单、只保留仓位的四种组合。买单数量为 4，实际只成交
+两笔数量为 1 的成交；两笔成交的交易哈希、时间、价格和数量相同，`startPosition` 分别为
+0 和 1。REST 首次恢复、恢复后的 WebSocket 回放以及再次重启的 REST 历史分别独立改变
+小数位数，且保持金额数值不变。WebSocket 同一帧还携带一笔新的平仓成交，测试等待该成交
+完成后才断言结果，防止旧成交尚未处理就提前通过。
+
+最终买单必须仍为 PartiallyFilled，成交量为 2，保留原客户端 ID、venue ID、策略和两个
+Trade ID；平仓成交仅增加第三个 Trade ID。两次重启后仓位关闭，价差盈亏仍为 20 USD，
+累计佣金仍为 0.50 USDC。买单仍有未成交余量，因此重复回放确实能改变仓位，测试不会只靠
+超量成交保护拒绝重复事件而通过。所有恢复均不重新提交订单。
+
+新 Trade ID 格式为 `HL-{指纹16位十六进制}-{订单ID16位十六进制}`，长度为 36。指纹将
+价格、数量和 `startPosition` 的 Decimal 尾零规范化，并分隔变长字段。旧缓存原有的
+33 字符 Trade ID 不改写：先由账户、合约、订单和毫秒时间缩小候选，再验证旧 FNV 指纹
+是否可由同一组成交事实的合法 Decimal 编码生成，最后核对方向、价格、数量、费用和流动性。
+没有旧证明时使用新格式，不能凭价量时间猜测旧 ID。两个旧 ID 同时匹配同一成交或费用冲突时，
+恢复返回错误，客户端拒绝后续提交和改单；不会自动合并已重复记账的缓存。
+
+额外故障测试确认，WebSocket 一帧中的后一行校验失败时，前面的新成交也不会提前写入
+已处理标记，新的恢复会话仍能收到这笔成交。旧版浮点纳秒时间只按场所提供的毫秒精度比较；
+内部仓位 ID 不作为场所仓位 ID 发送。推断成交生成的 UUID 不作为缓存成交证明。
+
+验证代码截至 `4bb745a8a5`：Hyperliquid Rust 串行全套 1,151 项通过，零失败，两个原有
+测试忽略项不变；另有六个原有文档样例保持忽略。实际运行 LiveNode 的用例共 17 项，较上一轮
+增加九项。all-targets Clippy、Rustfmt、控制流格式约定、测试约定、47 成员 workspace
+inventory 与生成文件漂移检查通过。
+
+`make build-debug SCCACHE=` 成功重建并安装 Python 原生扩展，保留既有的 macOS
+unwind table 链接器警告。重建后的 Entropy 与 Hyperliquid 工厂 Python 回归 13 项通过；
+生成文件未产生漂移，Markdown lint、表格格式与差异检查通过。
+
+复现与回归命令示例：
+
+```bash
+cargo test -p nautilus-hyperliquid --test entropy_pending --locked
+cargo test -p nautilus-hyperliquid --test entropy_window --locked
+cargo test -p nautilus-hyperliquid --test entropy_conditional --locked
+cargo test -p nautilus-hyperliquid --test entropy_encoding --locked
+cargo test -p nautilus-hyperliquid --locked -- --test-threads=1
+cargo clippy -p nautilus-hyperliquid --all-targets --locked -- -D warnings
+```
+
+详细日志保存在本地 `target/entropy-round2-*.log`。其中 `submitted-red`、`window-red`、
+`lit-red` 与 `encoding-original-red` 记录对应失败；`rust-full` 和 `clippy` 记录最终全套结果。
+缓存样本来自实际 LiveNode 事件处理，通过公开缓存接口加载到新节点；旧格式样本仅将这些
+真实缓存事件的 Trade ID 替换为冻结旧算法生成的 ID，保留其他经济字段。此次验证不包含
+Redis/PostgreSQL 驱动自身掉电原子性，也没有向真实场所下单或操作资金。
+
 ## Papertrade 实现方式
 
 新增 crate 位于
