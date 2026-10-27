@@ -21,13 +21,13 @@ use std::{
 
 use alloy_primitives::Address;
 use anyhow::{Result, ensure};
+pub use nautilus_common::clients::ExecutionJournalIdentity as JournalIdentitySnapshot;
 use nautilus_core::UUID4;
 use redb::{
     Database, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
     backends::FileBackend,
 };
 use same_file::Handle;
-use serde::{Deserialize, Serialize};
 
 use super::META;
 use crate::signing::EXCHANGE;
@@ -35,14 +35,6 @@ use crate::signing::EXCHANGE;
 pub(super) const UUID_KEY: &str = "journal_uuid";
 pub(super) const REVISION_KEY: &str = "journal_revision";
 pub(super) const MAX_REVISION: u64 = u64::MAX / 2;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JournalIdentitySnapshot {
-    pub schema_version: u8,
-    pub journal_id: UUID4,
-    pub revision: u64,
-    pub owner: String,
-}
 
 /// Reuse redb's locked backend while forbidding its empty-file creation branch.
 #[derive(Debug)]

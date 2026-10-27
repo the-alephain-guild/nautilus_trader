@@ -1,0 +1,40 @@
+// -------------------------------------------------------------------------------------------------
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+//  https://nautechsystems.io
+//
+//  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+//  You may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+// -------------------------------------------------------------------------------------------------
+
+//! Read-only identity evidence from an execution client's persistent journal.
+
+use std::fmt::Debug;
+
+use nautilus_core::UUID4;
+use serde::{Deserialize, Serialize};
+
+/// Identifies a persistent journal and its committed transaction revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionJournalIdentity {
+    pub schema_version: u8,
+    pub journal_id: UUID4,
+    pub revision: u64,
+    pub owner: String,
+}
+
+/// Reads current evidence from the journal already owned by an execution client.
+pub trait ExecutionJournalIdentityProbe: Debug + Send + Sync {
+    /// Returns a fresh committed snapshot without reopening the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the original journal is unavailable or its identity cannot be verified.
+    fn snapshot(&self) -> anyhow::Result<ExecutionJournalIdentity>;
+}

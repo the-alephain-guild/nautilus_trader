@@ -20,11 +20,13 @@
 
 mod data;
 mod execution;
+mod journal;
 
 use std::fmt::{Debug, Display};
 
 pub use data::DataClient;
 pub use execution::{DEFAULT_POSITION_RECONCILIATION_TOLERANCE, ExecutionClient};
+pub use journal::{ExecutionJournalIdentity, ExecutionJournalIdentityProbe};
 
 #[inline(always)]
 fn log_not_implemented<T: Debug>(cmd: &T) {

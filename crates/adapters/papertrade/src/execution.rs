@@ -28,7 +28,7 @@ use alloy_primitives::{Address, U256};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use nautilus_common::{
-    clients::ExecutionClient,
+    clients::{ExecutionClient, ExecutionJournalIdentityProbe},
     live::{get_runtime, runner::get_exec_event_sender},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
@@ -79,7 +79,7 @@ pub(crate) struct Inner {
     pub signer: Option<PapertradeSigner>,
     pub api: PapertradeApi,
     pub relayer: PapertradeRelayerClient,
-    pub journal: Journal,
+    pub journal: Arc<Journal>,
     pub snapshot: RwLock<Option<AccountSnapshot>>,
     pub trading: RwLock<Option<TradingState>>,
     pub bundle: RwLock<Option<ReportBundle>>,
@@ -170,7 +170,7 @@ impl PapertradeExecutionClient {
             config,
             wallet,
             signer,
-            journal,
+            journal: Arc::new(journal),
             snapshot: RwLock::new(checkpoint),
             trading: RwLock::new(None),
             bundle: RwLock::new(None),
@@ -417,6 +417,10 @@ impl PapertradeExecutionClient {
 
 #[async_trait(?Send)]
 impl ExecutionClient for PapertradeExecutionClient {
+    fn journal_identity_probe(&self) -> Option<Arc<dyn ExecutionJournalIdentityProbe>> {
+        Some(self.inner.journal.identity_probe())
+    }
+
     fn is_connected(&self) -> bool {
         self.core.is_connected() && self.inner.available()
     }

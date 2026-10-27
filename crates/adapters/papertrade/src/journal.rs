@@ -17,9 +17,11 @@
 
 use std::path::Path;
 
+use std::sync::{Arc, Weak};
+
 use alloy_primitives::{Address, B256, U256};
 use anyhow::{Result, ensure};
-use nautilus_common::messages::execution::SubmitOrder;
+use nautilus_common::{clients::ExecutionJournalIdentityProbe, messages::execution::SubmitOrder};
 use nautilus_core::UUID4;
 use nautilus_model::{enums::OrderStatus, identifiers::ClientOrderId, reports::FillReport};
 use redb::{Durability, ReadableDatabase, ReadableTable, TableDefinition};
@@ -35,6 +37,18 @@ const META: TableDefinition<&str, &str> = TableDefinition::new("metadata");
 const ORDERS: TableDefinition<&str, &str> = TableDefinition::new("orders");
 const POSITIONS: TableDefinition<&str, &str> = TableDefinition::new("observed_positions");
 const CLOSES: TableDefinition<&str, &str> = TableDefinition::new("observed_closes");
+
+#[derive(Debug)]
+struct JournalProbe(Weak<Journal>);
+
+impl ExecutionJournalIdentityProbe for JournalProbe {
+    fn snapshot(&self) -> Result<JournalIdentitySnapshot> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("Original execution journal is unavailable"))?
+            .identity_snapshot()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalEntry {
@@ -80,6 +94,10 @@ pub struct Journal {
 }
 
 impl Journal {
+    pub(crate) fn identity_probe(self: &Arc<Self>) -> Arc<dyn ExecutionJournalIdentityProbe> {
+        Arc::new(JournalProbe(Arc::downgrade(self)))
+    }
+
     /// Explicit first creation. Existing files are never reused or overwritten.
     pub fn initialize_new(path: &Path, wallet: Address, account: &str) -> Result<Self> {
         let storage = JournalStorage::create_new(path, wallet, account)?;

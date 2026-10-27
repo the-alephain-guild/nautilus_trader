@@ -15,6 +15,8 @@
 
 //! Execution client trait definition.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_core::{DurationNanos, Params, UnixNanos, time::get_atomic_clock_realtime};
@@ -30,7 +32,7 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use super::log_not_implemented;
+use super::{ExecutionJournalIdentityProbe, log_not_implemented};
 use crate::messages::execution::{
     BatchCancelOrders, BatchModifyOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
     GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -57,6 +59,13 @@ pub trait ExecutionClient {
     fn venue(&self) -> Venue;
     fn oms_type(&self) -> OmsType;
     fn get_account(&self) -> Option<AccountAny>;
+
+    /// Returns a read-only probe for a supported persistent journal.
+    ///
+    /// The default indicates unsupported identity evidence and cannot certify journal continuity.
+    fn journal_identity_probe(&self) -> Option<Arc<dyn ExecutionJournalIdentityProbe>> {
+        None
+    }
 
     /// Returns the maximum absolute position difference tolerated during reconciliation.
     fn position_reconciliation_tolerance(&self) -> Decimal {

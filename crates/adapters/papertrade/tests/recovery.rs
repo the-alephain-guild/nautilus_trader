@@ -20,6 +20,61 @@ use serde_json::{Value, json};
 mod support;
 use support::{Harness, SERIAL, closed_history, mark_attempted, prepared_open};
 
+#[tokio::test]
+async fn journal_probe_reads_current_commits_and_does_not_retain_the_client_journal() {
+    use nautilus_papertrade::journal::Journal;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut client = harness.client();
+    let probe = client
+        .journal_identity_probe()
+        .expect("Persistent journal probe is unsupported");
+    let initial = probe.snapshot().unwrap();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let current = probe.snapshot().unwrap();
+    assert_eq!(current.journal_id, initial.journal_id);
+    assert_eq!(current.owner, initial.owner);
+    assert!(current.revision > initial.revision);
+    client.disconnect().await.unwrap();
+    drop(client);
+    assert!(probe.snapshot().is_err());
+    let wallet = harness.source.wallet.borrow()["address"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let recovered = Journal::recover_existing(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+        current.journal_id,
+        current.revision,
+    )
+    .unwrap();
+    assert!(recovered.identity_snapshot().unwrap().revision >= current.revision);
+}
+
+#[rstest::rstest]
+#[case::removed(false)]
+#[case::copied_same_uuid(true)]
+#[tokio::test]
+async fn journal_probe_rejects_replaced_storage(#[case] replace: bool) {
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let client = harness.client();
+    let probe = client
+        .journal_identity_probe()
+        .expect("Persistent journal probe is unsupported");
+    probe.snapshot().unwrap();
+    let retained = harness.config.journal_path.with_extension("retained");
+    std::fs::rename(&harness.config.journal_path, &retained).unwrap();
+    if replace {
+        std::fs::copy(&retained, &harness.config.journal_path).unwrap();
+    }
+    assert!(probe.snapshot().is_err());
+}
+
 #[rstest::rstest]
 #[case(None)]
 #[case(Some(0))]

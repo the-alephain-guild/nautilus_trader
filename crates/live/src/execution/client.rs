@@ -22,11 +22,11 @@
 //! second adapter client instance. Instrument updates are deferred while a client request is in
 //! progress and flushed when the request completes.
 
-use std::{cell::RefCell, collections::VecDeque, fmt::Debug, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt::Debug, rc::Rc, sync::Arc};
 
 use async_trait::async_trait;
 use nautilus_common::{
-    clients::ExecutionClient,
+    clients::{ExecutionClient, ExecutionJournalIdentityProbe},
     messages::execution::{
         BatchCancelOrders, BatchModifyOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -175,6 +175,10 @@ impl LiveExecutionClient {
 
 #[async_trait(?Send)]
 impl ExecutionClient for LiveExecutionClient {
+    fn journal_identity_probe(&self) -> Option<Arc<dyn ExecutionJournalIdentityProbe>> {
+        self.client.borrow().journal_identity_probe()
+    }
+
     fn is_connected(&self) -> bool {
         self.client.borrow().is_connected()
     }

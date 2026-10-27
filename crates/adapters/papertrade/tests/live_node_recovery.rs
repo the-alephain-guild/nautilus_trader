@@ -23,6 +23,30 @@ use support::{Harness, SERIAL, closed_history};
 mod node;
 use node::{RetainedCache, account_node, run_account_node};
 
+#[tokio::test]
+async fn live_node_exposes_the_original_journal_probe_through_its_execution_facade() {
+    use nautilus_model::identifiers::ClientId;
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut node = account_node(&harness);
+    let probe = node
+        .kernel()
+        .exec_engine
+        .borrow()
+        .get_client(&ClientId::from("PAPERTRADE"))
+        .unwrap()
+        .journal_identity_probe()
+        .expect("Live execution facade lost the journal probe");
+    let before = probe.snapshot().unwrap();
+    run_account_node(&mut node).await;
+    let after = probe.snapshot().unwrap();
+    assert_eq!(after.journal_id, before.journal_id);
+    assert!(after.revision > before.revision);
+    node.dispose();
+    drop(node);
+    assert!(probe.snapshot().is_err());
+}
+
 #[rstest::rstest]
 #[case::unregistered(None, false)]
 #[case::expired(Some(0), false)]
