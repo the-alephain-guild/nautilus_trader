@@ -54,7 +54,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     api::{PapertradeApi, WalletActivity},
-    config::{PAPERTRADE, PapertradeExecutionClientConfig},
+    config::{PAPERTRADE, PapertradeExecutionClientConfig, PapertradeJournalOpenMode},
     http::{IntentState, PapertradeRelayerClient, SubmissionOutcome},
     journal::Journal,
     reports,
@@ -149,7 +149,24 @@ impl PapertradeExecutionClient {
             core.account_type,
             core.base_currency,
         );
-        let journal = Journal::open(&config.journal_path, wallet, config.account_id.as_str())?;
+        let journal = match &config.journal_open {
+            PapertradeJournalOpenMode::Unregistered {} => {
+                Journal::open(&config.journal_path, wallet, config.account_id.as_str())?
+            }
+            PapertradeJournalOpenMode::InitializeNew {} => {
+                Journal::initialize_new(&config.journal_path, wallet, config.account_id.as_str())?
+            }
+            PapertradeJournalOpenMode::RecoverExisting {
+                journal_id,
+                minimum_revision,
+            } => Journal::recover_existing(
+                &config.journal_path,
+                wallet,
+                config.account_id.as_str(),
+                *journal_id,
+                *minimum_revision,
+            )?,
+        };
         journal.recover_unsent()?;
         let checkpoint = journal.snapshot()?;
         if let Some(snapshot) = &checkpoint {

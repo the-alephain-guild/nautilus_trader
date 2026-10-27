@@ -20,6 +20,129 @@ use serde_json::{Value, json};
 mod support;
 use support::{Harness, SERIAL, closed_history, mark_attempted, prepared_open};
 
+fn configured_client(
+    harness: &Harness,
+) -> anyhow::Result<Box<dyn nautilus_common::clients::ExecutionClient>> {
+    use nautilus_common::factories::ExecutionClientFactory;
+    use nautilus_papertrade::factories::PapertradeExecutionClientFactory;
+    PapertradeExecutionClientFactory.create(
+        TraderId::from("TESTER-001"),
+        "PAPERTRADE",
+        &harness.config,
+        harness.cache.clone().into(),
+    )
+}
+
+#[rstest::rstest]
+#[case::missing(false)]
+#[case::empty(true)]
+#[tokio::test]
+async fn registered_factory_recovery_never_creates_journal_storage(#[case] empty: bool) {
+    use nautilus_core::UUID4;
+    use nautilus_papertrade::config::PapertradeJournalOpenMode;
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    if empty {
+        std::fs::write(&harness.config.journal_path, []).unwrap();
+    }
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: UUID4::new(),
+        minimum_revision: 1,
+    };
+    assert!(configured_client(&harness).is_err());
+    if empty {
+        assert_eq!(
+            std::fs::metadata(&harness.config.journal_path)
+                .unwrap()
+                .len(),
+            0
+        );
+    } else {
+        assert!(!harness.config.journal_path.exists());
+    }
+}
+
+#[tokio::test]
+async fn registered_factory_initialization_is_exclusive() {
+    use nautilus_papertrade::config::PapertradeJournalOpenMode;
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    harness.config.journal_open = PapertradeJournalOpenMode::InitializeNew {};
+    let client = configured_client(&harness).unwrap();
+    let before = client.journal_identity_probe().unwrap().snapshot().unwrap();
+    drop(client);
+    assert!(configured_client(&harness).is_err());
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: before.journal_id,
+        minimum_revision: before.revision,
+    };
+    let client = configured_client(&harness).unwrap();
+    assert_eq!(
+        client.journal_identity_probe().unwrap().snapshot().unwrap(),
+        before
+    );
+}
+
+#[rstest::rstest]
+#[case::wrong_uuid(true)]
+#[case::higher_floor(false)]
+#[tokio::test]
+async fn registered_factory_checks_identity_before_recovering_unsent_orders(
+    #[case] wrong_uuid: bool,
+) {
+    use nautilus_core::UUID4;
+    use nautilus_papertrade::{
+        config::PapertradeJournalOpenMode, journal::Journal, wire::VenuePosition,
+    };
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let entry = prepared_open(&harness, &position, now, now + 3600);
+    let wallet = source["address"].as_str().unwrap().parse().unwrap();
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+    )
+    .unwrap();
+    let before = journal.identity_snapshot().unwrap();
+    drop(journal);
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: if wrong_uuid {
+            UUID4::new()
+        } else {
+            before.journal_id
+        },
+        minimum_revision: before.revision + u64::from(!wrong_uuid),
+    };
+    assert!(configured_client(&harness).is_err());
+    let journal = Journal::recover_existing(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+        before.journal_id,
+        before.revision,
+    )
+    .unwrap();
+    assert_eq!(journal.identity_snapshot().unwrap(), before);
+    let retained = journal.entries().unwrap().pop().unwrap();
+    assert_eq!(retained.status, entry.status);
+    assert!(!retained.send_attempted);
+    assert_eq!(retained.body, entry.body);
+    drop(journal);
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: before.journal_id,
+        minimum_revision: before.revision,
+    };
+    let client = configured_client(&harness).unwrap();
+    let recovered = client.journal_identity_probe().unwrap().snapshot().unwrap();
+    assert_eq!(recovered.journal_id, before.journal_id);
+    assert!(recovered.revision > before.revision);
+}
+
 #[tokio::test]
 async fn journal_probe_reads_current_commits_and_does_not_retain_the_client_journal() {
     use nautilus_papertrade::journal::Journal;
@@ -190,8 +313,28 @@ fn legacy_execution_configuration_does_not_implicitly_enable_observation() {
     assert!(!config.read_only);
     let mut value = serde_json::to_value(config).unwrap();
     value.as_object_mut().unwrap().remove("read_only");
+    value.as_object_mut().unwrap().remove("journal_open");
     let restored: PapertradeExecutionClientConfig = serde_json::from_value(value).unwrap();
     assert!(!restored.read_only);
+    assert!(matches!(
+        restored.journal_open,
+        nautilus_papertrade::config::PapertradeJournalOpenMode::Unregistered {}
+    ));
+}
+
+#[rstest::rstest]
+#[case(json!({"mode":"unknown"}))]
+#[case(json!({"mode":"initialize_new","minimum_revision":1}))]
+#[case(json!({"mode":"unregistered","unexpected":true}))]
+#[case(json!({"mode":"recover_existing","minimum_revision":1}))]
+#[case(json!({"mode":"recover_existing","journal_id":"11111111-1111-4111-8111-111111111111"}))]
+#[case(json!({"mode":"recover_existing","journal_id":"invalid","minimum_revision":1}))]
+#[case(json!({"mode":"recover_existing","journal_id":"11111111-1111-4111-8111-111111111111","minimum_revision":1,"unexpected":true}))]
+fn journal_open_configuration_refuses_unknown_or_incomplete_material(#[case] value: Value) {
+    assert!(
+        serde_json::from_value::<nautilus_papertrade::config::PapertradeJournalOpenMode>(value)
+            .is_err()
+    );
 }
 
 #[tokio::test]

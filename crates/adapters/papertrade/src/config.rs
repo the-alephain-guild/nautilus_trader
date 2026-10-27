@@ -15,12 +15,31 @@
 
 //! Live client configuration; private keys remain outside the journal.
 
-use nautilus_core::string::secret::SecretString;
+use nautilus_core::{UUID4, string::secret::SecretString};
 use nautilus_model::identifiers::AccountId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const PAPERTRADE: &str = "PAPERTRADE";
+
+/// Selects first creation or recovery bound to a previously registered journal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PapertradeJournalOpenMode {
+    /// Preserves the unregistered native client's existing open-or-create behavior.
+    Unregistered {},
+    InitializeNew {},
+    RecoverExisting {
+        journal_id: UUID4,
+        minimum_revision: u64,
+    },
+}
+
+impl Default for PapertradeJournalOpenMode {
+    fn default() -> Self {
+        Self::Unregistered {}
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(
@@ -64,6 +83,8 @@ pub struct PapertradeExecutionClientConfig {
     #[serde(default)]
     pub read_only: bool,
     pub journal_path: PathBuf,
+    #[serde(default)]
+    pub journal_open: PapertradeJournalOpenMode,
     pub build_id: String,
     pub leverage: u32,
     pub origin: String,
@@ -85,6 +106,7 @@ impl PapertradeExecutionClientConfig {
             session_private_key: None,
             read_only: false,
             journal_path,
+            journal_open: PapertradeJournalOpenMode::default(),
             build_id,
             leverage: 10,
             origin: public.origin,
