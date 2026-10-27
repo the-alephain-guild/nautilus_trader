@@ -28,15 +28,7 @@ use support::{Harness, SERIAL, closed_history, mark_attempted, prepared_open};
 async fn observation_survives_inactive_trade_authorization(
     #[case] remaining_session_seconds: Option<u64>,
 ) {
-    use nautilus_common::messages::{ExecutionEvent, execution::SubmitOrder};
-    use nautilus_core::{UUID4, time::get_atomic_clock_realtime};
-    use nautilus_model::{
-        enums::OrderType,
-        events::OrderEventAny,
-        identifiers::{ClientOrderId, InstrumentId},
-        orders::{Order, builder::OrderTestBuilder},
-        types::Quantity,
-    };
+    use nautilus_core::time::get_atomic_clock_realtime;
     let _serial = SERIAL.lock().await;
     let mut harness = Harness::new().await;
     let mut source = harness.source.wallet.borrow().clone();
@@ -52,6 +44,35 @@ async fn observation_survives_inactive_trade_authorization(
         },
     );
     harness.source.wallet.send_replace(source);
+    assert_observation_only(&mut harness, "Session key").await;
+}
+
+#[rstest::rstest]
+#[case::no_key(None)]
+#[case::invalid_key(Some("not-a-private-key"))]
+#[case::valid_registered_key(Some(
+    "0x1111111111111111111111111111111111111111111111111111111111111111"
+))]
+#[tokio::test]
+async fn read_only_observer_does_not_load_or_require_a_trading_key(#[case] key: Option<&str>) {
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    harness.config.read_only = true;
+    harness.config.session_private_key = key.map(Into::into);
+    assert_observation_only(&mut harness, "read-only").await;
+}
+
+async fn assert_observation_only(harness: &mut Harness, expected_reason: &str) {
+    use nautilus_common::messages::{ExecutionEvent, execution::SubmitOrder};
+    use nautilus_core::{UUID4, time::get_atomic_clock_realtime};
+    use nautilus_model::{
+        enums::OrderType,
+        events::OrderEventAny,
+        identifiers::{ClientOrderId, InstrumentId},
+        orders::{Order, builder::OrderTestBuilder},
+        types::Quantity,
+    };
+    let now = get_atomic_clock_realtime().get_time_ns();
     let mut client = harness.client();
     client.start().unwrap();
     client.connect().await.unwrap();
@@ -84,7 +105,7 @@ async fn observation_survives_inactive_trade_authorization(
     while let Ok(event) = harness._events.try_recv() {
         if let ExecutionEvent::Order(OrderEventAny::Denied(event)) = event {
             denied |= event.client_order_id == order.client_order_id()
-                && event.reason.contains("Session key");
+                && event.reason.contains(expected_reason);
         }
     }
     client.disconnect().await.unwrap();
@@ -98,6 +119,84 @@ async fn observation_survives_inactive_trade_authorization(
     )
     .unwrap();
     assert!(journal.entries().unwrap().is_empty());
+}
+
+#[rstest::rstest]
+fn legacy_execution_configuration_does_not_implicitly_enable_observation() {
+    use nautilus_model::identifiers::AccountId;
+    use nautilus_papertrade::config::PapertradeExecutionClientConfig;
+
+    let config = PapertradeExecutionClientConfig::new(
+        AccountId::from("PAPERTRADE-001"),
+        "0x19ea302761c7ca11d4252f7e9ad2ca199d0e0380".into(),
+        "fixture.redb".into(),
+        "test-build".into(),
+    );
+    assert!(!config.read_only);
+    let mut value = serde_json::to_value(config).unwrap();
+    value.as_object_mut().unwrap().remove("read_only");
+    let restored: PapertradeExecutionClientConfig = serde_json::from_value(value).unwrap();
+    assert!(!restored.read_only);
+}
+
+#[tokio::test]
+async fn execution_configuration_does_not_silently_downgrade_invalid_credentials() {
+    use nautilus_common::factories::ExecutionClientFactory;
+    use nautilus_papertrade::factories::PapertradeExecutionClientFactory;
+
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    harness.config.session_private_key = Some("not-a-private-key".into());
+    let result = PapertradeExecutionClientFactory.create(
+        TraderId::from("TESTER-001"),
+        "PAPERTRADE",
+        &harness.config,
+        harness.cache.clone().into(),
+    );
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Invalid session private key")
+    );
+}
+
+#[tokio::test]
+async fn read_only_observer_cannot_cancel_a_retained_signed_intent() {
+    use nautilus_common::messages::execution::CancelOrder;
+    use nautilus_core::{UUID4, time::get_atomic_clock_realtime};
+    use nautilus_model::identifiers::VenueOrderId;
+    use nautilus_papertrade::wire::VenuePosition;
+
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let snapshot = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(snapshot["openPositions"][0].clone()).unwrap();
+    let now = get_atomic_clock_realtime().get_time_ns();
+    let seconds = now.as_u64() / 1_000_000_000;
+    let entry = prepared_open(&harness, &position, seconds, seconds + 3_600);
+    mark_attempted(&harness, &entry);
+    harness.config.read_only = true;
+    harness.config.session_private_key = None;
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let result = client.cancel_order(CancelOrder::new(
+        entry.command.trader_id,
+        entry.command.client_id,
+        entry.command.strategy_id,
+        entry.command.instrument_id,
+        entry.command.client_order_id,
+        Some(VenueOrderId::from(format!("{:#x}", entry.intent_id))),
+        UUID4::new(),
+        now,
+        None,
+        None,
+    ));
+    assert!(result.unwrap_err().to_string().contains("read-only"));
+    client.disconnect().await.unwrap();
 }
 
 #[tokio::test]

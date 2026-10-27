@@ -76,7 +76,7 @@ pub(crate) struct Inner {
         parking_lot::Mutex<std::collections::HashSet<nautilus_model::identifiers::ClientOrderId>>,
     pub config: PapertradeExecutionClientConfig,
     pub wallet: Address,
-    pub signer: PapertradeSigner,
+    pub signer: Option<PapertradeSigner>,
     pub api: PapertradeApi,
     pub relayer: PapertradeRelayerClient,
     pub journal: Journal,
@@ -111,27 +111,36 @@ pub struct PapertradeExecutionClient {
     outbound: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 impl PapertradeExecutionClient {
-    pub fn new(core: ExecutionClientCore, config: PapertradeExecutionClientConfig) -> Result<Self> {
+    pub fn new(
+        core: ExecutionClientCore,
+        mut config: PapertradeExecutionClientConfig,
+    ) -> Result<Self> {
         ensure!(
             config.leverage > 0 && config.leverage <= 1_000 && config.poll_interval_ms >= 500,
             "Invalid execution configuration"
         );
         let wallet: Address = config.wallet_address.parse()?;
-        let key = config
-            .session_private_key
-            .clone()
-            .or_else(|| {
-                std::env::var("PAPERTRADE_SESSION_PRIVATE_KEY")
-                    .ok()
-                    .map(Into::into)
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!("Set PAPERTRADE_SESSION_PRIVATE_KEY or session_private_key")
-            })?;
-        let signer: PrivateKeySigner = key
-            .expose_secret()
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid session private key"))?;
+        let signer = if config.read_only {
+            config.session_private_key = None;
+            None
+        } else {
+            let key = config
+                .session_private_key
+                .clone()
+                .or_else(|| {
+                    std::env::var("PAPERTRADE_SESSION_PRIVATE_KEY")
+                        .ok()
+                        .map(Into::into)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Set PAPERTRADE_SESSION_PRIVATE_KEY or session_private_key")
+                })?;
+            let signer: PrivateKeySigner = key
+                .expose_secret()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid session private key"))?;
+            Some(PapertradeSigner::new(signer))
+        };
         let clock = get_atomic_clock_realtime();
         let emitter = ExecutionEventEmitter::new(
             clock,
@@ -160,7 +169,7 @@ impl PapertradeExecutionClient {
             )?,
             config,
             wallet,
-            signer: PapertradeSigner::new(signer),
+            signer,
             journal,
             snapshot: RwLock::new(checkpoint),
             trading: RwLock::new(None),
@@ -199,17 +208,22 @@ impl PapertradeExecutionClient {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Papertrade not reconciled"))
     }
-    fn auth(&self, account: &AccountSnapshot) -> Result<()> {
+    fn auth(&self, account: &AccountSnapshot) -> Result<&PapertradeSigner> {
+        let signer = self
+            .inner
+            .signer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Papertrade observer is read-only"))?;
         let now = self.now();
         ensure!(
             account
                 .session_keys
                 .iter()
-                .any(|(key, expiry)| *key == self.inner.signer.address()
+                .any(|(key, expiry)| *key == signer.address()
                     && expiry.0 > U256::from(now + 3_600)),
             "Session key is not registered or expires within one hour"
         );
-        Ok(())
+        Ok(signer)
     }
     fn deny(&self, order: &OrderAny, error: &anyhow::Error) {
         self.inner
@@ -228,7 +242,7 @@ impl PapertradeExecutionClient {
             .read()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No account snapshot"))?;
-        self.auth(&account)?;
+        let signer = self.auth(&account)?;
         let trading = self
             .inner
             .trading
@@ -294,7 +308,7 @@ impl PapertradeExecutionClient {
             self.inner
                 .journal
                 .prepare(cmd, Some(raw), trading.indexed_through_block, |nonce| {
-                    self.inner.signer.sign_close(
+                    signer.sign_close(
                         &Close {
                             user: self.inner.wallet,
                             positionIds: vec![raw.0],
@@ -383,7 +397,7 @@ impl PapertradeExecutionClient {
             self.inner
                 .journal
                 .prepare(cmd, None, trading.indexed_through_block, |nonce| {
-                    self.inner.signer.sign_open(
+                    signer.sign_open(
                         &OpenPosition {
                             user: self.inner.wallet,
                             instrumentId: market.id,
@@ -631,13 +645,13 @@ impl ExecutionClient for PapertradeExecutionClient {
             .read()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No current account"))?;
-        self.auth(&account)?;
+        let signer = self.auth(&account)?;
         ensure!(
             matches!(entry.status, OrderStatus::Submitted | OrderStatus::Accepted),
             "Order is already terminal"
         );
         let now = self.now();
-        let cancel = self.inner.signer.sign_cancel(
+        let cancel = signer.sign_cancel(
             &CancelIntent {
                 user: self.inner.wallet,
                 intentId: entry.intent_id,

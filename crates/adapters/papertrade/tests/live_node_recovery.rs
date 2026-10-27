@@ -24,18 +24,25 @@ mod node;
 use node::{RetainedCache, account_node, run_account_node};
 
 #[rstest::rstest]
-#[case::unregistered(None)]
-#[case::expired(Some(0))]
-#[case::insufficient_lifetime(Some(1_800))]
+#[case::unregistered(None, false)]
+#[case::expired(Some(0), false)]
+#[case::insufficient_lifetime(Some(1_800), false)]
+#[case::keyless_unregistered(None, true)]
+#[case::keyless_expired(Some(0), true)]
 #[tokio::test]
 async fn live_node_reconciles_without_active_trade_authorization(
     #[case] remaining_session_seconds: Option<u64>,
+    #[case] read_only: bool,
 ) {
     use nautilus_core::time::get_atomic_clock_realtime;
     use nautilus_model::identifiers::PositionId;
 
     let _serial = SERIAL.lock().await;
-    let harness = Harness::new().await;
+    let mut harness = Harness::new().await;
+    harness.config.read_only = read_only;
+    if read_only {
+        harness.config.session_private_key = None;
+    }
     let mut source = harness.source.wallet.borrow().clone();
     let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
     source["sessionKeys"] = remaining_session_seconds.map_or_else(

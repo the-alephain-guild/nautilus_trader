@@ -50,7 +50,7 @@ impl PapertradeDataClientConfig {
 impl PapertradeExecutionClientConfig {
     #[new]
     #[pyo3(signature=(account_id,wallet_address,journal_path,build_id,session_private_key=None,leverage=10,
-        origin=None,rpc_url=None,poll_interval_ms=3000,max_history_pages=1000))]
+        origin=None,rpc_url=None,poll_interval_ms=3000,max_history_pages=1000,read_only=false))]
     #[expect(clippy::too_many_arguments)]
     fn py_new(
         account_id: AccountId,
@@ -63,6 +63,7 @@ impl PapertradeExecutionClientConfig {
         rpc_url: Option<String>,
         poll_interval_ms: u64,
         max_history_pages: usize,
+        read_only: bool,
     ) -> Self {
         let mut config = Self::new(account_id, wallet_address, journal_path.into(), build_id);
         config.session_private_key = session_private_key.map(SecretString::from);
@@ -75,6 +76,7 @@ impl PapertradeExecutionClientConfig {
         }
         config.poll_interval_ms = poll_interval_ms;
         config.max_history_pages = max_history_pages;
+        config.read_only = read_only;
         config
     }
 }

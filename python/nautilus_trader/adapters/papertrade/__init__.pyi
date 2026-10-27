@@ -46,6 +46,7 @@ class PapertradeExecutionClientConfig:
         rpc_url: str | None = None,
         poll_interval_ms: int = 3000,
         max_history_pages: int = 1000,
+        read_only: bool = False,
     ) -> None: ...
 
 @typing.final

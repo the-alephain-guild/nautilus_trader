@@ -61,6 +61,8 @@ pub struct PapertradeExecutionClientConfig {
     pub account_id: AccountId,
     pub wallet_address: String,
     pub session_private_key: Option<SecretString>,
+    #[serde(default)]
+    pub read_only: bool,
     pub journal_path: PathBuf,
     pub build_id: String,
     pub leverage: u32,
@@ -81,6 +83,7 @@ impl PapertradeExecutionClientConfig {
             account_id,
             wallet_address,
             session_private_key: None,
+            read_only: false,
             journal_path,
             build_id,
             leverage: 10,
