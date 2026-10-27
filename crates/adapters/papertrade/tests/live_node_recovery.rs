@@ -24,6 +24,47 @@ mod node;
 use node::{RetainedCache, account_node, run_account_node};
 
 #[rstest::rstest]
+#[case::unregistered(None)]
+#[case::expired(Some(0))]
+#[case::insufficient_lifetime(Some(1_800))]
+#[tokio::test]
+async fn live_node_reconciles_without_active_trade_authorization(
+    #[case] remaining_session_seconds: Option<u64>,
+) {
+    use nautilus_core::time::get_atomic_clock_realtime;
+    use nautilus_model::identifiers::PositionId;
+
+    let _serial = SERIAL.lock().await;
+    let harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
+    source["sessionKeys"] = remaining_session_seconds.map_or_else(
+        || json!([]),
+        |remaining| {
+            json!([[
+                "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+                (now + remaining).to_string()
+            ]])
+        },
+    );
+    harness.source.wallet.send_replace(source);
+    let mut node = account_node(&harness);
+    run_account_node(&mut node).await;
+    let cache = node.kernel().cache();
+    {
+        let cache = cache.borrow();
+        assert_eq!(cache.positions(None, None, None, None, None).len(), 2);
+        for id in ["PT-1671873", "PT-1671870"] {
+            let position = cache.position(&PositionId::from(id)).unwrap();
+            assert!(position.is_open());
+            assert!(!position.trade_ids.is_empty());
+            assert!(cache.account(&position.account_id).is_some());
+        }
+    }
+    node.dispose();
+}
+
+#[rstest::rstest]
 #[case(false, false)]
 #[case(true, false)]
 #[case(false, true)]

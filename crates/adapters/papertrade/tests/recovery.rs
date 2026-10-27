@@ -20,6 +20,86 @@ use serde_json::{Value, json};
 mod support;
 use support::{Harness, SERIAL, closed_history, mark_attempted, prepared_open};
 
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(0))]
+#[case(Some(1_800))]
+#[tokio::test]
+async fn observation_survives_inactive_trade_authorization(
+    #[case] remaining_session_seconds: Option<u64>,
+) {
+    use nautilus_common::messages::{ExecutionEvent, execution::SubmitOrder};
+    use nautilus_core::{UUID4, time::get_atomic_clock_realtime};
+    use nautilus_model::{
+        enums::OrderType,
+        events::OrderEventAny,
+        identifiers::{ClientOrderId, InstrumentId},
+        orders::{Order, builder::OrderTestBuilder},
+        types::Quantity,
+    };
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let mut source = harness.source.wallet.borrow().clone();
+    let now = get_atomic_clock_realtime().get_time_ns();
+    let now_seconds = now.as_u64() / 1_000_000_000;
+    source["sessionKeys"] = remaining_session_seconds.map_or_else(
+        || json!([]),
+        |remaining| {
+            json!([[
+                "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+                (now_seconds + remaining).to_string()
+            ]])
+        },
+    );
+    harness.source.wallet.send_replace(source);
+    let mut client = harness.client();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    assert!(client.is_connected());
+    let mass = client.generate_mass_status(None).await.unwrap().unwrap();
+    assert!(mass.reports_complete());
+    assert!(!mass.position_reports().is_empty());
+
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
+        .client_order_id(ClientOrderId::from("PT-NO-TRADING-AUTHORITY"))
+        .quantity(Quantity::from(100))
+        .quote_quantity(true)
+        .build();
+    harness
+        .cache
+        .borrow_mut()
+        .add_order(order.clone(), None, None, false)
+        .unwrap();
+    let command = SubmitOrder::from_order(
+        &order,
+        TraderId::from("TESTER-001"),
+        None,
+        None,
+        UUID4::new(),
+        now,
+    );
+    client.submit_order(command).unwrap();
+    let mut denied = false;
+    while let Ok(event) = harness._events.try_recv() {
+        if let ExecutionEvent::Order(OrderEventAny::Denied(event)) = event {
+            denied |= event.client_order_id == order.client_order_id()
+                && event.reason.contains("Session key");
+        }
+    }
+    client.disconnect().await.unwrap();
+    assert!(denied, "Observation connectivity granted trading authority");
+    drop(client);
+    let wallet = harness.source.wallet.borrow();
+    let journal = nautilus_papertrade::journal::Journal::open(
+        &harness.config.journal_path,
+        wallet["address"].as_str().unwrap().parse().unwrap(),
+        harness.config.account_id.as_str(),
+    )
+    .unwrap();
+    assert!(journal.entries().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn failed_wallet_reconnect_never_restores_old_coverage_on_poll_ticks() {
     let _serial = SERIAL.lock().await;

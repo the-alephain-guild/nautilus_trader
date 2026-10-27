@@ -472,7 +472,6 @@ impl ExecutionClient for PapertradeExecutionClient {
         self.inner.live.store(false, Ordering::Release);
         let mut stream = self.inner.api.wallet_stream(self.inner.wallet).await?;
         let snapshot = stream.next().await?;
-        self.auth(&snapshot)?;
         *self.inner.stream_activity.write() = Some(stream.activity.clone());
         crate::reconciliation::synchronize(&self.inner, snapshot.clone()).await?;
         self.inner.stream_healthy.store(true, Ordering::Release);
