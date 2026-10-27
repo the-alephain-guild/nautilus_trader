@@ -56,7 +56,7 @@ use nautilus_core::{
 };
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ActorId, ExecAlgorithmId, InstrumentId, StrategyId, TraderId},
+    identifiers::{ActorId, ClientId, ExecAlgorithmId, InstrumentId, StrategyId, TraderId},
 };
 use nautilus_portfolio::{config::PortfolioConfig, python::PyPortfolio};
 use nautilus_system::get_global_pyo3_registry;
@@ -94,15 +94,18 @@ use crate::{
         PluginConfig,
     },
     node::{LiveNode, LiveNodeHandle, NodeRunMode, config::RoutingConfig},
-    python::config::{coerce_json_config, json_value_to_py},
+    python::{
+        config::{coerce_json_config, json_value_to_py},
+        journal::PyExecutionJournalIdentityProbe,
+    },
 };
 
 /// Python-facing wrapper owning a [`LiveNode`].
 ///
 /// `run_async` moves the node into the returned awaitable, so the wrapper is empty for the
 /// remainder of a hosted run. Every method then fails with a clear error rather than aliasing the
-/// node the run future is driving. Capture `cache`, `portfolio`, and `handle` before starting a
-/// hosted run; each is an independent handle that stays usable while the node runs.
+/// node the run future is driving. Capture `cache`, `portfolio`, `handle`, and any
+/// `journal_identity_probe` before starting a hosted run; each stays usable while the node runs.
 #[pyo3::pyclass(module = "nautilus_trader.live", name = "LiveNode", unsendable)]
 #[pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.live")]
 #[derive(Debug)]
@@ -900,6 +903,36 @@ impl PyLiveNode {
         PyLiveNodeHandle {
             inner: self.handle.clone(),
         }
+    }
+
+    /// Captures a supported execution client's read-only journal identity probe.
+    ///
+    /// Capture this before `run_async` takes the node. Subsequent probe reads do not borrow the
+    /// node or reopen its execution journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the node is unavailable, the client is unknown or evidence is unsupported.
+    #[pyo3(name = "journal_identity_probe")]
+    fn py_journal_identity_probe(
+        &self,
+        client_id: ClientId,
+    ) -> PyResult<PyExecutionJournalIdentityProbe> {
+        let node = self.node()?;
+        let engine = node
+            .kernel()
+            .exec_engine
+            .try_borrow()
+            .map_err(|_| to_pyruntime_err("Execution engine is busy"))?;
+        let client = engine
+            .get_client(&client_id)
+            .ok_or_else(|| to_pyruntime_err(format!("Unknown execution client {client_id}")))?;
+        let inner = client.journal_identity_probe().ok_or_else(|| {
+            to_pyruntime_err(format!(
+                "Journal identity evidence is unsupported for execution client {client_id}"
+            ))
+        })?;
+        Ok(PyExecutionJournalIdentityProbe { inner })
     }
 
     /// Adds a callback for supported typed external messages.

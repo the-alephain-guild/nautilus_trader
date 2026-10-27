@@ -16,6 +16,7 @@
 //! Python bindings from [PyO3](https://pyo3.rs).
 
 pub mod config;
+pub mod journal;
 pub mod node;
 
 use nautilus_portfolio::config::PortfolioConfig;
@@ -34,6 +35,7 @@ pyo3_stub_gen::reexport_module_members!(
 /// Returns a `PyErr` if registering any module components fails.
 #[pymodule]
 pub fn live(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<journal::PyExecutionJournalIdentityProbe>()?;
     m.add_class::<node::PyLiveNode>()?;
     m.add_class::<node::PyLiveNodeHandle>()?;
     m.add_class::<node::PyLiveNodeBuilder>()?;

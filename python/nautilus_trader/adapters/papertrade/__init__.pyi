@@ -47,6 +47,9 @@ class PapertradeExecutionClientConfig:
         poll_interval_ms: int = 3000,
         max_history_pages: int = 1000,
         read_only: bool = False,
+        journal_mode: str = "unregistered",
+        expected_journal_id: str | None = None,
+        minimum_journal_revision: int | None = None,
     ) -> None: ...
 
 @typing.final
