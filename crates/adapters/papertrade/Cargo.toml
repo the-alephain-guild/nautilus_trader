@@ -41,6 +41,7 @@ async-trait = { workspace = true }
 parking_lot = { workspace = true }
 log = { workspace = true }
 redb = { workspace = true }
+same-file = { workspace = true }
 ustr = { workspace = true }
 pyo3 = { workspace = true, optional = true }
 pyo3-stub-gen = { workspace = true, optional = true }

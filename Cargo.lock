@@ -6575,6 +6575,7 @@ dependencies = [
  "redb",
  "rstest",
  "rust_decimal",
+ "same-file",
  "serde",
  "serde_json",
  "tempfile",

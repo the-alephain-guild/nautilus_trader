@@ -57,6 +57,168 @@ fn sign(nonce: U256) -> anyhow::Result<nautilus_papertrade::SignedIntent> {
         1_700_000_000,
     )
 }
+
+#[rstest]
+fn committed_order_changes_share_the_persistent_revision_and_failed_changes_roll_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.redb");
+    let journal = Journal::initialize_new(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let initial = journal.identity_snapshot().unwrap();
+    let cmd = command("PT-REVISION");
+    let (entry, _) = journal.prepare(&cmd, None, 100, sign).unwrap();
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        initial.revision + 1
+    );
+    journal
+        .prepare(&cmd, None, 100, |_| panic!("duplicate was re-signed"))
+        .unwrap();
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        initial.revision + 1
+    );
+    assert!(
+        journal
+            .prepare(&command("PT-FAILED"), None, 101, |_| anyhow::bail!(
+                "fixture preparation failure"
+            ))
+            .is_err()
+    );
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        initial.revision + 1
+    );
+    let (next, _) = journal
+        .prepare(&command("PT-NEXT"), None, 101, sign)
+        .unwrap();
+    assert_eq!(next.nonce.0, entry.nonce.0 + U256::from(1));
+    let before_send = journal.identity_snapshot().unwrap().revision;
+    let attempted = journal
+        .begin_submission(cmd.client_order_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        before_send + 1
+    );
+    assert!(
+        journal
+            .begin_submission(cmd.client_order_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        before_send + 1
+    );
+    let mut conflicting = attempted;
+    conflicting.deadline += 1;
+    assert!(journal.update(&conflicting).is_err());
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        before_send + 1
+    );
+    let current = journal.identity_snapshot().unwrap();
+    drop(journal);
+    assert_eq!(
+        Journal::recover_existing(
+            &path,
+            WALLET,
+            "PAPERTRADE-001",
+            current.journal_id,
+            current.revision
+        )
+        .unwrap()
+        .identity_snapshot()
+        .unwrap(),
+        current
+    );
+}
+
+#[rstest]
+fn explicit_legacy_identity_migration_preserves_sent_payload_nonce_and_uncertainty() {
+    use redb::{Database, ReadableDatabase, TableDefinition};
+    const META: TableDefinition<&str, &str> = TableDefinition::new("metadata");
+    const ORDERS: TableDefinition<&str, &str> = TableDefinition::new("orders");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.redb");
+    let original = Journal::initialize_new(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let cmd = command("PT-LEGACY-MIGRATION");
+    let (entry, _) = original.prepare(&cmd, None, 100, sign).unwrap();
+    original.begin_submission(cmd.client_order_id).unwrap();
+    drop(original);
+    let (nonce, payload) = {
+        let db = Database::open(&path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut meta = tx.open_table(META).unwrap();
+            meta.remove("journal_uuid").unwrap();
+            meta.remove("journal_revision").unwrap();
+        }
+        tx.commit().unwrap();
+        let read = db.begin_read().unwrap();
+        let meta = read.open_table(META).unwrap();
+        let orders = read.open_table(ORDERS).unwrap();
+        (
+            meta.get("next_nonce").unwrap().unwrap().value().to_owned(),
+            orders
+                .get(cmd.client_order_id.as_str())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_owned(),
+        )
+    };
+    assert!(Journal::open(&path, WALLET, "PAPERTRADE-001").is_err());
+    assert!(Journal::migrate_legacy(&path, Address::ZERO, "PAPERTRADE-001").is_err());
+    let migrated = Journal::migrate_legacy(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let identity = migrated.identity_snapshot().unwrap();
+    assert_eq!(identity.revision, 1);
+    let recovered_entry = &migrated.entries().unwrap()[0];
+    assert!(recovered_entry.send_attempted);
+    assert_eq!(recovered_entry.body, entry.body);
+    assert_eq!(recovered_entry.status, OrderStatus::Submitted);
+    drop(migrated);
+    let repeated = Journal::migrate_legacy(&path, WALLET, "PAPERTRADE-001").unwrap();
+    assert_eq!(repeated.identity_snapshot().unwrap(), identity);
+    drop(repeated);
+    {
+        let db = Database::open(&path).unwrap();
+        let read = db.begin_read().unwrap();
+        assert_eq!(
+            read.open_table(META)
+                .unwrap()
+                .get("next_nonce")
+                .unwrap()
+                .unwrap()
+                .value(),
+            nonce
+        );
+        assert_eq!(
+            read.open_table(ORDERS)
+                .unwrap()
+                .get(cmd.client_order_id.as_str())
+                .unwrap()
+                .unwrap()
+                .value(),
+            payload
+        );
+    }
+    let recovered = Journal::recover_existing(
+        &path,
+        WALLET,
+        "PAPERTRADE-001",
+        identity.journal_id,
+        identity.revision,
+    )
+    .unwrap();
+    let (same, new) = recovered
+        .prepare(&cmd, None, 200, |_| panic!("legacy intent was re-signed"))
+        .unwrap();
+    assert!(!new);
+    assert_eq!(same.intent_id, entry.intent_id);
+    assert_eq!(recovered.identity_snapshot().unwrap(), identity);
+}
 #[rstest]
 fn restart_retains_request_and_duplicate_command_never_allocates_a_new_intent() {
     let dir = tempfile::tempdir().unwrap();
@@ -306,6 +468,7 @@ fn legacy_unresolved_journal_rescans_results_without_changing_request_identity()
 #[case("after_migration")]
 #[case("before_source")]
 #[case("after_source")]
+#[case("after_checkpoint")]
 #[case("after_success")]
 fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary: &str) {
     use std::{
@@ -327,7 +490,10 @@ fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary
     if let Some(path) = std::env::var_os(CHILD_PATH) {
         let journal = (boundary != "before_migration")
             .then(|| Journal::open(std::path::Path::new(&path), WALLET, "PAPERTRADE-001").unwrap());
-        if matches!(boundary, "after_source" | "after_success") {
+        if matches!(
+            boundary,
+            "after_source" | "after_checkpoint" | "after_success"
+        ) {
             let journal = journal.as_ref().unwrap();
             let mut entry = journal.entries().unwrap().pop().unwrap();
             let wallet: serde_json::Value =
@@ -336,6 +502,10 @@ fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary
                 serde_json::from_value(wallet["openPositions"][0].clone()).unwrap();
             position.intent_id = Some(entry.intent_id);
             journal.remember(&[position], &[]).unwrap();
+            if boundary == "after_checkpoint" {
+                let snapshot = serde_json::from_value(wallet).unwrap();
+                journal.checkpoint(&snapshot).unwrap();
+            }
             if boundary == "after_success" {
                 entry.execution_succeeded = true;
                 entry.scanned_through = 200;
@@ -350,15 +520,16 @@ fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary
     }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal.redb");
-    let original = {
+    let (original, registered) = {
         let journal = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
         let (entry, _) = journal
             .prepare(&command("PT-CRASH"), None, 100, sign)
             .unwrap();
-        journal
+        let entry = journal
             .begin_submission(entry.command.client_order_id)
             .unwrap()
-            .unwrap()
+            .unwrap();
+        (entry, journal.identity_snapshot().unwrap())
     };
     if boundary.ends_with("migration") {
         let mut legacy = serde_json::to_value(&original).unwrap();
@@ -418,21 +589,52 @@ fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(status.signal(), Some(9));
     }
-    let raw: serde_json::Value = {
+    let (raw, persisted_revision): (serde_json::Value, u64) = {
         let db = Database::open(&path).unwrap();
         let tx = db.begin_read().unwrap();
         let table = tx
             .open_table(TableDefinition::<&str, &str>::new("orders"))
             .unwrap();
-        serde_json::from_str(
+        let raw = serde_json::from_str(
             table
                 .get(original.command.client_order_id.as_str())
                 .unwrap()
                 .unwrap()
                 .value(),
         )
-        .unwrap()
+        .unwrap();
+        let metadata = tx
+            .open_table(TableDefinition::<&str, &str>::new("metadata"))
+            .unwrap();
+        let checkpoint = metadata.get("wallet_snapshot").unwrap();
+        assert_eq!(checkpoint.is_some(), boundary == "after_checkpoint");
+        if let Some(checkpoint) = checkpoint {
+            let persisted: serde_json::Value = serde_json::from_str(checkpoint.value()).unwrap();
+            let expected: serde_json::Value =
+                serde_json::from_str(include_str!("../test_data/live_wallet.json")).unwrap();
+            assert_eq!(persisted["accountRevision"], expected["accountRevision"]);
+            assert_eq!(persisted["openPositions"], expected["openPositions"]);
+        }
+        assert_eq!(
+            metadata.get("journal_uuid").unwrap().unwrap().value(),
+            registered.journal_id.to_string()
+        );
+        let revision = metadata
+            .get("journal_revision")
+            .unwrap()
+            .unwrap()
+            .value()
+            .parse()
+            .unwrap();
+        (raw, revision)
     };
+    let expected_delta = match boundary {
+        "before_migration" | "before_source" => 0,
+        "after_migration" | "after_source" => 1,
+        "after_checkpoint" | "after_success" => 2,
+        _ => unreachable!(),
+    };
+    assert_eq!(persisted_revision, registered.revision + expected_delta);
     if boundary == "before_migration" {
         assert!(raw.get("execution_succeeded").is_none());
         assert_eq!(
@@ -451,14 +653,28 @@ fn journal_commit_boundaries_survive_forced_process_termination(#[case] boundary
             serde_json::to_value(OrderStatus::Submitted).unwrap()
         );
     }
-    let journal = Journal::open(&path, WALLET, "PAPERTRADE-001").unwrap();
+    let journal = Journal::recover_existing(
+        &path,
+        WALLET,
+        "PAPERTRADE-001",
+        registered.journal_id,
+        persisted_revision,
+    )
+    .unwrap();
+    assert_eq!(
+        journal.identity_snapshot().unwrap().revision,
+        persisted_revision + u64::from(boundary == "before_migration"),
+    );
     let saved = journal.entries().unwrap().pop().unwrap();
     assert_eq!(saved.intent_id, original.intent_id);
     assert_eq!(saved.body, original.body);
     assert_eq!(saved.nonce, original.nonce);
     assert_eq!(
         journal.observed().unwrap().len(),
-        usize::from(matches!(boundary, "after_source" | "after_success"))
+        usize::from(matches!(
+            boundary,
+            "after_source" | "after_checkpoint" | "after_success"
+        ))
     );
     assert!(
         journal

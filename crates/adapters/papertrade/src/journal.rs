@@ -22,12 +22,12 @@ use anyhow::{Result, ensure};
 use nautilus_common::messages::execution::SubmitOrder;
 use nautilus_core::UUID4;
 use nautilus_model::{enums::OrderStatus, identifiers::ClientOrderId, reports::FillReport};
-use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Durability, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    signing::{EXCHANGE, SignedIntent},
+    signing::SignedIntent,
     wire::{CloseRecord, Raw, VenuePosition},
 };
 
@@ -70,43 +70,113 @@ impl JournalEntry {
     }
 }
 
+mod identity;
+pub use identity::JournalIdentitySnapshot;
+use identity::{JournalStorage, REVISION_KEY, UUID_KEY};
+
 #[derive(Debug)]
 pub struct Journal {
-    db: Database,
+    storage: JournalStorage,
 }
 
 impl Journal {
-    pub fn open(path: &Path, wallet: Address, account: &str) -> Result<Self> {
-        let db = Database::create(path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        let mut tx = db.begin_write()?;
+    /// Explicit first creation. Existing files are never reused or overwritten.
+    pub fn initialize_new(path: &Path, wallet: Address, account: &str) -> Result<Self> {
+        let storage = JournalStorage::create_new(path, wallet, account)?;
+        let journal = Self { storage };
+        let mut tx = journal.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         {
             let mut meta = tx.open_table(META)?;
-            let owner = format!("999:{EXCHANGE:#x}:{wallet:#x}:{account}");
-            if let Some(stored) = meta.get("owner")? {
-                ensure!(
-                    stored.value() == owner,
-                    "Journal belongs to a different account"
-                );
-            }
-            meta.insert("owner", owner.as_str())?;
-            if meta.get("next_nonce")?.is_none() {
-                // A random high namespace avoids the frontend's small nonce range;
-                // every allocated successor is committed before a request is sent.
-                let seed: U256 =
-                    U256::from_str_radix(&UUID4::new().to_string().replace('-', ""), 16)? << 64;
-                meta.insert("next_nonce", seed.to_string().as_str())?;
-            }
+            meta.insert("owner", journal.storage.owner.as_str())?;
+            meta.insert(UUID_KEY, journal.storage.journal_id.to_string().as_str())?;
+            meta.insert(REVISION_KEY, "0")?;
+            let seed: U256 =
+                U256::from_str_radix(&UUID4::new().to_string().replace('-', ""), 16)? << 64;
+            meta.insert("next_nonce", seed.to_string().as_str())?;
             tx.open_table(ORDERS)?;
             tx.open_table(POSITIONS)?;
             tx.open_table(CLOSES)?;
         }
-        {
+        journal.storage.commit(tx)?;
+        Ok(journal)
+    }
+
+    /// Recover only the registered identity, before applying any legacy entry repairs.
+    pub fn recover_existing(
+        path: &Path,
+        wallet: Address,
+        account: &str,
+        expected_journal_id: UUID4,
+        minimum_revision: u64,
+    ) -> Result<Self> {
+        let (storage, _) = JournalStorage::open_existing(
+            path,
+            wallet,
+            account,
+            Some((expected_journal_id, minimum_revision)),
+            false,
+        )?;
+        let journal = Self { storage };
+        journal.validate_tables()?;
+        journal.repair_legacy_entries()?;
+        Ok(journal)
+    }
+
+    /// Explicitly identify an existing legacy owner without rewriting its business rows.
+    pub fn migrate_legacy(path: &Path, wallet: Address, account: &str) -> Result<Self> {
+        let (storage, missing) = JournalStorage::open_existing(path, wallet, account, None, true)?;
+        let journal = Self { storage };
+        journal.validate_tables()?;
+        if missing {
+            let mut tx = journal.storage.db.begin_write()?;
+            tx.set_durability(Durability::Immediate)?;
+            {
+                let mut meta = tx.open_table(META)?;
+                meta.insert(UUID_KEY, journal.storage.journal_id.to_string().as_str())?;
+                meta.insert(REVISION_KEY, "0")?;
+            }
+            journal.storage.commit(tx)?;
+        }
+        Ok(journal)
+    }
+
+    /// Compatibility entry for callers without a registration; strict recovery uses recover_existing.
+    pub fn open(path: &Path, wallet: Address, account: &str) -> Result<Self> {
+        if !path.try_exists()? {
+            return Self::initialize_new(path, wallet, account);
+        }
+        let (storage, _) = JournalStorage::open_existing(path, wallet, account, None, false)?;
+        let journal = Self { storage };
+        journal.validate_tables()?;
+        journal.repair_legacy_entries()?;
+        Ok(journal)
+    }
+
+    pub fn identity_snapshot(&self) -> Result<JournalIdentitySnapshot> {
+        self.storage.identity_snapshot()
+    }
+
+    fn validate_tables(&self) -> Result<()> {
+        self.storage.ensure_path_current()?;
+        let tx = self.storage.db.begin_read()?;
+        let meta = tx.open_table(META)?;
+        let nonce = meta
+            .get("next_nonce")?
+            .ok_or_else(|| anyhow::anyhow!("Journal nonce is missing"))?;
+        U256::from_str_radix(nonce.value(), 10)?;
+        tx.open_table(ORDERS)?;
+        tx.open_table(POSITIONS)?;
+        tx.open_table(CLOSES)?;
+        self.storage.ensure_path_current()?;
+        Ok(())
+    }
+
+    fn repair_legacy_entries(&self) -> Result<()> {
+        self.storage.ensure_path_current()?;
+        let mut tx = self.storage.db.begin_write()?;
+        tx.set_durability(Durability::Immediate)?;
+        let changed = {
             let mut orders = tx.open_table(ORDERS)?;
             let mut legacy = Vec::new();
             for row in orders.iter()? {
@@ -132,15 +202,20 @@ impl Journal {
                     legacy.push((key.value().to_owned(), serde_json::to_string(&entry)?));
                 }
             }
+            let changed = !legacy.is_empty();
             for (key, value) in legacy {
                 orders.insert(key.as_str(), value.as_str())?;
             }
+            changed
+        };
+        if changed {
+            self.storage.commit(tx)?;
         }
-        tx.commit()?;
-        Ok(Self { db })
+        Ok(())
     }
     pub fn entries(&self) -> Result<Vec<JournalEntry>> {
-        let tx = self.db.begin_read()?;
+        self.storage.ensure_path_current()?;
+        let tx = self.storage.db.begin_read()?;
         let table = tx.open_table(ORDERS)?;
         table
             .iter()?
@@ -164,7 +239,8 @@ impl Journal {
     }
     /// Commits the transport-attempt marker before any request can leave this process.
     pub fn begin_submission(&self, client_order_id: ClientOrderId) -> Result<Option<JournalEntry>> {
-        let mut tx = self.db.begin_write()?;
+        self.storage.ensure_path_current()?;
+        let mut tx = self.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         let entry = {
             let mut table = tx.open_table(ORDERS)?;
@@ -186,11 +262,12 @@ impl Journal {
             )?;
             entry
         };
-        tx.commit()?;
+        self.storage.commit(tx)?;
         Ok(Some(entry))
     }
     pub(crate) fn snapshot(&self) -> Result<Option<crate::wire::AccountSnapshot>> {
-        let tx = self.db.begin_read()?;
+        self.storage.ensure_path_current()?;
+        let tx = self.storage.db.begin_read()?;
         let table = tx.open_table(META)?;
         table
             .get("wallet_snapshot")?
@@ -198,19 +275,21 @@ impl Journal {
             .transpose()
     }
     pub fn checkpoint(&self, snapshot: &crate::wire::AccountSnapshot) -> Result<()> {
+        self.storage.ensure_path_current()?;
         let json = serde_json::to_string(snapshot)?;
-        let mut tx = self.db.begin_write()?;
+        let mut tx = self.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         {
             let mut table = tx.open_table(META)?;
             table.insert("wallet_snapshot", json.as_str())?;
         }
-        tx.commit()?;
+        self.storage.commit(tx)?;
         Ok(())
     }
     /// Retains stream success before fallible reconciliation or scan advancement.
     pub(crate) fn observe_successes(&self, successes: &[B256]) -> Result<()> {
-        let mut tx = self.db.begin_write()?;
+        self.storage.ensure_path_current()?;
+        let mut tx = self.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         let mut conflict = false;
         {
@@ -233,7 +312,7 @@ impl Journal {
                 table.insert(key.as_str(), value.as_str())?;
             }
         }
-        tx.commit()?;
+        self.storage.commit(tx)?;
         // Contradictory order state blocks reconciliation without discarding other successes.
         ensure!(
             !conflict,
@@ -242,7 +321,8 @@ impl Journal {
         Ok(())
     }
     pub fn remember(&self, positions: &[VenuePosition], closes: &[CloseRecord]) -> Result<()> {
-        let mut tx = self.db.begin_write()?;
+        self.storage.ensure_path_current()?;
+        let mut tx = self.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         {
             let closes = tx.open_table(CLOSES)?;
@@ -293,11 +373,12 @@ impl Journal {
                 table.insert(key.as_str(), json.as_str())?;
             }
         }
-        tx.commit()?;
+        self.storage.commit(tx)?;
         Ok(())
     }
     pub fn observed(&self) -> Result<Vec<VenuePosition>> {
-        let tx = self.db.begin_read()?;
+        self.storage.ensure_path_current()?;
+        let tx = self.storage.db.begin_read()?;
         let table = tx.open_table(POSITIONS)?;
         table
             .iter()?
@@ -308,7 +389,8 @@ impl Journal {
             .collect()
     }
     pub fn closes(&self) -> Result<Vec<CloseRecord>> {
-        let tx = self.db.begin_read()?;
+        self.storage.ensure_path_current()?;
+        let tx = self.storage.db.begin_read()?;
         let table = tx.open_table(CLOSES)?;
         table
             .iter()?
@@ -328,8 +410,9 @@ impl Journal {
     where
         F: FnOnce(U256) -> Result<SignedIntent>,
     {
+        self.storage.ensure_path_current()?;
         let key = command.client_order_id.to_string();
-        let mut tx = self.db.begin_write()?;
+        let mut tx = self.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         let entry = {
             let mut table = tx.open_table(ORDERS)?;
@@ -374,12 +457,13 @@ impl Journal {
             meta.insert("next_nonce", next.to_string().as_str())?;
             entry
         };
-        tx.commit()?;
+        self.storage.commit(tx)?;
         Ok((entry, true))
     }
     pub fn update(&self, entry: &JournalEntry) -> Result<()> {
+        self.storage.ensure_path_current()?;
         let key = entry.command.client_order_id.to_string();
-        let mut tx = self.db.begin_write()?;
+        let mut tx = self.storage.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         {
             let mut table = tx.open_table(ORDERS)?;
@@ -440,7 +524,7 @@ impl Journal {
             merged.scanned_through = merged.scanned_through.max(previous.scanned_through);
             table.insert(key.as_str(), serde_json::to_string(&merged)?.as_str())?;
         }
-        tx.commit()?;
+        self.storage.commit(tx)?;
         Ok(())
     }
 }
