@@ -53,6 +53,11 @@ use scan::ScanEvent;
 pub(crate) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(crate) struct Source {
+    pub(crate) intent_requests: AtomicUsize,
+    pub(crate) intent_ack: Mutex<Option<Value>>,
+    pub(crate) intent_paused: AtomicBool,
+    pub(crate) intent_entered: tokio::sync::Notify,
+    pub(crate) intent_release: tokio::sync::Notify,
     pub(crate) wallet: tokio::sync::watch::Sender<Value>,
     pub(crate) unavailable: AtomicBool,
     pub(crate) trading: Mutex<Value>,
@@ -212,6 +217,22 @@ async fn rpc(State(source): State<Arc<Source>>, Json(request): Json<Value>) -> J
     };
     Json(json!({"jsonrpc":"2.0","id":1,"result":result}))
 }
+async fn intent_request(State(source): State<Arc<Source>>) -> (StatusCode, Json<Value>) {
+    source.intent_requests.fetch_add(1, Ordering::SeqCst);
+    let ack = source.intent_ack.lock().clone();
+    if source.intent_paused.load(Ordering::SeqCst) {
+        source.intent_entered.notify_one();
+        source.intent_release.notified().await;
+    }
+    match ack {
+        Some(body) => (StatusCode::OK, Json(body)),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"acknowledgement lost"})),
+        ),
+    }
+}
+
 pub(crate) struct Harness {
     pub(crate) source: Arc<Source>,
     pub(crate) config: PapertradeExecutionClientConfig,
@@ -233,6 +254,11 @@ impl Harness {
         ]]);
         let (tx, _) = tokio::sync::watch::channel(snapshot.clone());
         let source = Arc::new(Source {
+            intent_requests: AtomicUsize::new(0),
+            intent_ack: Mutex::new(None),
+            intent_paused: AtomicBool::new(false),
+            intent_entered: tokio::sync::Notify::new(),
+            intent_release: tokio::sync::Notify::new(),
             wallet: tx,
             unavailable: AtomicBool::new(false),
             history: Mutex::new(json!({"items":[],"nextCursor":null})),
@@ -257,6 +283,8 @@ impl Harness {
             .route("/state/trading", get(trading))
             .route("/query/accounts/{wallet}/trades", get(history))
             .route("/rpc", post(rpc))
+            .route("/intents", post(intent_request))
+            .route("/intents/{id}/cancel", post(intent_request))
             .with_state(source.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}/", listener.local_addr().unwrap());

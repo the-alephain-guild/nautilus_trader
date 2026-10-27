@@ -21,6 +21,9 @@
 #![deny(unsafe_code)]
 #![deny(missing_debug_implementations)]
 
+#[cfg(test)]
+extern crate self as nautilus_papertrade;
+
 pub mod api;
 pub mod chain;
 pub mod config;
