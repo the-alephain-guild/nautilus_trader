@@ -55,10 +55,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     api::{PapertradeApi, WalletActivity},
     config::{PAPERTRADE, PapertradeExecutionClientConfig, PapertradeJournalOpenMode},
-    http::{IntentState, PapertradeRelayerClient, SubmissionOutcome},
-    journal::{Journal, JournalEntry},
+    http::PapertradeRelayerClient,
+    journal::Journal,
     reports,
-    signing::{CancelIntent, Close, OpenPosition, PapertradeSigner, SignedIntent, margin_to_raw},
+    signing::{CancelIntent, Close, OpenPosition, PapertradeSigner, margin_to_raw},
     wire::{AccountSnapshot, Raw, TradingState},
 };
 
@@ -90,199 +90,7 @@ pub(crate) struct Inner {
     pub emitter: ExecutionEventEmitter,
     pub clock: &'static AtomicTime,
 }
-impl Inner {
-    fn available(&self) -> bool {
-        self.live.load(Ordering::Acquire)
-            && self.stream_healthy.load(Ordering::Acquire)
-            && self
-                .stream_activity
-                .read()
-                .as_ref()
-                .is_some_and(WalletActivity::is_fresh)
-    }
-    fn now(&self) -> u64 {
-        self.clock.get_time_ns().as_u64() / 1_000_000_000
-    }
-
-    fn authorized_signer(
-        &self,
-        account: &AccountSnapshot,
-        deadline: u64,
-        now: u64,
-    ) -> Result<&PapertradeSigner> {
-        ensure!(
-            deadline > now && deadline - now <= 3_600,
-            "Intent deadline is outside the next hour"
-        );
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Papertrade observer is read-only"))?;
-        ensure!(
-            account
-                .session_keys
-                .iter()
-                .any(|(key, expiry)| *key == signer.address() && expiry.0 > U256::from(deadline)),
-            "Session key is not registered beyond the signed deadline"
-        );
-        Ok(signer)
-    }
-
-    fn submission_time(&self, signed: &SignedIntent) -> Result<u64> {
-        let account = self.snapshot.read();
-        let account = account
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No current account before submission"))?;
-        // Finish all potentially blocking reads before fixing the transport time.
-        let available = self.available();
-        let now = self.now();
-        ensure!(signed.deadline() > now, "Intent expired before submission");
-        ensure!(
-            available
-                && self.live.load(Ordering::Acquire)
-                && self.stream_healthy.load(Ordering::Acquire),
-            "Account stream unavailable before submission"
-        );
-        self.authorized_signer(account, signed.deadline(), now)?;
-        Ok(now)
-    }
-
-    fn current_entry(&self, expected: &JournalEntry) -> Result<JournalEntry> {
-        let current = self
-            .journal
-            .entries()?
-            .into_iter()
-            .find(|entry| entry.command.client_order_id == expected.command.client_order_id)
-            .ok_or_else(|| anyhow::anyhow!("Submission target is absent from journal"))?;
-        ensure!(
-            current.intent_id == expected.intent_id
-                && current.command == expected.command
-                && current.body == expected.body
-                && current.nonce == expected.nonce
-                && current.target == expected.target
-                && current.deadline == expected.deadline
-                && current.action == expected.action
-                && current.submitted_block == expected.submitted_block,
-            "Submission target immutable identity differs"
-        );
-        Ok(current)
-    }
-
-    async fn submit_prepared(
-        &self,
-        client_order_id: nautilus_model::identifiers::ClientOrderId,
-    ) -> Result<()> {
-        let original = self
-            .journal
-            .entries()?
-            .into_iter()
-            .find(|entry| entry.command.client_order_id == client_order_id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown submission"))?;
-        if original.send_attempted
-            || !matches!(
-                original.status,
-                OrderStatus::Submitted | OrderStatus::Accepted
-            )
-        {
-            return Ok(());
-        }
-        self.submission_time(&original.signed()?)?;
-        let Some(entry) = self.journal.begin_submission(client_order_id)? else {
-            return Ok(());
-        };
-        let signed = entry.signed()?;
-        // The durable marker may block on storage; recheck after that commit too.
-        let now = self.submission_time(&signed)?;
-        match self.relayer.submit(&signed, now).await? {
-            SubmissionOutcome::Unknown {
-                intent_id,
-                http_status,
-            } => {
-                log::warn!(
-                    "papertrade_submit_outcome_unknown intent_id={intent_id:#x} http_status={http_status:?}"
-                );
-            }
-            SubmissionOutcome::Acknowledged(receipt) => {
-                // Do not hold this lock across transport; reconciliation must remain live.
-                let _serial = self.sync.lock().await;
-                let mut current = self.current_entry(&entry)?;
-                if !matches!(
-                    current.status,
-                    OrderStatus::Submitted | OrderStatus::Accepted
-                ) {
-                    return Ok(());
-                }
-                if matches!(
-                    receipt.state,
-                    IntentState::Queued
-                        | IntentState::Prepared
-                        | IntentState::Submitted
-                        | IntentState::Confirmed
-                ) {
-                    current.status = OrderStatus::Accepted;
-                    self.journal.update(&current)?;
-                } else {
-                    log::warn!(
-                        "papertrade_submit_terminal_label_unconfirmed intent_id={:#x} state={:?}",
-                        receipt.intent_id,
-                        receipt.state
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn cancel_prepared(
-        &self,
-        cancel: &SignedIntent,
-        entry: JournalEntry,
-        prepared_at: u64,
-    ) -> Result<()> {
-        ensure!(
-            cancel.id() == entry.intent_id && cancel.action() == entry.action,
-            "Cancel target differs from prepared intent"
-        );
-        {
-            let _serial = self.sync.lock().await;
-            let current = self.current_entry(&entry)?;
-            ensure!(
-                matches!(
-                    current.status,
-                    OrderStatus::Submitted | OrderStatus::Accepted
-                ),
-                "Cancel target is already terminal"
-            );
-        }
-        let now = self.submission_time(cancel)?;
-        ensure!(
-            now >= prepared_at,
-            "Clock moved backwards after cancel preparation"
-        );
-        match self.relayer.submit(cancel, now).await? {
-            SubmissionOutcome::Unknown {
-                intent_id,
-                http_status,
-            } => {
-                log::warn!(
-                    "papertrade_cancel_outcome_unknown intent_id={intent_id:#x} http_status={http_status:?}"
-                );
-            }
-            SubmissionOutcome::Acknowledged(receipt) => {
-                log::info!(
-                    "papertrade_cancel_acknowledged intent_id={:#x} state={:?} terminal_confirmed=false",
-                    receipt.intent_id,
-                    receipt.state
-                );
-            }
-        }
-        // An ACK cannot prove cancellation. In particular, never replace later fills,
-        // expiry or scan progress with the target captured before awaiting the reply.
-        let _serial = self.sync.lock().await;
-        self.current_entry(&entry)?;
-        Ok(())
-    }
-}
+mod admission;
 
 #[derive(Debug)]
 pub struct PapertradeExecutionClient {
@@ -297,6 +105,7 @@ impl PapertradeExecutionClient {
         core: ExecutionClientCore,
         mut config: PapertradeExecutionClientConfig,
     ) -> Result<Self> {
+        config.validate_runtime_controls()?;
         ensure!(
             config.leverage > 0 && config.leverage <= 1_000 && config.poll_interval_ms >= 500,
             "Invalid execution configuration"
@@ -446,6 +255,16 @@ impl PapertradeExecutionClient {
         let deadline = now
             .checked_add(3_600)
             .ok_or_else(|| anyhow::anyhow!("Intent deadline overflow"))?;
+        self.inner.check_execution_window(
+            if order.is_reduce_only() {
+                "closePositions"
+            } else {
+                "openPosition"
+            },
+            false,
+            now,
+            deadline,
+        )?;
         let signer = self.inner.authorized_signer(&account, deadline, now)?;
         if order.is_reduce_only() {
             ensure!(!order.is_quote_quantity(), "Close requires base quantity");
@@ -822,6 +641,8 @@ impl ExecutionClient for PapertradeExecutionClient {
         let deadline = now
             .checked_add(3_600)
             .ok_or_else(|| anyhow::anyhow!("Cancel deadline overflow"))?;
+        self.inner
+            .check_execution_window(&entry.action, true, now, deadline)?;
         let signer = self.inner.authorized_signer(&account, deadline, now)?;
         let cancel = signer.sign_cancel(
             &CancelIntent {
@@ -1000,4 +821,8 @@ impl ExecutionClient for PapertradeExecutionClient {
 
 #[cfg(test)]
 #[path = "execution_tests.rs"]
-mod tests;
+pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "execution_window_tests.rs"]
+mod window_tests;

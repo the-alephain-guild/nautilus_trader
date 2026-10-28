@@ -27,6 +27,7 @@ __all__ = [
     "PapertradeDataClientFactory",
     "PapertradeExecutionClientConfig",
     "PapertradeExecutionClientFactory",
+    "PapertradeRiskBlocker",
 ]
 
 fixup_module_names(globals(), __name__)

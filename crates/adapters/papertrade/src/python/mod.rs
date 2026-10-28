@@ -17,8 +17,9 @@
 
 use crate::{
     config::{
-        PAPERTRADE, PapertradeDataClientConfig, PapertradeExecutionClientConfig,
-        PapertradeJournalOpenMode,
+        MAX_EXECUTION_WINDOW_SECONDS, PAPERTRADE, PapertradeDataClientConfig,
+        PapertradeExecutionClientConfig, PapertradeExecutionWindow, PapertradeJournalOpenMode,
+        PapertradeRiskBlocker,
     },
     factories::{PapertradeDataClientFactory, PapertradeExecutionClientFactory},
 };
@@ -27,6 +28,46 @@ use nautilus_core::{UUID4, python::to_pyvalue_err, string::secret::SecretString}
 use nautilus_model::identifiers::{AccountId, Venue};
 use nautilus_system::get_global_pyo3_registry;
 use pyo3::{prelude::*, types::PyInt};
+
+fn optional_exact_int(
+    value: Option<Bound<'_, PyAny>>,
+    field: &str,
+    maximum: u64,
+) -> PyResult<Option<u64>> {
+    value
+        .map(|value| {
+            if !value.is_exact_instance_of::<PyInt>() {
+                return Err(to_pyvalue_err(format!(
+                    "{field} must be an exact Python int"
+                )));
+            }
+            let number = value.extract::<u64>().map_err(to_pyvalue_err)?;
+            if number > maximum {
+                return Err(to_pyvalue_err(format!(
+                    "{field} exceeds the supported range"
+                )));
+            }
+            Ok(number)
+        })
+        .transpose()
+}
+
+#[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+impl PapertradeRiskBlocker {
+    #[new]
+    fn py_new() -> Self {
+        Self::default()
+    }
+    #[pyo3(name = "freeze")]
+    fn py_freeze(&self) {
+        self.freeze();
+    }
+    #[pyo3(name = "is_frozen")]
+    fn py_is_frozen(&self) -> bool {
+        self.is_frozen()
+    }
+}
 
 #[pymethods]
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
@@ -54,7 +95,8 @@ impl PapertradeExecutionClientConfig {
     #[new]
     #[pyo3(signature=(account_id,wallet_address,journal_path,build_id,session_private_key=None,leverage=10,
         origin=None,rpc_url=None,poll_interval_ms=3000,max_history_pages=1000,read_only=false,
-        journal_mode="unregistered",expected_journal_id=None,minimum_journal_revision=None))]
+        journal_mode="unregistered",expected_journal_id=None,minimum_journal_revision=None,
+        risk_increase_until=None,exit_until=None,risk_blocker=None))]
     #[expect(clippy::too_many_arguments)]
     fn py_new(
         account_id: AccountId,
@@ -73,23 +115,32 @@ impl PapertradeExecutionClientConfig {
         #[gen_stub(override_type(type_repr = "int | None"))] minimum_journal_revision: Option<
             Bound<'_, PyAny>,
         >,
+        #[gen_stub(override_type(type_repr = "int | None"))] risk_increase_until: Option<
+            Bound<'_, PyAny>,
+        >,
+        #[gen_stub(override_type(type_repr = "int | None"))] exit_until: Option<Bound<'_, PyAny>>,
+        risk_blocker: Option<PapertradeRiskBlocker>,
     ) -> PyResult<Self> {
-        let minimum_revision = minimum_journal_revision
-            .map(|value| {
-                if !value.is_exact_instance_of::<PyInt>() {
-                    return Err(to_pyvalue_err(
-                        "Minimum journal revision must be an exact Python int",
-                    ));
-                }
-                let revision = value.extract::<u64>().map_err(to_pyvalue_err)?;
-                if revision > i64::MAX as u64 {
-                    return Err(to_pyvalue_err(
-                        "Minimum journal revision exceeds the persistent range",
-                    ));
-                }
-                Ok(revision)
-            })
-            .transpose()?;
+        let minimum_revision = optional_exact_int(
+            minimum_journal_revision,
+            "Minimum journal revision",
+            i64::MAX as u64,
+        )?;
+        let risk_until = optional_exact_int(
+            risk_increase_until,
+            "Risk increase deadline",
+            MAX_EXECUTION_WINDOW_SECONDS,
+        )?;
+        let exit_until =
+            optional_exact_int(exit_until, "Exit deadline", MAX_EXECUTION_WINDOW_SECONDS)?;
+        let execution_window = match (risk_until, exit_until) {
+            (None, None) => PapertradeExecutionWindow::Unbounded {},
+            (Some(risk_increase_until), Some(exit_until)) => PapertradeExecutionWindow::Bounded {
+                risk_increase_until,
+                exit_until,
+            },
+            _ => return Err(to_pyvalue_err("Execution window requires both deadlines")),
+        };
         let journal_open = match (journal_mode, expected_journal_id, minimum_revision) {
             ("unregistered", None, None) => PapertradeJournalOpenMode::Unregistered {},
             ("initialize_new", None, None) => PapertradeJournalOpenMode::InitializeNew {},
@@ -122,6 +173,9 @@ impl PapertradeExecutionClientConfig {
         config.max_history_pages = max_history_pages;
         config.read_only = read_only;
         config.journal_open = journal_open;
+        config.execution_window = execution_window;
+        config.risk_blocker = risk_blocker;
+        config.validate_runtime_controls().map_err(to_pyvalue_err)?;
         Ok(config)
     }
 }
@@ -145,6 +199,13 @@ impl PapertradeExecutionClientFactory {
     #[new]
     fn py_new() -> Self {
         Self
+    }
+    /// Returns the compiled signing domain without keys, files or network access.
+    #[staticmethod]
+    #[pyo3(name = "deployment_identity_json")]
+    fn py_deployment_identity_json() -> String {
+        serde_json::json!({"schema_version": 1, "connector": "papertrade", "chain_id": crate::signing::CHAIN_ID,
+            "exchange": format!("{:#x}", crate::signing::EXCHANGE)}).to_string()
     }
     #[pyo3(name = "name")]
     fn py_name(&self) -> &'static str {
@@ -193,6 +254,7 @@ pub fn papertrade(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PAPERTRADE_VENUE", Venue::from(PAPERTRADE))?;
     m.add_class::<PapertradeDataClientConfig>()?;
     m.add_class::<PapertradeExecutionClientConfig>()?;
+    m.add_class::<PapertradeRiskBlocker>()?;
     m.add_class::<PapertradeDataClientFactory>()?;
     m.add_class::<PapertradeExecutionClientFactory>()?;
     let registry = get_global_pyo3_registry();
@@ -221,6 +283,217 @@ mod tests {
 
     use super::PapertradeExecutionClientConfig;
     use crate::config::PapertradeJournalOpenMode;
+
+    #[test]
+    fn native_window_python_deployment_matches_the_original_journal_domain() {
+        Python::initialize();
+        let value = Python::attach(|py| {
+            let factory = Py::new(py, super::PapertradeExecutionClientFactory).unwrap();
+            let raw: String = factory
+                .call_method0(py, "deployment_identity_json")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+        });
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["connector"], "papertrade");
+        assert_eq!(value["chain_id"], crate::signing::CHAIN_ID);
+        assert_eq!(
+            value["exchange"],
+            format!("{:#x}", crate::signing::EXCHANGE)
+        );
+        let root = tempfile::tempdir().unwrap();
+        let wallet = "0x2222222222222222222222222222222222222222"
+            .parse()
+            .unwrap();
+        let journal = crate::journal::Journal::initialize_new(
+            &root.path().join("identity.redb"),
+            wallet,
+            "PAPERTRADE-001",
+        )
+        .unwrap();
+        assert_eq!(
+            journal.identity_snapshot().unwrap().owner,
+            format!(
+                "{}:{}:{wallet:#x}:PAPERTRADE-001",
+                value["chain_id"].as_u64().unwrap(),
+                value["exchange"].as_str().unwrap()
+            )
+        );
+    }
+
+    #[rstest]
+    #[case("True", "1700010000")]
+    #[case("1700000000.0", "1700010000")]
+    #[case("'1700000000'", "1700010000")]
+    #[case("-1", "1700010000")]
+    #[case("0", "1700010000")]
+    #[case("None", "1700010000")]
+    #[case("1700000000", "None")]
+    #[case("1700000000", "True")]
+    #[case("1700010001", "1700010000")]
+    #[case("1700000000", "18446744074")]
+    #[case("2**64", "2**64")]
+    #[case("type('InheritedInt', (int,), {})(1700000000)", "1700010000")]
+    fn native_window_python_deadlines_require_an_exact_bounded_integer_pair(
+        #[case] risk: &str,
+        #[case] exit: &str,
+    ) {
+        Python::initialize();
+        Python::attach(|py| {
+            let fields = PyDict::new(py);
+            let risk = std::ffi::CString::new(risk).unwrap();
+            let exit = std::ffi::CString::new(exit).unwrap();
+            fields
+                .set_item(
+                    "risk_increase_until",
+                    py.eval(risk.as_c_str(), None, None).unwrap(),
+                )
+                .unwrap();
+            fields
+                .set_item("exit_until", py.eval(exit.as_c_str(), None, None).unwrap())
+                .unwrap();
+            fields
+                .set_item(
+                    "risk_blocker",
+                    Py::new(py, super::PapertradeRiskBlocker::default()).unwrap(),
+                )
+                .unwrap();
+            assert!(
+                config(py, &fields)
+                    .unwrap_err()
+                    .is_instance_of::<PyValueError>(py)
+            );
+        });
+    }
+
+    #[test]
+    fn native_window_python_bounded_config_cannot_omit_its_runtime_blocker() {
+        Python::initialize();
+        Python::attach(|py| {
+            let fields = PyDict::new(py);
+            fields
+                .set_item("risk_increase_until", 1700000000_u64)
+                .unwrap();
+            fields.set_item("exit_until", 1700010000_u64).unwrap();
+            assert!(
+                config(py, &fields)
+                    .unwrap_err()
+                    .is_instance_of::<PyValueError>(py)
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn native_window_python_extractor_and_factory_keep_the_original_blocker() {
+        use crate::execution::tests::{
+            order,
+            support::{Harness, SERIAL},
+        };
+        use nautilus_common::{factories::ExecutionClientFactory, messages::ExecutionEvent};
+        use nautilus_model::{events::OrderEventAny, identifiers::TraderId};
+        use std::{sync::atomic::Ordering, time::Duration};
+
+        let _serial = SERIAL.lock().await;
+        let mut harness = Harness::new().await;
+        let now = nautilus_core::time::get_atomic_clock_realtime()
+            .get_time_ns()
+            .as_u64()
+            / 1_000_000_000;
+        Python::initialize();
+        let (configuration, blocker) = Python::attach(|py| {
+            let module = PyModule::new(py, "papertrade").unwrap();
+            super::papertrade(py, &module).unwrap();
+            let blocker = module
+                .getattr("PapertradeRiskBlocker")
+                .unwrap()
+                .call0()
+                .unwrap();
+            assert!(
+                !blocker
+                    .call_method0("is_frozen")
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+            assert!(!blocker.hasattr("unfreeze").unwrap());
+            let fields = PyDict::new(py);
+            fields
+                .set_item("session_private_key", format!("0x{}", "11".repeat(32)))
+                .unwrap();
+            fields.set_item("origin", &harness.config.origin).unwrap();
+            fields.set_item("rpc_url", &harness.config.rpc_url).unwrap();
+            fields.set_item("poll_interval_ms", 500).unwrap();
+            fields.set_item("risk_increase_until", now + 7200).unwrap();
+            fields.set_item("exit_until", now + 10800).unwrap();
+            fields.set_item("risk_blocker", &blocker).unwrap();
+            let object = py
+                .get_type::<PapertradeExecutionClientConfig>()
+                .call(
+                    (
+                        harness.config.account_id,
+                        harness.config.wallet_address.as_str(),
+                        harness.config.journal_path.to_str().unwrap(),
+                        "test-build",
+                    ),
+                    Some(&fields),
+                )
+                .unwrap();
+            (
+                super::extract_execution_config(py, object.unbind()).unwrap(),
+                blocker.unbind(),
+            )
+        });
+        let mut client = super::PapertradeExecutionClientFactory
+            .create(
+                TraderId::from("TESTER-001"),
+                "PAPERTRADE",
+                configuration.as_ref(),
+                harness.cache.clone().into(),
+            )
+            .unwrap();
+        client.start().unwrap();
+        client.connect().await.unwrap();
+        let (_order, command) = order(&harness);
+        let identity = command.client_order_id;
+        Python::attach(|py| {
+            blocker.call_method0(py, "freeze").unwrap();
+            blocker.call_method0(py, "freeze").unwrap();
+            assert!(
+                blocker
+                    .call_method0(py, "is_frozen")
+                    .unwrap()
+                    .extract::<bool>(py)
+                    .unwrap()
+            );
+        });
+        client.submit_order(command).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(event) = harness._events.recv().await {
+                match event {
+                    ExecutionEvent::Order(OrderEventAny::Denied(event))
+                        if event.client_order_id == identity =>
+                    {
+                        return Ok(event.reason.to_string());
+                    }
+                    ExecutionEvent::Order(OrderEventAny::Submitted(event))
+                        if event.client_order_id == identity =>
+                    {
+                        return Err("factory clone lost the blocker");
+                    }
+                    _ => {}
+                }
+            }
+            Err("order result absent")
+        })
+        .await
+        .unwrap();
+        client.disconnect().await.unwrap();
+        assert!(result.unwrap().contains("frozen"));
+        assert_eq!(harness.source.intent_requests.load(Ordering::SeqCst), 0);
+    }
 
     fn config<'py>(py: Python<'py>, fields: &Bound<'py, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         py.get_type::<PapertradeExecutionClientConfig>().call(

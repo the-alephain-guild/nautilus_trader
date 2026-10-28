@@ -12,6 +12,7 @@ __all__ = [
     "PapertradeDataClientFactory",
     "PapertradeExecutionClientConfig",
     "PapertradeExecutionClientFactory",
+    "PapertradeRiskBlocker",
 ]
 
 PAPERTRADE: str
@@ -50,9 +51,20 @@ class PapertradeExecutionClientConfig:
         journal_mode: str = "unregistered",
         expected_journal_id: str | None = None,
         minimum_journal_revision: int | None = None,
+        risk_increase_until: int | None = None,
+        exit_until: int | None = None,
+        risk_blocker: PapertradeRiskBlocker | None = None,
     ) -> None: ...
 
 @typing.final
 class PapertradeExecutionClientFactory:
     def __init__(self) -> None: ...
+    @staticmethod
+    def deployment_identity_json() -> str: ...
     def name(self) -> str: ...
+
+@typing.final
+class PapertradeRiskBlocker:
+    def __init__(self) -> None: ...
+    def freeze(self) -> None: ...
+    def is_frozen(self) -> bool: ...

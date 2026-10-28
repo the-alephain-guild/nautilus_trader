@@ -30,7 +30,7 @@ use redb::{
 use same_file::Handle;
 
 use super::META;
-use crate::signing::EXCHANGE;
+use crate::signing::{CHAIN_ID, EXCHANGE};
 
 pub(super) const UUID_KEY: &str = "journal_uuid";
 pub(super) const REVISION_KEY: &str = "journal_revision";
@@ -110,7 +110,7 @@ impl JournalStorage {
     }
 
     fn domain(wallet: Address, account: &str) -> String {
-        format!("999:{EXCHANGE:#x}:{wallet:#x}:{account}")
+        format!("{CHAIN_ID}:{EXCHANGE:#x}:{wallet:#x}:{account}")
     }
 
     pub(super) fn create_new(path: &Path, wallet: Address, account: &str) -> Result<Self> {

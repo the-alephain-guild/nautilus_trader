@@ -18,9 +18,93 @@
 use nautilus_core::{UUID4, string::secret::SecretString};
 use nautilus_model::identifiers::AccountId;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 pub const PAPERTRADE: &str = "PAPERTRADE";
+pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = u64::MAX / 1_000_000_000;
+
+/// An additional, irreversible denial mechanism; an unfrozen value grants no authority.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.adapters.papertrade", from_py_object, frozen)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.papertrade")
+)]
+pub struct PapertradeRiskBlocker {
+    frozen: Arc<AtomicBool>,
+}
+
+impl PapertradeRiskBlocker {
+    pub fn freeze(&self) {
+        self.frozen.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.load(Ordering::SeqCst)
+    }
+}
+
+/// Absolute exclusive bounds, independent of venue key validity and readiness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PapertradeExecutionWindow {
+    Unbounded {},
+    Bounded {
+        risk_increase_until: u64,
+        exit_until: u64,
+    },
+}
+
+impl Default for PapertradeExecutionWindow {
+    fn default() -> Self {
+        Self::Unbounded {}
+    }
+}
+
+impl PapertradeExecutionWindow {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let Self::Bounded {
+            risk_increase_until,
+            exit_until,
+        } = self
+        {
+            anyhow::ensure!(
+                *risk_increase_until > 0
+                    && *risk_increase_until <= *exit_until
+                    && *exit_until <= MAX_EXECUTION_WINDOW_SECONDS,
+                "Invalid execution window bounds"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn reject_blocker_serialization<S: serde::Serializer>(
+    _: &Option<PapertradeRiskBlocker>,
+    _: S,
+) -> Result<S::Ok, S::Error> {
+    Err(serde::ser::Error::custom(
+        "Runtime risk blocker cannot be serialized",
+    ))
+}
+
+fn reject_blocker_deserialization<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PapertradeRiskBlocker>, D::Error> {
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "Runtime risk blocker must be injected by the kernel",
+    ))
+}
 
 /// Selects first creation or recovery bound to a previously registered journal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +169,15 @@ pub struct PapertradeExecutionClientConfig {
     pub journal_path: PathBuf,
     #[serde(default)]
     pub journal_open: PapertradeJournalOpenMode,
+    #[serde(default)]
+    pub execution_window: PapertradeExecutionWindow,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "reject_blocker_serialization",
+        deserialize_with = "reject_blocker_deserialization"
+    )]
+    pub risk_blocker: Option<PapertradeRiskBlocker>,
     pub build_id: String,
     pub leverage: u32,
     pub origin: String,
@@ -93,6 +186,17 @@ pub struct PapertradeExecutionClientConfig {
     pub max_history_pages: usize,
 }
 impl PapertradeExecutionClientConfig {
+    pub fn validate_runtime_controls(&self) -> anyhow::Result<()> {
+        self.execution_window.validate()?;
+        anyhow::ensure!(
+            !matches!(
+                self.execution_window,
+                PapertradeExecutionWindow::Bounded { .. }
+            ) || self.risk_blocker.is_some(),
+            "Bounded execution requires an injected risk blocker"
+        );
+        Ok(())
+    }
     pub fn new(
         account_id: AccountId,
         wallet_address: String,
@@ -107,6 +211,8 @@ impl PapertradeExecutionClientConfig {
             read_only: false,
             journal_path,
             journal_open: PapertradeJournalOpenMode::default(),
+            execution_window: PapertradeExecutionWindow::default(),
+            risk_blocker: None,
             build_id,
             leverage: 10,
             origin: public.origin,

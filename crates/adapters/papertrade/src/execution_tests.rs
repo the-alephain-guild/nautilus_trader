@@ -31,9 +31,17 @@ use super::*;
     dead_code,
     reason = "The shared harness also serves recovery and coverage tests"
 )]
-mod support;
+pub(crate) mod support;
 
 fn client(harness: &support::Harness) -> (PapertradeExecutionClient, &'static AtomicTime, u64) {
+    let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
+    client_at(harness, now)
+}
+
+pub(crate) fn client_at(
+    harness: &support::Harness,
+    now: u64,
+) -> (PapertradeExecutionClient, &'static AtomicTime, u64) {
     let core = ExecutionClientCore::new(
         TraderId::from("TESTER-001"),
         ClientId::from(PAPERTRADE),
@@ -45,7 +53,6 @@ fn client(harness: &support::Harness) -> (PapertradeExecutionClient, &'static At
         harness.cache.clone(),
     );
     let mut client = PapertradeExecutionClient::new(core, harness.config.clone()).unwrap();
-    let now = client.now();
     // Each test owns its static clock; never mutate the global realtime clock.
     let clock = Box::leak(Box::new(AtomicTime::new(
         false,
@@ -55,7 +62,7 @@ fn client(harness: &support::Harness) -> (PapertradeExecutionClient, &'static At
     (client, clock, now)
 }
 
-fn order(harness: &support::Harness) -> (OrderAny, SubmitOrder) {
+pub(crate) fn order(harness: &support::Harness) -> (OrderAny, SubmitOrder) {
     let order = OrderTestBuilder::new(OrderType::Market)
         .instrument_id(InstrumentId::from("BTC-USD-PERP.PAPERTRADE"))
         .client_order_id(ClientOrderId::from("ADMISSION-001"))
@@ -251,7 +258,7 @@ async fn submission_admission_relayer_labels_do_not_establish_a_terminal_order(
     client.disconnect().await.unwrap();
 }
 
-fn cancellation(
+pub(crate) fn cancellation(
     client: &PapertradeExecutionClient,
     entry: &crate::journal::JournalEntry,
     now: u64,
@@ -480,7 +487,7 @@ async fn submission_admission_lock_waits_invalidate_earlier_time_and_availabilit
         completed
             .send(
                 inner
-                    .submission_time(&signed)
+                    .submission_time(&signed, false)
                     .map_err(|error| error.to_string()),
             )
             .unwrap();
