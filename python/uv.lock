@@ -548,7 +548,7 @@ wheels = [
 
 [[package]]
 name = "nautilus-trader"
-version = "2.0.0rc5+papertrade.3"
+version = "2.0.0rc5+papertrade.4"
 source = { editable = "." }
 
 [package.optional-dependencies]
