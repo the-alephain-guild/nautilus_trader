@@ -24,17 +24,75 @@ use alloy_primitives::B256;
 use anyhow::{Result, ensure};
 use nautilus_model::{
     enums::{OrderStatus, OrderType, TimeInForce},
-    identifiers::VenueOrderId,
-    reports::OrderStatusReport,
+    identifiers::{ClientOrderId, VenueOrderId},
+    orders::OrderAny,
+    reports::{FillReport, OrderStatusReport},
     types::Quantity,
 };
 
 use crate::{
     chain,
     execution::{Inner, ReportBundle},
+    journal::{ExpiryCandidate, JournalEntry},
     reports,
     wire::AccountSnapshot,
 };
+
+struct OrderPublication {
+    report: OrderStatusReport,
+    fills: Vec<FillReport>,
+    fingerprint: String,
+    normalized: Option<(ClientOrderId, OrderAny)>,
+}
+
+fn prepare_order_publications(
+    entries: &[JournalEntry],
+    bundle: &ReportBundle,
+) -> Result<Vec<OrderPublication>> {
+    bundle
+        .orders
+        .iter()
+        .map(|report| {
+            let fills: Vec<_> = bundle
+                .fills
+                .iter()
+                .filter(|fill| fill.venue_order_id == report.venue_order_id)
+                .cloned()
+                .collect();
+            let economics: Vec<_> = fills
+                .iter()
+                .map(|fill| (fill.trade_id, fill.last_qty, fill.last_px, fill.commission))
+                .collect();
+            let fingerprint = serde_json::to_string(&(
+                report.order_status,
+                report.quantity,
+                report.filled_qty,
+                report.ts_last,
+                economics,
+            ))?;
+            let normalized = entries
+                .iter()
+                .find(|entry| {
+                    Some(entry.command.client_order_id) == report.client_order_id
+                        && entry.command.order_init.quote_quantity
+                        && !entry.fills.is_empty()
+                })
+                .map(|entry| -> Result<_> {
+                    Ok((
+                        entry.command.client_order_id,
+                        OrderAny::try_from(entry.command.order_init.clone())?,
+                    ))
+                })
+                .transpose()?;
+            Ok(OrderPublication {
+                report: report.clone(),
+                fills,
+                fingerprint,
+                normalized,
+            })
+        })
+        .collect()
+}
 
 pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Result<()> {
     let _serial = inner.sync.lock().await;
@@ -248,6 +306,7 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
     let mut open_clients = HashMap::new();
     let mut close_clients = HashMap::new();
     let mut covered_timestamp = None;
+    let mut expiry_candidates = Vec::new();
     for entry in &mut entries {
         if let Some((_, outcome)) = snapshot
             .intent_outcomes
@@ -395,8 +454,13 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
                     }
                 };
                 if timestamp > entry.deadline {
+                    expiry_candidates.push(ExpiryCandidate::new(
+                        entry,
+                        &snapshot,
+                        covered_block,
+                        timestamp,
+                    )?);
                     entry.status = OrderStatus::Expired;
-                    inner.journal.update(entry)?;
                 }
             }
             if remote && entry.status == OrderStatus::Submitted {
@@ -487,46 +551,34 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         serde_json::json!(snapshot.account_revision),
     );
     let balances = reports::balances(&snapshot)?;
-    inner.journal.checkpoint(&snapshot)?;
+    let publications = prepare_order_publications(&entries, &bundle)?;
+    let account_time_ns = snapshot
+        .indexed_through_timestamp
+        .checked_mul(1_000_000_000)
+        .ok_or_else(|| anyhow::anyhow!("Account time exceeds native nanosecond range"))?;
+    inner
+        .journal
+        .checkpoint_with_expiry(&snapshot, &expiry_candidates)?;
     inner.emitter.try_emit_account_state(
         balances,
         Vec::new(),
         true,
-        nautilus_core::UnixNanos::from(snapshot.indexed_through_timestamp * 1_000_000_000),
+        nautilus_core::UnixNanos::from(account_time_ns),
         Some(info),
     )?;
-    for report in &bundle.orders {
-        let fills: Vec<_> = bundle
-            .fills
-            .iter()
-            .filter(|f| f.venue_order_id == report.venue_order_id)
-            .cloned()
-            .collect();
-        let economics: Vec<_> = fills
-            .iter()
-            .map(|f| (f.trade_id, f.last_qty, f.last_px, f.commission))
-            .collect();
-        let fingerprint = serde_json::to_string(&(
-            report.order_status,
-            report.quantity,
-            report.filled_qty,
-            report.ts_last,
-            economics,
-        ))?;
+    for OrderPublication {
+        report,
+        fills,
+        fingerprint,
+        normalized,
+    } in publications
+    {
         if inner.sent_orders.lock().get(&report.venue_order_id) == Some(&fingerprint) {
             continue;
         }
-        if let Some(entry) = entries.iter().find(|e| {
-            Some(e.command.client_order_id) == report.client_order_id
-                && e.command.order_init.quote_quantity
-                && !e.fills.is_empty()
-        }) && inner
-            .normalized
-            .lock()
-            .insert(entry.command.client_order_id)
+        if let Some((client_order_id, order)) = normalized
+            && inner.normalized.lock().insert(client_order_id)
         {
-            let order =
-                nautilus_model::orders::OrderAny::try_from(entry.command.order_init.clone())?;
             inner.emitter.emit_order_updated(
                 &order,
                 report.venue_order_id,

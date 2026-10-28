@@ -1052,11 +1052,14 @@ async fn restart_rejects_a_durable_order_that_never_started_submission() {
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
+#[case::current_before(false, true)]
+#[case::legacy_before(true, true)]
+#[case::current_equal(false, false)]
+#[case::legacy_equal(true, false)]
 #[tokio::test]
 async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_deadline(
     #[case] legacy_expired: bool,
+    #[case] before_deadline: bool,
 ) {
     use nautilus_model::enums::OrderStatus;
     use nautilus_papertrade::wire::VenuePosition;
@@ -1076,10 +1079,23 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
     if legacy_expired {
         support::write_legacy_expired(&harness.config.journal_path, &entry);
     }
-    *harness.source.block_timestamp.lock() = Some(deadline - 1);
+    *harness.source.block_timestamp.lock() = Some(if before_deadline {
+        deadline - 1
+    } else {
+        deadline
+    });
     let mut client = harness.client();
     client.start().unwrap();
     client.connect().await.unwrap();
+    let unproven: Value = serde_json::from_str(
+        &client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json(entry.command.client_order_id.as_str())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unproven["kind"], "unproven");
     let mass = client.generate_mass_status(None).await.unwrap().unwrap();
     assert!(
         !mass.reports_complete(),
@@ -1116,6 +1132,29 @@ async fn ambiguous_attempt_expires_only_after_complete_chain_coverage_past_its_d
     );
     assert!(mass.reports_complete());
     assert!(mass.fill_reports().is_empty());
+    let proof: Value = serde_json::from_str(
+        &restarted
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json(entry.command.client_order_id.as_str())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(proof["kind"], "proven_no_fill");
+    assert_eq!(proof["proof"]["source"]["kind"], "expired_with_coverage");
+    assert_eq!(proof["proof"]["source"]["coverage"]["deadline"], deadline);
+    assert!(
+        proof["proof"]["source"]["coverage"]["block_timestamp"]
+            .as_u64()
+            .unwrap()
+            > deadline
+    );
+    assert!(
+        proof["proof"]["source"]["coverage"]["account_timestamp"]
+            .as_u64()
+            .unwrap()
+            > deadline
+    );
     restarted.disconnect().await.unwrap();
 }
 

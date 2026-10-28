@@ -111,6 +111,7 @@ impl JournalEntry {
 
 mod evidence;
 mod identity;
+pub(crate) use evidence::ExpiryCandidate;
 pub use evidence::JournalOrderEvidence;
 pub use identity::JournalIdentitySnapshot;
 use identity::{JournalStorage, REVISION_KEY, UUID_KEY};

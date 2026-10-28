@@ -86,6 +86,353 @@ pub(crate) fn order(harness: &support::Harness) -> (OrderAny, SubmitOrder) {
     (order, command)
 }
 
+fn expiry_candidates(
+    harness: &support::Harness,
+    ids: &[&str],
+) -> (
+    PapertradeExecutionClient,
+    AccountSnapshot,
+    Vec<crate::journal::JournalEntry>,
+    Vec<crate::journal::ExpiryCandidate>,
+) {
+    let snapshot: AccountSnapshot =
+        serde_json::from_value(harness.source.wallet.borrow().clone()).unwrap();
+    let position = &snapshot.open_positions[0];
+    let now = snapshot.indexed_through_timestamp;
+    for id in ids {
+        let entry = support::prepared_open_with_id(harness, position, id, now - 7200, now - 3600);
+        support::mark_attempted(harness, &entry);
+    }
+    let (client, _, _) = client(harness);
+    let mut entries = client.inner.journal.entries().unwrap();
+    let candidates = entries
+        .iter_mut()
+        .map(|entry| {
+            entry.scanned_through = snapshot.indexed_through_block;
+            client.inner.journal.update(entry).unwrap();
+            crate::journal::ExpiryCandidate::new(
+                entry,
+                &snapshot,
+                snapshot.indexed_through_block,
+                now,
+            )
+            .unwrap()
+        })
+        .collect();
+    (client, snapshot, entries, candidates)
+}
+
+#[rstest]
+#[case("success")]
+#[case("fill")]
+#[case("service_terminal")]
+#[tokio::test]
+async fn expiry_checkpoint_rechecks_new_facts_after_candidate_creation(#[case] change: &str) {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (client, snapshot, mut entries, candidates) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    let entry = &mut entries[0];
+    match change {
+        "success" => client
+            .inner
+            .journal
+            .observe_successes(&[entry.intent_id])
+            .unwrap(),
+        "fill" => {
+            let trading: crate::wire::TradingState =
+                serde_json::from_value(harness.source.trading.lock().clone()).unwrap();
+            entry.status = OrderStatus::Filled;
+            entry.fills = vec![
+                crate::reports::open_fill(
+                    &snapshot.open_positions[0],
+                    &trading.instruments[0],
+                    harness.config.account_id,
+                    Some(entry.command.client_order_id),
+                    UnixNanos::from(1),
+                )
+                .unwrap(),
+            ];
+            client.inner.journal.update(entry).unwrap();
+        }
+        "service_terminal" => {
+            entry.status = OrderStatus::Rejected;
+            client.inner.journal.update(entry).unwrap();
+        }
+        _ => unreachable!(),
+    }
+    let before = client.inner.journal.identity_snapshot().unwrap();
+    assert!(
+        client
+            .inner
+            .journal
+            .checkpoint_with_expiry(&snapshot, &candidates)
+            .is_err()
+    );
+    assert_eq!(client.inner.journal.identity_snapshot().unwrap(), before);
+    assert!(client.inner.journal.snapshot().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn expiry_second_candidate_conflict_rolls_back_first_candidate_and_checkpoint() {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (client, snapshot, entries, candidates) =
+        expiry_candidates(&harness, &["EXPIRY-A", "EXPIRY-B"]);
+    client
+        .inner
+        .journal
+        .observe_successes(&[entries[1].intent_id])
+        .unwrap();
+    let before = client.inner.journal.identity_snapshot().unwrap();
+    assert!(
+        client
+            .inner
+            .journal
+            .checkpoint_with_expiry(&snapshot, &candidates)
+            .is_err()
+    );
+    assert_eq!(client.inner.journal.identity_snapshot().unwrap(), before);
+    assert!(client.inner.journal.snapshot().unwrap().is_none());
+    assert!(
+        client
+            .inner
+            .journal
+            .entries()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.status == OrderStatus::Submitted)
+    );
+    let observed = client
+        .inner
+        .journal
+        .order_evidence_snapshot(ClientId::from(PAPERTRADE), "EXPIRY-A")
+        .unwrap();
+    assert_eq!(serde_json::to_value(observed).unwrap()["kind"], "unproven");
+}
+
+#[tokio::test]
+async fn expiry_proof_cannot_bind_a_different_wallet_snapshot_to_this_journal() {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (client, mut snapshot, entries, _) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    snapshot.address = alloy_primitives::Address::repeat_byte(9);
+    let candidate = crate::journal::ExpiryCandidate::new(
+        &entries[0],
+        &snapshot,
+        snapshot.indexed_through_block,
+        snapshot.indexed_through_timestamp,
+    )
+    .unwrap();
+    let before = client.inner.journal.identity_snapshot().unwrap();
+    assert!(
+        client
+            .inner
+            .journal
+            .checkpoint_with_expiry(&snapshot, &[candidate])
+            .is_err()
+    );
+    assert_eq!(client.inner.journal.identity_snapshot().unwrap(), before);
+    assert!(client.inner.journal.snapshot().unwrap().is_none());
+}
+
+#[rstest]
+#[case("account_revision")]
+#[case("account_snapshot_keccak256")]
+#[case("missing_witness")]
+#[case("changed_witness")]
+#[tokio::test]
+async fn held_probe_rechecks_the_persisted_expiry_snapshot_binding(#[case] field: &str) {
+    use redb::{Database, ReadableTable, TableDefinition};
+
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (original_client, snapshot, _, candidates) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    original_client
+        .inner
+        .journal
+        .checkpoint_with_expiry(&snapshot, &candidates)
+        .unwrap();
+    drop(original_client);
+    {
+        let db = Database::open(&harness.config.journal_path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut proofs = tx
+                .open_table(TableDefinition::<&str, &str>::new("order_no_fill_proofs"))
+                .unwrap();
+            let mut proof: serde_json::Value =
+                serde_json::from_str(proofs.get("EXPIRY-A").unwrap().unwrap().value()).unwrap();
+            match field {
+                "account_revision" => proof["source"]["coverage"][field] = serde_json::json!(0),
+                "account_snapshot_keccak256" => {
+                    proof["source"]["coverage"][field] =
+                        serde_json::json!(alloy_primitives::B256::ZERO);
+                }
+                "missing_witness" | "changed_witness" => {
+                    let mut witnesses = tx
+                        .open_table(TableDefinition::<&str, &str>::new(
+                            "expiry_account_witnesses",
+                        ))
+                        .unwrap();
+                    if field == "missing_witness" {
+                        witnesses.remove("EXPIRY-A").unwrap();
+                    } else {
+                        let mut changed = snapshot;
+                        changed.account_revision += 1;
+                        witnesses
+                            .insert(
+                                "EXPIRY-A",
+                                serde_json::to_string(&changed).unwrap().as_str(),
+                            )
+                            .unwrap();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            proofs
+                .insert("EXPIRY-A", serde_json::to_string(&proof).unwrap().as_str())
+                .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let (client, _, _) = client(&harness);
+    assert!(
+        client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json("EXPIRY-A")
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn expiry_witness_survives_new_checkpoints_and_original_journal_recovery() {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (original_client, mut snapshot, _, candidates) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    original_client
+        .inner
+        .journal
+        .checkpoint_with_expiry(&snapshot, &candidates)
+        .unwrap();
+    let probe = original_client.journal_identity_probe().unwrap();
+    let before: serde_json::Value =
+        serde_json::from_str(&probe.order_evidence_json("EXPIRY-A").unwrap()).unwrap();
+    assert_eq!(before["kind"], "proven_no_fill");
+    snapshot.account_revision += 1;
+    snapshot.indexed_through_block += 1;
+    snapshot.indexed_through_timestamp += 1;
+    original_client.inner.journal.checkpoint(&snapshot).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&probe.order_evidence_json("EXPIRY-A").unwrap())
+            .unwrap()["proof"],
+        before["proof"]
+    );
+    drop(original_client);
+    assert!(probe.order_evidence_json("EXPIRY-A").is_err());
+    let (recovered, _, _) = client(&harness);
+    let observed: serde_json::Value = serde_json::from_str(
+        &recovered
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json("EXPIRY-A")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(observed["kind"], "proven_no_fill");
+    assert_eq!(observed["proof"], before["proof"]);
+    assert!(observed.get("snapshot").is_none());
+    assert!(observed["proof"].get("snapshot").is_none());
+}
+
+#[tokio::test]
+async fn expiry_checkpoint_keeps_current_transport_marker_and_scan_watermark() {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (client, snapshot, mut entries, candidates) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    entries[0].scanned_through += 1;
+    client.inner.journal.update(&entries[0]).unwrap();
+    client
+        .inner
+        .journal
+        .checkpoint_with_expiry(&snapshot, &candidates)
+        .unwrap();
+    let current = client.inner.journal.entries().unwrap().remove(0);
+    assert!(current.send_attempted);
+    assert_eq!(current.scanned_through, entries[0].scanned_through);
+    assert_eq!(current.status, OrderStatus::Expired);
+}
+
+#[tokio::test]
+async fn later_balance_report_failure_cannot_seal_an_expiry_candidate() {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (client, mut snapshot, entries, _) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    harness.source.trading.lock()["indexedThroughBlock"] =
+        serde_json::json!(snapshot.indexed_through_block);
+    *harness.source.block_timestamp.lock() = Some(snapshot.indexed_through_timestamp);
+    snapshot.balance = crate::wire::Raw(alloy_primitives::U256::MAX);
+    snapshot.funds.available_balance = snapshot.balance;
+    snapshot.funds.reserved_balance = crate::wire::Raw::default();
+    snapshot.validate(snapshot.address).unwrap();
+    let error = crate::reconciliation::synchronize(&client.inner, snapshot)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Invalid decimal: overflow"),
+        "{error:#}"
+    );
+    assert!(harness.source.block_calls.load(Ordering::SeqCst) > 0);
+    assert!(client.inner.journal.snapshot().unwrap().is_none());
+    let current = client
+        .inner
+        .journal
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.command.client_order_id == entries[0].command.client_order_id)
+        .unwrap();
+    assert_eq!(current.status, OrderStatus::Submitted);
+    let observed: serde_json::Value = serde_json::from_str(
+        &client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json("EXPIRY-A")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(observed["kind"], "unproven");
+}
+
+#[rstest]
+#[case(OrderStatus::Rejected)]
+#[case(OrderStatus::Canceled)]
+#[case(OrderStatus::Expired)]
+#[tokio::test]
+async fn old_service_terminal_remains_unproven_after_successful_past_deadline_sync(
+    #[case] status: OrderStatus,
+) {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (mut client, snapshot, mut entries, _) = expiry_candidates(&harness, &["EXPIRY-A"]);
+    client.start().unwrap();
+    entries[0].status = status;
+    client.inner.journal.update(&entries[0]).unwrap();
+    *harness.source.block_timestamp.lock() = Some(snapshot.indexed_through_timestamp);
+    crate::reconciliation::synchronize(&client.inner, snapshot)
+        .await
+        .unwrap();
+    let observed: serde_json::Value = serde_json::from_str(
+        &client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json("EXPIRY-A")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(observed["kind"], "unproven");
+}
+
 async fn fault(
     harness: &support::Harness,
     client: &PapertradeExecutionClient,

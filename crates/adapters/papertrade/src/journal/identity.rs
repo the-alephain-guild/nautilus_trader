@@ -115,6 +115,14 @@ impl JournalStorage {
         format!("{CHAIN_ID}:{EXCHANGE:#x}:{wallet:#x}:{account}")
     }
 
+    pub(super) fn require_wallet(&self, wallet: Address) -> Result<()> {
+        ensure!(
+            Self::domain(wallet, &self.account) == self.owner,
+            "Account snapshot belongs to another journal wallet"
+        );
+        Ok(())
+    }
+
     pub(super) fn create_new(path: &Path, wallet: Address, account: &str) -> Result<Self> {
         let path = std::path::absolute(path)?;
         let (db, canonical_path, file) = Self::open_file(&path, true)?;
