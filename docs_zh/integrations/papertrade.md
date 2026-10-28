@@ -79,6 +79,30 @@ uv run --project python --no-sync python examples/live/papertrade/account_monito
 协议层还保留主钱包注册 session key 的签名函数，供独立授权流程使用，
 执行客户端本身不调用它。存款、提现、approve、桥接与 PAPER 质押不在本实现中。
 
+## 外部参考日线来源
+
+Rust `reference_bars` 模块可读取 Hyperliquid 公开 `candleSnapshot`，目前严格限定为
+同一市场的 `1-DAY-LAST-EXTERNAL`。窗口由 UTC 日界组成，只包含已收盘日，最多
+5,000 根且不能越过来源保留范围。每次响应必须覆盖请求中的全部日期；缺行、重复、
+时间边界错误、未收盘行、错误市场和有损价格或成交量精度均拒绝。普通十进制通过
+`Decimal::from_str_exact` 解析，不以丢弃超长尾数或把极小量变零的方式接受数据。
+HTTP body 返回之后有 2 MiB 解码前大小门；这不是流式下载内存上限。
+
+返回 `Bar` 沿用 Hyperliquid 参考适配器的时间语义：`ts_event` 是日开盘时间，
+`ts_init` 是排他的收盘边界。外部参考 OHLCV 不是 Papertrade 成交或 BBO-mid 结算历史，
+部分早期历史的成交量和笔数为零，不能据此推断 Papertrade 曾发生交易。
+
+本模块尚未接入 Papertrade `DataClient` 的历史请求和直播订阅；单独设置日线类型
+不能使策略完成预热或获得交易准入。离线默认测试不访问公网；显式只读来源检查为：
+
+```bash
+RUSTC_WRAPPER= CARGO_PROFILE_NEXTEST_OPT_LEVEL=1 cargo test --profile nextest \
+  -p nautilus-papertrade --features python --test reference_bars \
+  public_reference_supplies -- --ignored --nocapture
+```
+
+该检查只读取公开市场配置和参考日线，不使用交易 key、账户余额或真实下单接口。
+
 ## 行情、成交与结算的区别
 
 数据客户端加载官方市场配置，发布用于合约定价的 BBO 中点参考报价。

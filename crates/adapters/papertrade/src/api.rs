@@ -293,8 +293,8 @@ impl PapertradeApi {
         }
         Ok(receipts)
     }
-    pub async fn reference_mid(&self, symbol: &str) -> Result<(rust_decimal::Decimal, u64)> {
-        let body = serde_json::to_vec(&json!({"type":"l2Book","coin":symbol}))?;
+    pub(crate) async fn reference_request(&self, payload: &Value) -> Result<Value> {
+        let body = serde_json::to_vec(payload)?;
         let response = self
             .http
             .request(
@@ -315,7 +315,16 @@ impl PapertradeApi {
             "Reference API HTTP {}",
             response.status.as_u16()
         );
-        let v: Value = serde_json::from_slice(&response.body)?;
+        ensure!(
+            response.body.len() <= 2 * 1024 * 1024,
+            "Reference response exceeds size limit"
+        );
+        Ok(serde_json::from_slice(&response.body)?)
+    }
+    pub async fn reference_mid(&self, symbol: &str) -> Result<(rust_decimal::Decimal, u64)> {
+        let v = self
+            .reference_request(&json!({"type":"l2Book","coin":symbol}))
+            .await?;
         ensure!(v["coin"] == symbol, "Reference symbol mismatch");
         let bid: rust_decimal::Decimal = v["levels"][0][0]["px"]
             .as_str()

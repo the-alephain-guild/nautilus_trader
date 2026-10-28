@@ -35,6 +35,7 @@ pub mod journal;
 #[cfg(feature = "python")]
 pub mod python;
 mod reconciliation;
+pub mod reference_bars;
 pub mod reports;
 pub mod signing;
 pub mod stream;
