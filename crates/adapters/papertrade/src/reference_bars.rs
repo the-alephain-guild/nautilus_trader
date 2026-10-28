@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const REFERENCE_DAY_MS: u64 = 86_400_000;
-const MAX_DAILY_BARS: u64 = 5000;
+pub(crate) const MAX_DAILY_BARS: u64 = 5000;
 
 /// A half-open range of completed UTC days, within the provider's retention bound.
 #[derive(Debug, Clone, Copy)]

@@ -29,8 +29,8 @@ use nautilus_common::{
     messages::{
         DataEvent,
         data::{
-            DataResponse, InstrumentResponse, InstrumentsResponse, RequestInstrument,
-            RequestInstruments, SubscribeQuotes, UnsubscribeQuotes,
+            DataResponse, InstrumentResponse, InstrumentsResponse, RequestBars, RequestInstrument,
+            RequestInstruments, SubscribeBars, SubscribeQuotes, UnsubscribeBars, UnsubscribeQuotes,
         },
     },
 };
@@ -44,7 +44,7 @@ use nautilus_model::{
     instruments::InstrumentAny,
     types::{Price, Quantity, fixed::FIXED_PRECISION},
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -55,6 +55,38 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[path = "data_bars.rs"]
+mod bars;
+
+#[derive(Debug)]
+struct DataDelivery {
+    sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    live: Mutex<bool>,
+    connected: Arc<AtomicBool>,
+}
+impl DataDelivery {
+    fn send(&self, event: DataEvent) -> Result<()> {
+        let live = self.live.lock();
+        ensure!(*live, "Data client delivery has stopped");
+        self.sender
+            .send(event)
+            .map_err(|_| anyhow::anyhow!("Data engine receiver closed"))
+    }
+    fn set_connected(&self, value: bool) {
+        let live = self.live.lock();
+        if *live {
+            self.connected.store(value, Ordering::Release);
+        }
+    }
+    fn close(&self) {
+        let mut live = self.live.lock();
+        if *live {
+            *live = false;
+            self.connected.store(false, Ordering::Release);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PapertradeDataClient {
     id: ClientId,
@@ -64,7 +96,9 @@ pub struct PapertradeDataClient {
     subscriptions: Arc<RwLock<HashSet<InstrumentId>>>,
     connected: Arc<AtomicBool>,
     cancellation: CancellationToken,
-    sender: Option<tokio::sync::mpsc::UnboundedSender<DataEvent>>,
+    sender: Option<Arc<DataDelivery>>,
+    bars: bars::DailyBarSubscriptions,
+    task: Option<tokio::task::JoinHandle<()>>,
     clock: &'static AtomicTime,
 }
 impl PapertradeDataClient {
@@ -83,6 +117,8 @@ impl PapertradeDataClient {
             connected: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
             sender: None,
+            bars: bars::DailyBarSubscriptions::default(),
+            task: None,
             clock: get_atomic_clock_realtime(),
         })
     }
@@ -91,9 +127,14 @@ impl PapertradeDataClient {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Data client not started"))?
             .send(event)
-            .map_err(|_| anyhow::anyhow!("Data engine receiver closed"))
     }
 }
+impl Drop for PapertradeDataClient {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
 async fn reference_quote(
     api: &PapertradeApi,
     market: &Market,
@@ -129,12 +170,28 @@ impl DataClient for PapertradeDataClient {
         Some(Venue::from(PAPERTRADE))
     }
     fn start(&mut self) -> Result<()> {
-        self.sender = Some(get_data_event_sender());
+        self.stop()?;
+        self.markets = Arc::new(RwLock::new(HashMap::new()));
+        self.subscriptions = Arc::new(RwLock::new(HashSet::new()));
+        self.bars = bars::DailyBarSubscriptions::default();
+        self.connected = Arc::new(AtomicBool::new(false));
+        self.sender = Some(Arc::new(DataDelivery {
+            sender: get_data_event_sender(),
+            live: Mutex::new(true),
+            connected: self.connected.clone(),
+        }));
         self.cancellation = CancellationToken::new();
         Ok(())
     }
     fn stop(&mut self) -> Result<()> {
+        if let Some(sender) = &self.sender {
+            sender.close();
+        }
         self.cancellation.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        self.bars.clear();
         self.connected.store(false, Ordering::Release);
         Ok(())
     }
@@ -153,7 +210,13 @@ impl DataClient for PapertradeDataClient {
         !self.is_connected()
     }
     async fn connect(&mut self) -> Result<()> {
+        ensure!(self.task.is_none(), "Data client is already polling");
+        ensure!(
+            !self.cancellation.is_cancelled(),
+            "Data client must be started before connecting"
+        );
         let state = self.api.trading().await?;
+        self.markets.write().clear();
         for market in state.instruments {
             let instrument = reports::instrument(&market, self.clock.get_time_ns())?;
             self.markets
@@ -166,11 +229,14 @@ impl DataClient for PapertradeDataClient {
                 )))?;
             }
         }
-        self.connected.store(true, Ordering::Release);
+        self.sender
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Data client not started"))?
+            .set_connected(true);
         let api = self.api.clone();
         let markets = self.markets.clone();
         let subscriptions = self.subscriptions.clone();
-        let connected = self.connected.clone();
+        let bars = self.bars.clone();
         let cancel = self.cancellation.clone();
         let sender = self
             .sender
@@ -178,49 +244,69 @@ impl DataClient for PapertradeDataClient {
             .ok_or_else(|| anyhow::anyhow!("Data client not started"))?;
         let clock = self.clock;
         let period = self.config.poll_interval_ms;
-        get_runtime().spawn(async move {
+        self.task = Some(get_runtime().spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(period));
             loop {
                 tokio::select! {()=cancel.cancelled()=>break,_=interval.tick()=>{}}
                 let state = match api.trading().await {
                     Ok(state) => state,
                     Err(e) => {
-                        connected.store(false, Ordering::Release);
+                        sender.set_connected(false);
                         log::warn!("papertrade_reference_config_unavailable error={e}");
                         continue;
                     }
                 };
                 let selected = subscriptions.read().clone();
+                let updated: HashMap<_, _> = state
+                    .instruments
+                    .iter()
+                    .map(|market| (reports::instrument_id(market), market.clone()))
+                    .collect();
+                let mut healthy = selected
+                    .iter()
+                    .all(|identifier| updated.contains_key(identifier));
+                *markets.write() = updated;
                 for market in state.instruments {
                     let id = reports::instrument_id(&market);
-                    markets.write().insert(id, market.clone());
                     if !selected.contains(&id) {
                         continue;
                     }
                     let quote = async {
                         let quote = reference_quote(&api, &market, clock).await?;
                         ensure!(!cancel.is_cancelled(), "Data client stopped");
-                        sender
-                            .send(DataEvent::Data(Data::Quote(quote)))
-                            .map_err(|_| anyhow::anyhow!("Data engine receiver closed"))?;
+                        sender.send(DataEvent::Data(Data::Quote(quote)))?;
                         Ok::<_, anyhow::Error>(())
                     }
                     .await;
                     match quote {
-                        Ok(()) => connected.store(true, Ordering::Release),
+                        Ok(()) => {}
                         Err(e) => {
-                            connected.store(false, Ordering::Release);
+                            healthy = false;
                             log::warn!("papertrade_reference_quote_unavailable error={e}");
                         }
                     }
                 }
+                if !bars.poll(&api, &markets, &sender, clock, &cancel).await {
+                    healthy = false;
+                }
+                sender.set_connected(healthy);
             }
-            connected.store(false, Ordering::Release);
-        });
+            sender.set_connected(false);
+        }));
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<()> {
         self.stop()
+    }
+    fn request_bars(&self, cmd: RequestBars) -> Result<()> {
+        self.request_reference_bars(cmd)
+    }
+    fn subscribe_bars(&mut self, cmd: SubscribeBars) -> Result<()> {
+        self.subscribe_reference_bars(&cmd)
+    }
+    fn unsubscribe_bars(&mut self, cmd: &UnsubscribeBars) -> Result<()> {
+        self.bars.unsubscribe(cmd.bar_type);
+        Ok(())
     }
     fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> Result<()> {
         ensure!(
@@ -303,3 +389,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "data_bar_tests.rs"]
+mod bar_tests;
