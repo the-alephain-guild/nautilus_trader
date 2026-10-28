@@ -73,6 +73,23 @@ impl ExecutionJournalIdentityProbe for JournalProbe {
         serde_json::to_string(&journal.order_evidence_snapshot(self.client_id, client_order_id)?)
             .map_err(Into::into)
     }
+
+    fn account_observation_json(&self) -> Result<String> {
+        ensure!(
+            std::process::id() == self.process_id,
+            "Original execution journal belongs to another process"
+        );
+        let journal = self
+            .journal
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("Original execution journal is unavailable"))?;
+        let raw = serde_json::to_string(&journal.account_observation(self.client_id)?)?;
+        ensure!(
+            raw.len() <= 262_144,
+            "Account observation exceeds its size limit"
+        );
+        Ok(raw)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +126,7 @@ impl JournalEntry {
     }
 }
 
+mod account_observation;
 mod evidence;
 mod identity;
 mod params;

@@ -94,7 +94,16 @@ fn prepare_order_publications(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Result<()> {
+    synchronize_with_epoch(inner, snapshot, nautilus_core::UUID4::new()).await
+}
+
+pub(crate) async fn synchronize_with_epoch(
+    inner: &Inner,
+    snapshot: AccountSnapshot,
+    source_epoch: nautilus_core::UUID4,
+) -> Result<()> {
     let _serial = inner.sync.lock().await;
     snapshot.validate(inner.wallet)?;
     let previous = inner.snapshot.read().clone();
@@ -556,9 +565,33 @@ pub(crate) async fn synchronize(inner: &Inner, snapshot: AccountSnapshot) -> Res
         .indexed_through_timestamp
         .checked_mul(1_000_000_000)
         .ok_or_else(|| anyhow::anyhow!("Account time exceeds native nanosecond range"))?;
-    inner
-        .journal
-        .checkpoint_with_expiry(&snapshot, &expiry_candidates)?;
+    let stamp = inner.journal.checkpoint_with_observation_epoch(
+        &snapshot,
+        &expiry_candidates,
+        &trading,
+        bundle.complete,
+        source_epoch,
+    )?;
+    info.insert(
+        "papertrade_journal_id".into(),
+        serde_json::json!(stamp.journal_id),
+    );
+    info.insert(
+        "papertrade_checkpoint_revision".into(),
+        serde_json::json!(stamp.checkpoint_revision),
+    );
+    info.insert(
+        "papertrade_account_snapshot_keccak256".into(),
+        serde_json::json!(stamp.account_snapshot_keccak256),
+    );
+    info.insert(
+        "papertrade_account_material_keccak256".into(),
+        serde_json::json!(stamp.account_material_keccak256),
+    );
+    info.insert(
+        "papertrade_source_epoch".into(),
+        serde_json::json!(stamp.source_epoch),
+    );
     inner.emitter.try_emit_account_state(
         balances,
         Vec::new(),

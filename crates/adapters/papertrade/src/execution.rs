@@ -498,10 +498,12 @@ impl ExecutionClient for PapertradeExecutionClient {
         }
         self.inner.stream_healthy.store(false, Ordering::Release);
         self.inner.live.store(false, Ordering::Release);
+        let mut source_epoch = nautilus_core::UUID4::new();
         let mut stream = self.inner.api.wallet_stream(self.inner.wallet).await?;
         let snapshot = stream.next().await?;
         *self.inner.stream_activity.write() = Some(stream.activity.clone());
-        crate::reconciliation::synchronize(&self.inner, snapshot.clone()).await?;
+        crate::reconciliation::synchronize_with_epoch(&self.inner, snapshot.clone(), source_epoch)
+            .await?;
         self.inner.stream_healthy.store(true, Ordering::Release);
         self.core.set_connected();
         let inner = self.inner.clone();
@@ -519,7 +521,7 @@ impl ExecutionClient for PapertradeExecutionClient {
                             () = cancel.cancelled() => break 'connected,
                             result = &mut incoming => break result,
                             _ = interval.tick() => {
-                                if let Err(e) = crate::reconciliation::synchronize(&inner, latest.clone()).await {
+                                if let Err(e) = crate::reconciliation::synchronize_with_epoch(&inner, latest.clone(), source_epoch).await {
                                     inner.live.store(false, Ordering::Release);
                                     log::error!("papertrade_reconciliation_unavailable error={e}");
                                 }
@@ -541,16 +543,18 @@ impl ExecutionClient for PapertradeExecutionClient {
                             let replacement = tokio::select! {
                                 () = cancel.cancelled() => break 'connected,
                                 result = async {
+                                    let source_epoch = nautilus_core::UUID4::new();
                                     let mut stream = inner.api.wallet_stream(inner.wallet).await?;
                                     let snapshot = stream.next().await?;
-                                    Ok::<_, anyhow::Error>((stream, snapshot))
+                                    Ok::<_, anyhow::Error>((stream, snapshot, source_epoch))
                                 } => result,
                             };
                             match replacement {
-                                Ok((replacement, snapshot)) => {
+                                Ok((replacement, snapshot, replacement_epoch)) => {
                                     *inner.stream_activity.write() = Some(replacement.activity.clone());
                                     stream = replacement;
                                     latest = snapshot;
+                                    source_epoch = replacement_epoch;
                                     break;
                                 }
                                 Err(e) => log::warn!("papertrade_wallet_connect_failed error={e}"),
@@ -559,7 +563,7 @@ impl ExecutionClient for PapertradeExecutionClient {
                     }
                 }
                 inner.stream_healthy.store(true, Ordering::Release);
-                match crate::reconciliation::synchronize(&inner, latest.clone()).await {
+                match crate::reconciliation::synchronize_with_epoch(&inner, latest.clone(), source_epoch).await {
                     Ok(()) => {},
                     Err(e) => {
                         inner.live.store(false, Ordering::Release);
@@ -719,11 +723,12 @@ impl ExecutionClient for PapertradeExecutionClient {
         Ok(())
     }
     fn query_account(&self, _cmd: QueryAccount) -> Result<()> {
+        let source_epoch = nautilus_core::UUID4::new();
         let inner = self.inner.clone();
         let task = get_runtime().spawn(async move {
             let result = async {
                 let snapshot = inner.api.snapshot(inner.wallet).await?;
-                crate::reconciliation::synchronize(&inner, snapshot).await
+                crate::reconciliation::synchronize_with_epoch(&inner, snapshot, source_epoch).await
             }
             .await;
             if let Err(e) = result {

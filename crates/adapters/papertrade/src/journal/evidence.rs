@@ -11,7 +11,9 @@ use nautilus_model::{
     enums::OrderStatus,
     identifiers::{ClientId, ClientOrderId},
 };
-use redb::{Durability, ReadableDatabase, ReadableTable, TableDefinition, TableError};
+use redb::{
+    Durability, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition, TableError,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{Journal, JournalEntry, JournalIdentitySnapshot, ORDERS, identity::JournalStorage};
@@ -30,6 +32,12 @@ pub struct JournalOrderEvidence {
     client_order_id: String,
     #[serde(flatten)]
     observation: OrderObservation,
+}
+
+impl JournalOrderEvidence {
+    pub(super) fn is_unresolved(&self) -> bool {
+        matches!(self.observation, OrderObservation::Unproven { .. })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -225,6 +233,18 @@ impl Journal {
         client_order_id: &str,
     ) -> Result<JournalOrderEvidence> {
         self.storage.ensure_path_current()?;
+        let tx = self.storage.db.begin_read()?;
+        let observation = self.order_evidence_in_read(&tx, client_id, client_order_id)?;
+        self.storage.ensure_path_current()?;
+        Ok(observation)
+    }
+
+    pub(super) fn order_evidence_in_read(
+        &self,
+        tx: &ReadTransaction,
+        client_id: ClientId,
+        client_order_id: &str,
+    ) -> Result<JournalOrderEvidence> {
         ensure!(
             !client_order_id.is_empty()
                 && client_order_id.len() <= 512
@@ -232,8 +252,7 @@ impl Journal {
                 && !client_order_id.bytes().any(|byte| byte.is_ascii_control()),
             "Invalid client order ID"
         );
-        let tx = self.storage.db.begin_read()?;
-        let journal = self.storage.identity_in_read(&tx)?;
+        let journal = self.storage.identity_in_read(tx)?;
         let table = tx.open_table(ORDERS)?;
         let entry: Option<JournalEntry> = table
             .get(client_order_id)?
@@ -298,7 +317,6 @@ impl Journal {
             ensure!(proof.is_none(), "Order proof has no corresponding command");
             OrderObservation::Missing
         };
-        self.storage.ensure_path_current()?;
         Ok(JournalOrderEvidence {
             schema_version: 1,
             journal,
@@ -362,13 +380,24 @@ impl Journal {
         self.storage.commit(tx)
     }
 
+    #[cfg(test)]
     pub(crate) fn checkpoint_with_expiry(
         &self,
         snapshot: &AccountSnapshot,
         candidates: &[ExpiryCandidate],
     ) -> Result<()> {
-        if candidates.is_empty() {
-            return self.checkpoint(snapshot);
+        self.checkpoint_with_context(snapshot, candidates, None)
+            .map(|_| ())
+    }
+
+    pub(super) fn checkpoint_with_context(
+        &self,
+        snapshot: &AccountSnapshot,
+        candidates: &[ExpiryCandidate],
+        context: Option<super::account_observation::AccountContext<'_>>,
+    ) -> Result<Option<super::account_observation::AccountCheckpointStamp>> {
+        if candidates.is_empty() && context.is_none() {
+            return self.checkpoint(snapshot).map(|()| None);
         }
         self.storage.ensure_path_current()?;
         self.storage.require_wallet(snapshot.address)?;
@@ -427,10 +456,14 @@ impl Journal {
                 witnesses.insert(key, snapshot_json.as_str())?;
             }
         }
+        let stamp = context
+            .map(|context| self.write_account_context(&tx, &snapshot_json, context, revision))
+            .transpose()?;
         {
             let mut meta = tx.open_table(super::META)?;
             meta.insert("wallet_snapshot", snapshot_json.as_str())?;
         }
-        self.storage.commit(tx)
+        self.storage.commit(tx)?;
+        Ok(stamp)
     }
 }

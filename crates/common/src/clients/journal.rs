@@ -47,4 +47,15 @@ pub trait ExecutionJournalIdentityProbe: Debug + Send + Sync {
     fn order_evidence_json(&self, _client_order_id: &str) -> anyhow::Result<String> {
         anyhow::bail!("Per-order execution journal evidence is unsupported")
     }
+
+    /// Returns adapter-specific account observations from the original held checkpoint.
+    ///
+    /// This does not establish freshness, readiness or permission to trade.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported adapters or unavailable original checkpoint context.
+    fn account_observation_json(&self) -> anyhow::Result<String> {
+        anyhow::bail!("Account journal observations are unsupported")
+    }
 }

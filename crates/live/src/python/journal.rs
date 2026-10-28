@@ -60,6 +60,18 @@ impl PyExecutionJournalIdentityProbe {
             .order_evidence_json(client_order_id)
             .map_err(to_pyruntime_err)
     }
+
+    /// Reads the original adapter checkpoint without refreshing its source time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when account observations are unsupported or unavailable.
+    #[pyo3(name = "account_observation_json")]
+    fn py_account_observation_json(&self) -> PyResult<String> {
+        self.inner
+            .account_observation_json()
+            .map_err(to_pyruntime_err)
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +284,10 @@ mod tests {
                 .call_method1(py, "order_evidence_json", ("UNKNOWN-ORDER",))
                 .unwrap_err();
             assert!(unsupported.is_instance_of::<PyRuntimeError>(py));
+            let unsupported_account = probe
+                .call_method0(py, "account_observation_json")
+                .unwrap_err();
+            assert!(unsupported_account.is_instance_of::<PyRuntimeError>(py));
             let first: String = probe
                 .call_method0(py, "snapshot_json")
                 .unwrap()
