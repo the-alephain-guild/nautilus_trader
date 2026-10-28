@@ -346,7 +346,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "python")]
+    #[cfg(all(feature = "python", unix))]
     #[test]
     fn inherited_native_journal_probe_refuses_before_database_access() {
         use std::sync::Arc;
