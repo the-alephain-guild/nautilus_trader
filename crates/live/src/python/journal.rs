@@ -114,6 +114,7 @@ mod tests {
     }
 
     struct TestClient {
+        id: ClientId,
         probe: Option<Arc<TestProbe>>,
         _revision: Arc<AtomicU64>,
         connected: bool,
@@ -125,13 +126,13 @@ mod tests {
             self.connected
         }
         fn client_id(&self) -> ClientId {
-            ClientId::from("JOURNAL")
+            self.id
         }
         fn account_id(&self) -> AccountId {
             AccountId::from("JOURNAL-001")
         }
         fn venue(&self) -> Venue {
-            Venue::from("SIM")
+            Venue::from(self.id.as_str())
         }
         fn oms_type(&self) -> OmsType {
             OmsType::Hedging
@@ -171,7 +172,15 @@ mod tests {
         }
     }
 
-    fn node(revision: Arc<AtomicU64>, supported: bool) -> PyLiveNode {
+    fn node(revision: &Arc<AtomicU64>, supported: bool) -> PyLiveNode {
+        node_with_clients(revision, supported, &["JOURNAL"])
+    }
+
+    fn node_with_clients(
+        revision: &Arc<AtomicU64>,
+        supported: bool,
+        clients: &[&str],
+    ) -> PyLiveNode {
         let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Sandbox)
             .unwrap()
             .with_reconciliation(false)
@@ -181,28 +190,77 @@ mod tests {
             .with_timeout_disconnection_secs(0)
             .build()
             .unwrap();
-        node.kernel()
-            .exec_engine
-            .borrow_mut()
-            .register_client(Box::new(TestClient {
-                probe: supported.then(|| {
-                    Arc::new(TestProbe {
-                        revision: Arc::downgrade(&revision),
-                        journal_id: UUID4::new(),
-                    })
-                }),
-                _revision: revision,
-                connected: false,
-            }))
-            .unwrap();
+        for id in clients {
+            node.kernel()
+                .exec_engine
+                .borrow_mut()
+                .register_client(Box::new(TestClient {
+                    id: ClientId::from(*id),
+                    probe: supported.then(|| {
+                        Arc::new(TestProbe {
+                            revision: Arc::downgrade(revision),
+                            journal_id: UUID4::new(),
+                        })
+                    }),
+                    _revision: revision.clone(),
+                    connected: false,
+                }))
+                .unwrap();
+        }
         PyLiveNode::new(node)
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn journal_python_sole_client_capture_checks_actual_registry(#[case] additional: bool) {
+        Python::initialize();
+        let clients = if additional {
+            vec!["JOURNAL", "OTHER"]
+        } else {
+            vec!["JOURNAL"]
+        };
+        let node = node_with_clients(&Arc::new(AtomicU64::new(1)), true, &clients);
+        Python::attach(|py| {
+            let object = Py::new(py, node).unwrap();
+            let kwargs = PyDict::new(py);
+            kwargs
+                .set_item("require_sole_execution_client", true)
+                .unwrap();
+            let result = object.call_method(
+                py,
+                "journal_identity_probe",
+                (ClientId::from("JOURNAL"),),
+                Some(&kwargs),
+            );
+            if additional {
+                let error = result.unwrap_err();
+                assert!(error.is_instance_of::<PyRuntimeError>(py), "{error}");
+            } else {
+                result.unwrap();
+            }
+            // Existing platform callers retain their previous capture behavior.
+            object
+                .call_method1(py, "journal_identity_probe", (ClientId::from("JOURNAL"),))
+                .unwrap();
+            let missing = object
+                .call_method(
+                    py,
+                    "journal_identity_probe",
+                    (ClientId::from("UNKNOWN"),),
+                    Some(&kwargs),
+                )
+                .unwrap_err();
+            assert!(missing.is_instance_of::<PyRuntimeError>(py), "{missing}");
+        });
+        get_message_bus().borrow_mut().dispose();
     }
 
     #[rstest]
     fn journal_python_handle_survives_node_move_without_retaining_the_native_owner() {
         Python::initialize();
         let revision = Arc::new(AtomicU64::new(1));
-        let node = node(revision.clone(), true);
+        let node = node(&revision, true);
         let probe = Python::attach(|py| {
             let object = Py::new(py, node).unwrap();
             let probe = object
@@ -250,7 +308,7 @@ mod tests {
     #[case("JOURNAL")]
     fn journal_python_capture_refuses_unknown_or_unsupported_clients(#[case] client: &str) {
         Python::initialize();
-        let node = node(Arc::new(AtomicU64::new(1)), false);
+        let node = node(&Arc::new(AtomicU64::new(1)), false);
         Python::attach(|py| {
             let object = Py::new(py, node).unwrap();
             let error = object

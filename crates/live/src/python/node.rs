@@ -909,14 +909,18 @@ impl PyLiveNode {
     ///
     /// Capture this before `run_async` takes the node. Subsequent probe reads do not borrow the
     /// node or reopen its execution journal.
+    /// With `require_sole_execution_client`, capture also requires that this engine's actual
+    /// execution registry contains only the requested client. Data clients are unaffected.
     ///
     /// # Errors
     ///
     /// Returns an error if the node is unavailable, the client is unknown or evidence is unsupported.
     #[pyo3(name = "journal_identity_probe")]
+    #[pyo3(signature = (client_id, *, require_sole_execution_client=false))]
     fn py_journal_identity_probe(
         &self,
         client_id: ClientId,
+        require_sole_execution_client: bool,
     ) -> PyResult<PyExecutionJournalIdentityProbe> {
         let node = self.node()?;
         let engine = node
@@ -924,6 +928,11 @@ impl PyLiveNode {
             .exec_engine
             .try_borrow()
             .map_err(|_| to_pyruntime_err("Execution engine is busy"))?;
+        if require_sole_execution_client && engine.client_ids() != [client_id] {
+            return Err(to_pyruntime_err(format!(
+                "Execution engine must contain only execution client {client_id}"
+            )));
+        }
         let client = engine
             .get_client(&client_id)
             .ok_or_else(|| to_pyruntime_err(format!("Unknown execution client {client_id}")))?;
