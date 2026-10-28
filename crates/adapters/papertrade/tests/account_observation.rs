@@ -71,6 +71,15 @@ async fn held_account_observation_keeps_original_raw_values_and_held_owner() {
     assert_eq!(observed["schema_version"], 1);
     assert_eq!(observed["client_id"], "PAPERTRADE");
     assert_eq!(observed["account_id"], "PAPERTRADE-001");
+    assert_eq!(observed["account_source_healthy"], true);
+    assert_eq!(
+        observed["session_key_address"],
+        "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+    );
+    assert_eq!(
+        observed["session_key_expiry_raw"],
+        source["sessionKeys"][0][1]
+    );
     assert_eq!(observed["account_revision"], source["accountRevision"]);
     assert_eq!(observed["balance_raw"], source["balance"]);
     assert_eq!(
@@ -117,6 +126,45 @@ async fn held_account_observation_keeps_original_raw_values_and_held_owner() {
             "Unexpected private field {forbidden}"
         );
     }
+    client.disconnect().await.unwrap();
+    drop(client);
+    assert!(probe.account_observation_json().is_err());
+}
+
+#[rstest::rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn held_account_session_metadata_comes_from_the_selected_client(#[case] read_only: bool) {
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    harness.config.read_only = read_only;
+    harness
+        .source
+        .wallet
+        .send_modify(|wallet| wallet["sessionKeys"] = json!([]));
+    let mut client = harness.client();
+    let probe = client.journal_identity_probe().unwrap();
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let active: Value = serde_json::from_str(&probe.account_observation_json().unwrap()).unwrap();
+    assert_eq!(active["account_source_healthy"], true);
+    assert_eq!(active["session_key_expiry_raw"], Value::Null);
+    assert_eq!(
+        active["session_key_address"],
+        if read_only {
+            Value::Null
+        } else {
+            json!("0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a")
+        }
+    );
+    client.stop().unwrap();
+    let stopped: Value = serde_json::from_str(&probe.account_observation_json().unwrap()).unwrap();
+    assert_eq!(stopped["account_source_healthy"], false);
+    assert_eq!(
+        stopped["session_key_address"],
+        active["session_key_address"]
+    );
     client.disconnect().await.unwrap();
     drop(client);
     assert!(probe.account_observation_json().is_err());

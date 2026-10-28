@@ -22,7 +22,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -40,16 +40,46 @@ pub const MAX_EXECUTION_WINDOW_SECONDS: u64 = u64::MAX / 1_000_000_000;
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.papertrade")
 )]
 pub struct PapertradeRiskBlocker {
-    frozen: Arc<AtomicBool>,
+    state: Arc<PapertradeRiskState>,
+}
+
+#[derive(Debug, Default)]
+struct PapertradeRiskState {
+    frozen: AtomicBool,
+    freshness_required: AtomicBool,
+    observation_valid_until_ns: AtomicU64,
 }
 
 impl PapertradeRiskBlocker {
     pub fn freeze(&self) {
-        self.frozen.store(true, Ordering::SeqCst);
+        self.state.frozen.store(true, Ordering::SeqCst);
     }
 
     pub fn is_frozen(&self) -> bool {
-        self.frozen.load(Ordering::SeqCst)
+        self.state.frozen.load(Ordering::SeqCst)
+    }
+
+    /// Irreversibly requires a current observation for subsequent risk increases.
+    pub fn require_fresh_observation(&self) {
+        self.state.freshness_required.store(true, Ordering::SeqCst);
+    }
+
+    /// Zero temporarily denies increases; it does not reverse a permanent freeze.
+    pub fn set_observation_valid_until_ns(&self, until_ns: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state.freshness_required.load(Ordering::SeqCst),
+            "Observation freshness must be required before setting its deadline"
+        );
+        self.state
+            .observation_valid_until_ns
+            .store(until_ns, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn allows_risk_increase_at(&self, now_ns: u64) -> bool {
+        let fresh = !self.state.freshness_required.load(Ordering::SeqCst)
+            || now_ns < self.state.observation_valid_until_ns.load(Ordering::SeqCst);
+        fresh && !self.is_frozen()
     }
 }
 

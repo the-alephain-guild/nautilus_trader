@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    execution::Inner,
     signing::SignedIntent,
     wire::{CloseRecord, Raw, VenuePosition},
 };
@@ -45,6 +46,7 @@ const CLOSES: TableDefinition<&str, &str> = TableDefinition::new("observed_close
 #[derive(Debug)]
 struct JournalProbe {
     journal: Weak<Journal>,
+    client: Option<Weak<Inner>>,
     process_id: u32,
     client_id: ClientId,
 }
@@ -83,7 +85,28 @@ impl ExecutionJournalIdentityProbe for JournalProbe {
             .journal
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("Original execution journal is unavailable"))?;
-        let raw = serde_json::to_string(&journal.account_observation(self.client_id)?)?;
+        let client = self
+            .client
+            .as_ref()
+            .map(|client| {
+                client
+                    .upgrade()
+                    .ok_or_else(|| anyhow::anyhow!("Original execution client is unavailable"))
+            })
+            .transpose()?;
+        if let Some(client) = &client {
+            ensure!(
+                Arc::ptr_eq(&client.journal, &journal),
+                "Execution client journal differs"
+            );
+        }
+        let selected = client
+            .as_ref()
+            .and_then(|client| client.signer.as_ref())
+            .map(|signer| signer.address());
+        let mut observed = journal.account_observation(self.client_id, selected, false)?;
+        observed.account_source_healthy = client.as_ref().is_some_and(|client| client.available());
+        let raw = serde_json::to_string(&observed)?;
         ensure!(
             raw.len() <= 262_144,
             "Account observation exceeds its size limit"
@@ -145,9 +168,11 @@ impl Journal {
     pub(crate) fn identity_probe(
         self: &Arc<Self>,
         client_id: ClientId,
+        client: Option<Weak<Inner>>,
     ) -> Arc<dyn ExecutionJournalIdentityProbe> {
         Arc::new(JournalProbe {
             journal: Arc::downgrade(self),
+            client,
             process_id: self.storage.process_id,
             client_id,
         })

@@ -62,6 +62,9 @@ pub(super) struct AccountObservation {
     account_material_keccak256: B256,
     account_id: String,
     client_id: ClientId,
+    pub(super) account_source_healthy: bool,
+    session_key_address: Option<alloy_primitives::Address>,
+    session_key_expiry_raw: Option<String>,
     account_revision: u64,
     source_block: u64,
     source_timestamp: u64,
@@ -240,7 +243,12 @@ impl Journal {
         })
     }
 
-    pub(super) fn account_observation(&self, client_id: ClientId) -> Result<AccountObservation> {
+    pub(super) fn account_observation(
+        &self,
+        client_id: ClientId,
+        selected: Option<alloy_primitives::Address>,
+        account_source_healthy: bool,
+    ) -> Result<AccountObservation> {
         self.storage.ensure_path_current()?;
         let tx = self.storage.db.begin_read()?;
         let journal = self.storage.identity_in_read(&tx)?;
@@ -301,6 +309,15 @@ impl Journal {
             account_material_keccak256: context.account_material_keccak256,
             account_id: self.storage.account.clone(),
             client_id,
+            account_source_healthy,
+            session_key_address: selected,
+            session_key_expiry_raw: selected.and_then(|selected| {
+                snapshot
+                    .session_keys
+                    .iter()
+                    .find(|(address, _)| *address == selected)
+                    .map(|(_, expiry)| expiry.to_string())
+            }),
             account_revision: snapshot.account_revision,
             source_block: snapshot.indexed_through_block,
             source_timestamp: snapshot.indexed_through_timestamp,
@@ -416,7 +433,7 @@ mod tests {
             .unwrap();
         let first = serde_json::to_value(
             journal
-                .account_observation(ClientId::from("PAPERTRADE"))
+                .account_observation(ClientId::from("PAPERTRADE"), None, false)
                 .unwrap(),
         )
         .unwrap();
@@ -447,7 +464,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(
                 journal
-                    .account_observation(ClientId::from("PAPERTRADE"))
+                    .account_observation(ClientId::from("PAPERTRADE"), None, false)
                     .unwrap()
             )
             .unwrap(),
@@ -473,7 +490,7 @@ mod tests {
         journal.checkpoint(&changed).unwrap();
         assert!(
             journal
-                .account_observation(ClientId::from("PAPERTRADE"))
+                .account_observation(ClientId::from("PAPERTRADE"), None, false)
                 .is_err()
         );
     }
@@ -493,7 +510,7 @@ mod tests {
             .unwrap();
         let first = serde_json::to_value(
             journal
-                .account_observation(ClientId::from("PAPERTRADE"))
+                .account_observation(ClientId::from("PAPERTRADE"), None, false)
                 .unwrap(),
         )
         .unwrap();
@@ -506,7 +523,7 @@ mod tests {
             .unwrap();
         let later = serde_json::to_value(
             journal
-                .account_observation(ClientId::from("PAPERTRADE"))
+                .account_observation(ClientId::from("PAPERTRADE"), None, false)
                 .unwrap(),
         )
         .unwrap();
@@ -544,7 +561,7 @@ mod tests {
             .unwrap();
         let first = serde_json::to_value(
             journal
-                .account_observation(ClientId::from("PAPERTRADE"))
+                .account_observation(ClientId::from("PAPERTRADE"), None, false)
                 .unwrap(),
         )
         .unwrap();
@@ -560,7 +577,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(
                 journal
-                    .account_observation(ClientId::from("PAPERTRADE"))
+                    .account_observation(ClientId::from("PAPERTRADE"), None, false)
                     .unwrap()
             )
             .unwrap(),
@@ -594,7 +611,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             journal
-                .account_observation(ClientId::from("PAPERTRADE"))
+                .account_observation(ClientId::from("PAPERTRADE"), None, false)
                 .unwrap()
                 .account_revision,
             1
@@ -645,7 +662,7 @@ mod tests {
             .checkpoint_with_observation(&snapshot, &[], &trading, true)
             .unwrap();
         let first = journal
-            .account_observation(ClientId::from("PAPERTRADE"))
+            .account_observation(ClientId::from("PAPERTRADE"), None, false)
             .unwrap();
         snapshot.intent_outcomes.clear();
         snapshot.account_revision = 1;
@@ -653,7 +670,7 @@ mod tests {
             .checkpoint_with_observation_epoch(&snapshot, &[], &trading, true, UUID4::new())
             .unwrap();
         let later = journal
-            .account_observation(ClientId::from("PAPERTRADE"))
+            .account_observation(ClientId::from("PAPERTRADE"), None, false)
             .unwrap();
         assert_eq!(
             first.account_material_keccak256,

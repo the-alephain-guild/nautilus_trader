@@ -31,20 +31,17 @@ use crate::{
 };
 
 impl Inner {
-    pub(super) fn available(&self) -> bool {
-        self.live.load(Ordering::Acquire)
+    pub(crate) fn available(&self) -> bool {
+        let fresh = self
+            .stream_activity
+            .read()
+            .as_ref()
+            .is_some_and(WalletActivity::is_fresh);
+        fresh
+            && self.live.load(Ordering::Acquire)
             && !self.account_source_fault.load(Ordering::Acquire)
             && self.stream_healthy.load(Ordering::Acquire)
-            && self
-                .stream_activity
-                .read()
-                .as_ref()
-                .is_some_and(WalletActivity::is_fresh)
     }
-    pub(super) fn now(&self) -> u64 {
-        self.clock.get_time_ns().as_u64() / 1_000_000_000
-    }
-
     pub(super) fn authorized_signer(
         &self,
         account: &AccountSnapshot,
@@ -116,7 +113,8 @@ impl Inner {
             .ok_or_else(|| anyhow::anyhow!("No current account before submission"))?;
         // Finish all potentially blocking reads before fixing the transport time.
         let available = self.available();
-        let now = self.now();
+        let now_ns = self.clock.get_time_ns().as_u64();
+        let now = now_ns / 1_000_000_000;
         ensure!(signed.deadline() > now, "Intent expired before submission");
         ensure!(
             available
@@ -127,6 +125,18 @@ impl Inner {
         );
         self.authorized_signer(account, signed.deadline(), now)?;
         self.check_execution_window(signed.action(), cancelling, now, signed.deadline())?;
+        if matches!(
+            (signed.action(), cancelling),
+            ("openPosition", false) | ("closePositions", true)
+        ) {
+            ensure!(
+                self.config
+                    .risk_blocker
+                    .as_ref()
+                    .is_none_or(|blocker| blocker.allows_risk_increase_at(now_ns)),
+                "Papertrade risk increase lacks a fresh observation or is frozen"
+            );
+        }
         Ok(now)
     }
 

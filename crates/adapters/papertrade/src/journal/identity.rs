@@ -391,8 +391,10 @@ mod tests {
         let journal = Arc::new(
             Journal::initialize_new(&path, Address::repeat_byte(7), "PAPERTRADE-001").unwrap(),
         );
-        let probe =
-            journal.identity_probe(nautilus_model::identifiers::ClientId::from("PAPERTRADE"));
+        let probe = journal.identity_probe(
+            nautilus_model::identifiers::ClientId::from("PAPERTRADE"),
+            None,
+        );
         Python::initialize();
         Python::attach(|py| {
             let order_probe = probe.clone();

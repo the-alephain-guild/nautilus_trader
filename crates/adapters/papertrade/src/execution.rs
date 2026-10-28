@@ -430,7 +430,11 @@ impl PapertradeExecutionClient {
 #[async_trait(?Send)]
 impl ExecutionClient for PapertradeExecutionClient {
     fn journal_identity_probe(&self) -> Option<Arc<dyn ExecutionJournalIdentityProbe>> {
-        Some(self.inner.journal.identity_probe(self.core.client_id))
+        Some(
+            self.inner
+                .journal
+                .identity_probe(self.core.client_id, Some(Arc::downgrade(&self.inner))),
+        )
     }
 
     fn is_connected(&self) -> bool {

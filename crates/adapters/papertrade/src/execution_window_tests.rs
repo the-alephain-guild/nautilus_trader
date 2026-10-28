@@ -47,6 +47,162 @@ fn bind_window(
     blocker
 }
 
+#[rstest]
+fn freshness_requires_explicit_arming_and_uses_an_exclusive_nanosecond_bound() {
+    let blocker = PapertradeRiskBlocker::default();
+    assert!(blocker.allows_risk_increase_at(100));
+    assert!(blocker.set_observation_valid_until_ns(200).is_err());
+    blocker.require_fresh_observation();
+    assert!(!blocker.allows_risk_increase_at(100));
+    blocker.set_observation_valid_until_ns(200).unwrap();
+    assert!(blocker.allows_risk_increase_at(199));
+    assert!(!blocker.allows_risk_increase_at(200));
+    blocker.require_fresh_observation();
+    assert!(blocker.allows_risk_increase_at(199));
+    blocker.set_observation_valid_until_ns(0).unwrap();
+    assert!(!blocker.allows_risk_increase_at(100));
+    blocker.set_observation_valid_until_ns(200).unwrap();
+    assert!(blocker.allows_risk_increase_at(199));
+    blocker.freeze();
+    blocker.set_observation_valid_until_ns(300).unwrap();
+    assert!(!blocker.allows_risk_increase_at(199));
+}
+
+#[rstest]
+fn freshness_and_freeze_share_the_entire_cloned_runtime_state() {
+    let original = PapertradeRiskBlocker::default();
+    let clone = original.clone();
+    original.require_fresh_observation();
+    assert!(!clone.allows_risk_increase_at(10));
+    clone.set_observation_valid_until_ns(20).unwrap();
+    assert!(original.allows_risk_increase_at(19));
+    original.freeze();
+    assert!(!clone.allows_risk_increase_at(19));
+}
+
+#[rstest]
+#[case(false, 0, false)]
+#[case(false, 1, true)]
+#[case(true, 0, true)]
+#[tokio::test]
+async fn freshness_is_rechecked_by_the_actual_order_sender(
+    #[case] closing: bool,
+    #[case] remaining_ns: u64,
+    #[case] allowed: bool,
+) {
+    let _serial = support::SERIAL.lock().await;
+    let mut harness = support::Harness::new().await;
+    let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
+    let blocker = bind_window(&mut harness, now, 7200, 10800);
+    let (mut client, _, _) = client_at(&harness, now);
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let (_, command) = if closing {
+        close_order(&harness, &client)
+    } else {
+        order(&harness)
+    };
+    legacy_prepared(&client, &command, closing, now);
+    blocker.require_fresh_observation();
+    blocker
+        .set_observation_valid_until_ns(now * 1_000_000_000 + remaining_ns)
+        .unwrap();
+    let result = client.inner.submit_prepared(command.client_order_id).await;
+    client.disconnect().await.unwrap();
+    assert_eq!(result.is_ok(), allowed, "{result:?}");
+    assert_eq!(
+        harness.source.intent_requests.load(Ordering::SeqCst),
+        usize::from(allowed)
+    );
+}
+
+#[rstest]
+#[case(false, true)]
+#[case(true, false)]
+#[tokio::test]
+async fn freshness_preserves_cancel_risk_classification(
+    #[case] closing: bool,
+    #[case] allowed: bool,
+) {
+    let _serial = support::SERIAL.lock().await;
+    let mut harness = support::Harness::new().await;
+    let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
+    let blocker = bind_window(&mut harness, now, 7200, 10800);
+    let (mut client, _, _) = client_at(&harness, now);
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let (_, command) = if closing {
+        close_order(&harness, &client)
+    } else {
+        order(&harness)
+    };
+    let entry = legacy_prepared(&client, &command, closing, now);
+    let cancel = cancellation(&client, &entry, now);
+    blocker.require_fresh_observation();
+    let result = client.inner.cancel_prepared(&cancel, entry, now).await;
+    client.disconnect().await.unwrap();
+    assert_eq!(result.is_ok(), allowed, "{result:?}");
+    assert_eq!(
+        harness.source.intent_requests.load(Ordering::SeqCst),
+        usize::from(allowed)
+    );
+}
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn freshness_is_sampled_after_blocking_admission_reads(#[case] account_lock: bool) {
+    let _serial = support::SERIAL.lock().await;
+    let mut harness = support::Harness::new().await;
+    let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
+    let blocker = bind_window(&mut harness, now, 7200, 10800);
+    let (mut client, clock, _) = client_at(&harness, now);
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    let (_, command) = order(&harness);
+    let signed = legacy_prepared(&client, &command, false, now)
+        .signed()
+        .unwrap();
+    blocker.require_fresh_observation();
+    let until = now * 1_000_000_000 + 100;
+    blocker.set_observation_valid_until_ns(until).unwrap();
+    let held = (
+        account_lock.then(|| client.inner.snapshot.write()),
+        (!account_lock).then(|| client.inner.stream_activity.write()),
+    );
+    let inner = client.inner.clone();
+    let (entered, entering) = std::sync::mpsc::channel();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        entered.send(()).unwrap();
+        completed
+            .send(
+                inner
+                    .submission_time(&signed, false)
+                    .map_err(|e| e.to_string()),
+            )
+            .unwrap();
+    });
+    entering
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap();
+    let blocked = completion.recv_timeout(std::time::Duration::from_millis(50));
+    clock.set_time(nautilus_core::UnixNanos::from(until));
+    drop(held);
+    let result = completion
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap();
+    worker.join().unwrap();
+    client.disconnect().await.unwrap();
+    assert!(matches!(
+        blocked,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(result.unwrap_err().contains("fresh observation"));
+    assert_eq!(harness.source.intent_requests.load(Ordering::SeqCst), 0);
+}
+
 fn close_order(
     harness: &support::Harness,
     client: &PapertradeExecutionClient,

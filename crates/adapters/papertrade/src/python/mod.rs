@@ -70,6 +70,20 @@ impl PapertradeRiskBlocker {
     fn py_is_frozen(&self) -> bool {
         self.is_frozen()
     }
+    #[pyo3(name = "require_fresh_observation")]
+    fn py_require_fresh_observation(&self) {
+        self.require_fresh_observation();
+    }
+    #[pyo3(name = "set_observation_valid_until_ns")]
+    fn py_set_observation_valid_until_ns(
+        &self,
+        #[gen_stub(override_type(type_repr = "int"))] until_ns: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let until = optional_exact_int(Some(until_ns), "Observation deadline", u64::MAX)?
+            .expect("A required observation deadline was supplied");
+        self.set_observation_valid_until_ns(until)
+            .map_err(to_pyvalue_err)
+    }
 }
 
 #[pymethods]
@@ -301,6 +315,42 @@ mod tests {
 
     use super::PapertradeExecutionClientConfig;
     use crate::config::PapertradeJournalOpenMode;
+
+    #[rstest]
+    #[case("True", false)]
+    #[case("1.0", false)]
+    #[case("'1'", false)]
+    #[case("None", false)]
+    #[case("-1", false)]
+    #[case("2**64", false)]
+    #[case("0", true)]
+    #[case("2**64-1", true)]
+    fn freshness_python_deadline_requires_an_exact_unsigned_integer(
+        #[case] expression: &str,
+        #[case] allowed: bool,
+    ) {
+        Python::initialize();
+        Python::attach(|py| {
+            let blocker = Py::new(py, super::PapertradeRiskBlocker::default()).unwrap();
+            let value = py
+                .eval(&std::ffi::CString::new(expression).unwrap(), None, None)
+                .unwrap();
+            assert!(
+                blocker
+                    .call_method1(py, "set_observation_valid_until_ns", (&value,))
+                    .is_err()
+            );
+            blocker
+                .call_method0(py, "require_fresh_observation")
+                .unwrap();
+            assert_eq!(
+                blocker
+                    .call_method1(py, "set_observation_valid_until_ns", (value,))
+                    .is_ok(),
+                allowed
+            );
+        });
+    }
 
     #[rstest]
     #[case("None", "{}", true)]
