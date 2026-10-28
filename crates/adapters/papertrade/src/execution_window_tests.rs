@@ -33,7 +33,7 @@ use crate::{
     journal::JournalEntry,
 };
 
-fn bind_window(
+pub(super) fn bind_window(
     harness: &mut support::Harness,
     now: u64,
     risk_offset: i64,
@@ -203,7 +203,7 @@ async fn freshness_is_sampled_after_blocking_admission_reads(#[case] account_loc
     assert_eq!(harness.source.intent_requests.load(Ordering::SeqCst), 0);
 }
 
-fn close_order(
+pub(super) fn close_order(
     harness: &support::Harness,
     client: &PapertradeExecutionClient,
 ) -> (OrderAny, SubmitOrder) {
@@ -251,7 +251,7 @@ fn close_order(
     (order, command)
 }
 
-fn legacy_prepared(
+pub(super) fn legacy_prepared(
     client: &PapertradeExecutionClient,
     command: &SubmitOrder,
     closing: bool,

@@ -64,6 +64,8 @@ pub(crate) struct Source {
     pub(crate) wallet_delay_ms: AtomicU64,
     pub(crate) unavailable: AtomicBool,
     pub(crate) trading: Mutex<Value>,
+    pub(crate) trading_requests: AtomicUsize,
+    pub(crate) trading_delay_ms: AtomicU64,
     pub(crate) history: Mutex<Value>,
     pub(crate) receipt: Mutex<Option<Value>>,
     pub(crate) receipts: Mutex<Vec<Value>>,
@@ -111,6 +113,11 @@ async fn wallet(State(source): State<Arc<Source>>) -> Response {
     Sse::new(stream).into_response()
 }
 async fn trading(State(source): State<Arc<Source>>) -> Json<Value> {
+    source.trading_requests.fetch_add(1, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(
+        source.trading_delay_ms.load(Ordering::SeqCst),
+    ))
+    .await;
     Json(source.trading.lock().clone())
 }
 async fn history(State(source): State<Arc<Source>>, uri: Uri) -> Json<Value> {
@@ -293,6 +300,8 @@ impl Harness {
             log_fail_from: Mutex::new(None),
             history_delay_ms: AtomicU64::new(0),
             history_calls: AtomicUsize::new(0),
+            trading_requests: AtomicUsize::new(0),
+            trading_delay_ms: AtomicU64::new(0),
             trading: Mutex::new(
                 serde_json::from_str(include_str!("../../test_data/live_trading.json")).unwrap(),
             ),

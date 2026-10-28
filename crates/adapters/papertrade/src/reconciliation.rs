@@ -105,6 +105,7 @@ pub(crate) async fn synchronize_with_epoch(
     source_epoch: nautilus_core::UUID4,
 ) -> Result<()> {
     let _serial = inner.sync.lock().await;
+    inner.account_apply_valid.store(false, Ordering::Release);
     snapshot.validate(inner.wallet)?;
     let previous = inner.snapshot.read().clone();
     if let Some(previous) = &previous {
@@ -635,5 +636,6 @@ pub(crate) async fn synchronize_with_epoch(
     *inner.trading.write() = Some(trading);
     *inner.bundle.write() = Some(bundle);
     inner.live.store(true, Ordering::Release);
+    inner.account_apply_valid.store(true, Ordering::Release);
     Ok(())
 }

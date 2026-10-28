@@ -84,6 +84,32 @@ impl PapertradeRiskBlocker {
         self.set_observation_valid_until_ns(until)
             .map_err(to_pyvalue_err)
     }
+    #[pyo3(name = "require_account_observation")]
+    fn py_require_account_observation(&self) {
+        self.require_account_observation();
+    }
+    #[pyo3(name = "set_account_observation_valid_until_ns")]
+    fn py_set_account_observation_valid_until_ns(
+        &self,
+        account_snapshot_keccak256: &str,
+        #[gen_stub(override_type(type_repr = "int"))] until_ns: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        if account_snapshot_keccak256.len() != 66
+            || !account_snapshot_keccak256.starts_with("0x")
+            || !account_snapshot_keccak256[2..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(to_pyvalue_err(
+                "Account snapshot hash must be canonical lowercase Keccak256",
+            ));
+        }
+        let hash = account_snapshot_keccak256.parse().map_err(to_pyvalue_err)?;
+        let until = optional_exact_int(Some(until_ns), "Observation deadline", u64::MAX)?
+            .expect("A required observation deadline was supplied");
+        self.set_account_observation_valid_until_ns(hash, until)
+            .map_err(to_pyvalue_err)
+    }
 }
 
 #[pymethods]
@@ -315,6 +341,60 @@ mod tests {
 
     use super::PapertradeExecutionClientConfig;
     use crate::config::PapertradeJournalOpenMode;
+
+    #[rstest]
+    #[case("'0x'+'12'*32", "0", true)]
+    #[case("'0x'+'12'*32", "2**64-1", true)]
+    #[case("'0x'+'AB'*32", "1", false)]
+    #[case("'0x12'", "1", false)]
+    #[case("'0x'+'g1'*32", "1", false)]
+    #[case("'0X'+'12'*32", "1", false)]
+    #[case("None", "1", false)]
+    #[case("b'0x' + b'12'*32", "1", false)]
+    #[case("'0x'+'12'*32", "True", false)]
+    #[case("'0x'+'12'*32", "1.0", false)]
+    #[case("'0x'+'12'*32", "-1", false)]
+    #[case("'0x'+'12'*32", "2**64", false)]
+    #[case("'0x'+'12'*32", "'1'", false)]
+    #[case("'0x'+'12'*32", "type('I',(int,),{})(1)", false)]
+    fn account_bound_python_setter_requires_canonical_hash_and_exact_time(
+        #[case] hash: &str,
+        #[case] deadline: &str,
+        #[case] allowed: bool,
+    ) {
+        Python::initialize();
+        Python::attach(|py| {
+            let blocker = Py::new(py, super::PapertradeRiskBlocker::default()).unwrap();
+            let hash = py
+                .eval(&std::ffi::CString::new(hash).unwrap(), None, None)
+                .unwrap();
+            let deadline = py
+                .eval(&std::ffi::CString::new(deadline).unwrap(), None, None)
+                .unwrap();
+            assert!(
+                blocker
+                    .call_method1(
+                        py,
+                        "set_account_observation_valid_until_ns",
+                        (&hash, &deadline)
+                    )
+                    .is_err()
+            );
+            blocker
+                .call_method0(py, "require_account_observation")
+                .unwrap();
+            assert_eq!(
+                blocker
+                    .call_method1(
+                        py,
+                        "set_account_observation_valid_until_ns",
+                        (hash, deadline)
+                    )
+                    .is_ok(),
+                allowed
+            );
+        });
+    }
 
     #[rstest]
     #[case("True", false)]

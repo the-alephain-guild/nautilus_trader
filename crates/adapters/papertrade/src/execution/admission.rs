@@ -107,11 +107,39 @@ impl Inner {
     }
 
     pub(super) fn submission_time(&self, signed: &SignedIntent, cancelling: bool) -> Result<u64> {
+        let increases_risk = matches!(
+            (signed.action(), cancelling),
+            ("openPosition", false) | ("closePositions", true)
+        );
+        let source_bound = increases_risk
+            && self
+                .config
+                .risk_blocker
+                .as_ref()
+                .is_some_and(|blocker| blocker.requires_account_observation());
+        let source_guard =
+            if source_bound {
+                Some(self.sync.try_lock().map_err(|_| {
+                    anyhow::anyhow!("Account source is updating before risk increase")
+                })?)
+            } else {
+                None
+            };
         let account = self.snapshot.read();
         let account = account
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No current account before submission"))?;
-        // Finish all potentially blocking reads before fixing the transport time.
+        let account_hash = if source_bound {
+            Some(crate::journal::snapshot_keccak256(account)?)
+        } else {
+            None
+        };
+        let observation = self
+            .config
+            .risk_blocker
+            .as_ref()
+            .map(|blocker| blocker.observation());
+        // Hold the complete budget read guard until the final check has finished.
         let available = self.available();
         let now_ns = self.clock.get_time_ns().as_u64();
         let now = now_ns / 1_000_000_000;
@@ -125,16 +153,18 @@ impl Inner {
         );
         self.authorized_signer(account, signed.deadline(), now)?;
         self.check_execution_window(signed.action(), cancelling, now, signed.deadline())?;
-        if matches!(
-            (signed.action(), cancelling),
-            ("openPosition", false) | ("closePositions", true)
-        ) {
+        if increases_risk
+            && let (Some(blocker), Some(observation)) =
+                (self.config.risk_blocker.as_ref(), observation.as_deref())
+        {
             ensure!(
-                self.config
-                    .risk_blocker
-                    .as_ref()
-                    .is_none_or(|blocker| blocker.allows_risk_increase_at(now_ns)),
-                "Papertrade risk increase lacks a fresh observation or is frozen"
+                !blocker.requires_account_observation()
+                    || (source_guard.is_some() && self.account_apply_valid.load(Ordering::Acquire)),
+                "Account source application is incomplete before risk increase"
+            );
+            ensure!(
+                blocker.allows_observation_at(observation, now_ns, account_hash),
+                "Papertrade risk increase lacks a fresh observation with its bound account or is frozen"
             );
         }
         Ok(now)

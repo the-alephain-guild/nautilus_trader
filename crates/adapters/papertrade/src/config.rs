@@ -15,14 +15,16 @@
 
 //! Live client configuration; private keys remain outside the journal.
 
+use alloy_primitives::B256;
 use nautilus_core::{UUID4, string::secret::SecretString};
 use nautilus_model::identifiers::AccountId;
+use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -47,7 +49,14 @@ pub struct PapertradeRiskBlocker {
 struct PapertradeRiskState {
     frozen: AtomicBool,
     freshness_required: AtomicBool,
-    observation_valid_until_ns: AtomicU64,
+    account_observation_required: AtomicBool,
+    observation: RwLock<PapertradeObservationBound>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PapertradeObservationBound {
+    until_ns: u64,
+    account_snapshot: Option<B256>,
 }
 
 impl PapertradeRiskBlocker {
@@ -64,22 +73,71 @@ impl PapertradeRiskBlocker {
         self.state.freshness_required.store(true, Ordering::SeqCst);
     }
 
+    pub fn require_account_observation(&self) {
+        self.require_fresh_observation();
+        self.state
+            .account_observation_required
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn requires_account_observation(&self) -> bool {
+        self.state
+            .account_observation_required
+            .load(Ordering::SeqCst)
+    }
+
     /// Zero temporarily denies increases; it does not reverse a permanent freeze.
     pub fn set_observation_valid_until_ns(&self, until_ns: u64) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.state.freshness_required.load(Ordering::SeqCst),
             "Observation freshness must be required before setting its deadline"
         );
-        self.state
-            .observation_valid_until_ns
-            .store(until_ns, Ordering::SeqCst);
+        let mut observation = self.state.observation.write();
+        anyhow::ensure!(
+            !self.requires_account_observation() || until_ns == 0,
+            "Account-bound admission requires the original account snapshot hash"
+        );
+        observation.until_ns = until_ns;
         Ok(())
     }
 
+    pub fn set_account_observation_valid_until_ns(
+        &self,
+        account_snapshot: B256,
+        until_ns: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.requires_account_observation(),
+            "Account observation binding must be required before setting its deadline"
+        );
+        *self.state.observation.write() = PapertradeObservationBound {
+            until_ns,
+            account_snapshot: Some(account_snapshot),
+        };
+        Ok(())
+    }
+
+    pub(crate) fn observation(&self) -> RwLockReadGuard<'_, PapertradeObservationBound> {
+        self.state.observation.read()
+    }
+
+    pub(crate) fn allows_observation_at(
+        &self,
+        observation: &PapertradeObservationBound,
+        now_ns: u64,
+        account_snapshot: Option<B256>,
+    ) -> bool {
+        let fresh =
+            !self.state.freshness_required.load(Ordering::SeqCst) || now_ns < observation.until_ns;
+        let bound = !self.requires_account_observation()
+            || (observation.account_snapshot.is_some()
+                && observation.account_snapshot == account_snapshot);
+        fresh && bound && !self.is_frozen()
+    }
+
+    #[cfg(test)]
     pub(crate) fn allows_risk_increase_at(&self, now_ns: u64) -> bool {
-        let fresh = !self.state.freshness_required.load(Ordering::SeqCst)
-            || now_ns < self.state.observation_valid_until_ns.load(Ordering::SeqCst);
-        fresh && !self.is_frozen()
+        self.allows_observation_at(&self.observation(), now_ns, None)
     }
 }
 

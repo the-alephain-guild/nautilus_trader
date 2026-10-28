@@ -84,6 +84,7 @@ pub(crate) struct Inner {
     pub stream_healthy: AtomicBool,
     pub(super) account_refresh_requested: AtomicBool,
     pub(super) account_source_fault: AtomicBool,
+    pub(super) account_apply_valid: AtomicBool,
     stream_activity: RwLock<Option<WalletActivity>>,
     pub sync: tokio::sync::Mutex<()>,
     pub emitter: ExecutionEventEmitter,
@@ -193,6 +194,7 @@ impl PapertradeExecutionClient {
             stream_healthy: AtomicBool::new(false),
             account_refresh_requested: AtomicBool::new(false),
             account_source_fault: AtomicBool::new(false),
+            account_apply_valid: AtomicBool::new(false),
             stream_activity: RwLock::new(None),
             sync: tokio::sync::Mutex::new(()),
             emitter,
@@ -486,6 +488,9 @@ impl ExecutionClient for PapertradeExecutionClient {
     fn stop(&mut self) -> Result<()> {
         self.cancellation.cancel();
         self.inner
+            .account_apply_valid
+            .store(false, Ordering::Release);
+        self.inner
             .account_source_fault
             .store(true, Ordering::Release);
         self.inner.stream_healthy.store(false, Ordering::Release);
@@ -501,6 +506,9 @@ impl ExecutionClient for PapertradeExecutionClient {
         Ok(())
     }
     async fn connect(&mut self) -> Result<()> {
+        self.inner
+            .account_apply_valid
+            .store(false, Ordering::Release);
         self.inner
             .account_source_fault
             .store(true, Ordering::Release);
@@ -800,3 +808,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "execution_window_tests.rs"]
 mod window_tests;
+
+#[cfg(test)]
+#[path = "execution_account_binding_tests.rs"]
+mod account_binding_tests;

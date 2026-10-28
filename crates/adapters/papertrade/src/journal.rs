@@ -150,6 +150,7 @@ impl JournalEntry {
 }
 
 mod account_observation;
+pub(crate) use account_observation::snapshot_keccak256;
 mod evidence;
 mod identity;
 mod params;

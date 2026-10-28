@@ -131,6 +131,14 @@ fn account_material(snapshot: &AccountSnapshot) -> Result<B256> {
     Ok(keccak256(serde_json::to_vec(&value)?))
 }
 
+fn wallet_snapshot_keccak256(raw: &str) -> B256 {
+    keccak256(raw.as_bytes())
+}
+
+pub(crate) fn snapshot_keccak256(snapshot: &AccountSnapshot) -> Result<B256> {
+    Ok(wallet_snapshot_keccak256(&serde_json::to_string(snapshot)?))
+}
+
 impl Journal {
     #[cfg(test)]
     pub(crate) fn checkpoint_with_observation(
@@ -205,7 +213,8 @@ impl Journal {
                 );
                 ensure!(
                     snapshot.account_revision != old.account_revision
-                        || previous.wallet_snapshot_keccak256 == keccak256(wallet_json.as_bytes()),
+                        || previous.wallet_snapshot_keccak256
+                            == wallet_snapshot_keccak256(wallet_json),
                     "Account revision has conflicting source contents"
                 );
             } else if snapshot.indexed_through_block == old.indexed_through_block
@@ -223,7 +232,7 @@ impl Journal {
             schema_version: 1,
             checkpoint_revision: revision,
             source_epoch: context.source_epoch,
-            wallet_snapshot_keccak256: keccak256(wallet_json.as_bytes()),
+            wallet_snapshot_keccak256: wallet_snapshot_keccak256(wallet_json),
             account_material_keccak256: account_material(&snapshot)?,
             account_revision: snapshot.account_revision,
             source_block: snapshot.indexed_through_block,
@@ -364,7 +373,7 @@ impl Journal {
             context.schema_version == 1
                 && context.checkpoint_revision > 0
                 && context.checkpoint_revision <= journal.revision
-                && context.wallet_snapshot_keccak256 == keccak256(wallet.value().as_bytes()),
+                && context.wallet_snapshot_keccak256 == wallet_snapshot_keccak256(wallet.value()),
             "Account checkpoint context differs from the original snapshot"
         );
         let snapshot: AccountSnapshot = serde_json::from_str(wallet.value())?;
@@ -381,7 +390,7 @@ impl StoredContext {
         ensure!(
             self.schema_version == 1
                 && self.checkpoint_revision > 0
-                && self.wallet_snapshot_keccak256 == keccak256(raw.as_bytes())
+                && self.wallet_snapshot_keccak256 == wallet_snapshot_keccak256(raw)
                 && self.account_material_keccak256 == account_material(snapshot)?
                 && self.account_revision == snapshot.account_revision
                 && self.source_block == snapshot.indexed_through_block
