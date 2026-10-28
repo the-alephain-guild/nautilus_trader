@@ -122,6 +122,79 @@ fn expiry_candidates(
     (client, snapshot, entries, candidates)
 }
 
+#[cfg(feature = "python")]
+#[rstest]
+#[case("None")]
+#[case("{}")]
+#[case("{'nested':{'z':1.25,'a':'中文'},'items':(1,'1',{})}")]
+#[tokio::test]
+async fn held_order_binding_uses_the_same_native_params_digest_as_submission(
+    #[case] expression: &str,
+) {
+    use pyo3::{prelude::*, types::PyDict};
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (client, snapshot, mut entries, _) = expiry_candidates(&harness, &["PARAMS-A"]);
+    Python::initialize();
+    let (params, expected): (_, String) = Python::attach(|py| {
+        let expression = std::ffi::CString::new(expression).unwrap();
+        let object = py.eval(&expression, None, None).unwrap();
+        let params = if object.is_none() {
+            None
+        } else {
+            let dictionary: Py<PyDict> = object.extract().unwrap();
+            nautilus_core::from_pydict(py, &dictionary).unwrap()
+        };
+        let factory = Py::new(py, crate::factories::PapertradeExecutionClientFactory).unwrap();
+        let digest = factory
+            .call_method1(py, "submission_params_keccak256", (object,))
+            .unwrap()
+            .extract(py)
+            .unwrap();
+        (params, digest)
+    });
+    let original = entries.remove(0);
+    let mut command = original.command;
+    command.client_order_id = ClientOrderId::from("PARAMS-B");
+    command.order_init.client_order_id = command.client_order_id;
+    command.params = params;
+    let position = &snapshot.open_positions[0];
+    let signer = crate::signing::PapertradeSigner::new(
+        alloy::signers::local::PrivateKeySigner::from_bytes(&alloy_primitives::B256::repeat_byte(
+            17,
+        ))
+        .unwrap(),
+    );
+    client
+        .inner
+        .journal
+        .prepare(&command, None, snapshot.indexed_through_block, |nonce| {
+            signer.sign_open(
+                &crate::signing::OpenPosition {
+                    user: snapshot.address,
+                    instrumentId: position.instrument_id,
+                    isLong: position.is_long,
+                    size: u128::try_from(position.margin.0).unwrap(),
+                    leverage: position.leverage,
+                    useDebt: false,
+                    nonce,
+                    deadline: original.deadline,
+                },
+                snapshot.indexed_through_timestamp - 7200,
+            )
+        })
+        .unwrap();
+    let evidence: serde_json::Value = serde_json::from_str(
+        &client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json("PARAMS-B")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(evidence["binding"]["submission_params_keccak256"], expected);
+}
+
 #[rstest]
 #[case("success")]
 #[case("fill")]

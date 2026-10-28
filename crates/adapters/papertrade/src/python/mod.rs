@@ -27,7 +27,10 @@ use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClien
 use nautilus_core::{UUID4, python::to_pyvalue_err, string::secret::SecretString};
 use nautilus_model::identifiers::{AccountId, Venue};
 use nautilus_system::get_global_pyo3_registry;
-use pyo3::{prelude::*, types::PyInt};
+use pyo3::{
+    prelude::*,
+    types::{PyDict, PyInt},
+};
 
 fn optional_exact_int(
     value: Option<Bound<'_, PyAny>>,
@@ -200,6 +203,21 @@ impl PapertradeExecutionClientFactory {
     fn py_new() -> Self {
         Self
     }
+    /// Hashes parameters through the actual Native submission conversion.
+    #[staticmethod]
+    #[pyo3(name = "submission_params_keccak256", signature = (params=None))]
+    fn py_submission_params_keccak256(
+        py: Python<'_>,
+        params: Option<Py<PyDict>>,
+    ) -> PyResult<String> {
+        let params = match params {
+            Some(params) => nautilus_core::from_pydict(py, &params)?,
+            None => None,
+        };
+        crate::journal::submission_params_keccak256(params.as_ref())
+            .map(|digest| format!("{digest:#x}"))
+            .map_err(to_pyvalue_err)
+    }
     /// Returns the compiled signing domain without keys, files or network access.
     #[staticmethod]
     #[pyo3(name = "deployment_identity_json")]
@@ -283,6 +301,69 @@ mod tests {
 
     use super::PapertradeExecutionClientConfig;
     use crate::config::PapertradeJournalOpenMode;
+
+    #[rstest]
+    #[case("None", "{}", true)]
+    #[case("{'b':2, 'a':{'z':0,'c':[]}}", "{'a':{'c':[],'z':0},'b':2}", true)]
+    #[case("{'items':(1,'中文',1.25)}", "{'items':[1,'中文',1.25]}", true)]
+    #[case("{'items':[1,2]}", "{'items':[2,1]}", false)]
+    #[case("{'a':{'v':1}}", "{'a':{'v':2}}", false)]
+    #[case("{'v':1}", "{'v':'1'}", false)]
+    #[case("{'v':{}}", "{}", false)]
+    #[case("{'v':1.0}", "{'v':1}", false)]
+    fn native_submission_params_digest_preserves_native_conversion_and_value_identity(
+        #[case] left: &str,
+        #[case] right: &str,
+        #[case] equal: bool,
+    ) {
+        Python::initialize();
+        Python::attach(|py| {
+            let factory = Py::new(py, super::PapertradeExecutionClientFactory).unwrap();
+            let digest = |expression: &str| -> String {
+                let expression = std::ffi::CString::new(expression).unwrap();
+                let params = py.eval(&expression, None, None).unwrap();
+                factory
+                    .call_method1(py, "submission_params_keccak256", (params,))
+                    .unwrap()
+                    .extract(py)
+                    .unwrap()
+            };
+            let first = digest(left);
+            assert_eq!(first.len(), 66);
+            assert_eq!(first == digest(right), equal);
+        });
+    }
+
+    #[rstest]
+    #[case("True")]
+    #[case("[]")]
+    #[case("{'v':object()}")]
+    #[case("{'v':float('nan')}")]
+    #[case("{'v':float('inf')}")]
+    fn native_submission_params_digest_has_no_conversion_failure_fallback(
+        #[case] expression: &str,
+    ) {
+        Python::initialize();
+        Python::attach(|py| {
+            let expression = std::ffi::CString::new(expression).unwrap();
+            let params = py.eval(&expression, None, None).unwrap();
+            let factory = Py::new(py, super::PapertradeExecutionClientFactory).unwrap();
+            assert!(
+                factory
+                    .call_method1(py, "submission_params_keccak256", (params,))
+                    .is_err()
+            );
+            let default: String = factory
+                .call_method0(py, "submission_params_keccak256")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            assert_eq!(
+                default,
+                format!("{:#x}", alloy_primitives::keccak256(b"null"))
+            );
+        });
+    }
 
     #[test]
     fn native_window_python_deployment_matches_the_original_journal_domain() {

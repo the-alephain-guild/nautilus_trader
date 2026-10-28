@@ -52,6 +52,7 @@ enum OrderObservation {
 struct OrderBinding {
     intent_id: B256,
     command_keccak256: B256,
+    submission_params_keccak256: B256,
     action: String,
     target: Option<String>,
     instrument_id: String,
@@ -75,6 +76,9 @@ impl OrderBinding {
         Ok(Self {
             intent_id: entry.intent_id,
             command_keccak256: keccak256(command),
+            submission_params_keccak256: super::submission_params_keccak256(
+                entry.command.params.as_ref(),
+            )?,
             action: entry.action.clone(),
             target: entry.target.map(|target| target.to_string()),
             instrument_id: entry.command.instrument_id.to_string(),

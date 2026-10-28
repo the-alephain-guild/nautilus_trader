@@ -89,7 +89,15 @@ async fn per_order_probe_proves_only_a_sealed_unsent_recovery() {
         evidence["proof"]["sealed_at_revision"].as_u64().unwrap()
             <= evidence["journal"]["revision"].as_u64().unwrap()
     );
-    assert!(!raw.contains("signature") && !raw.contains("body") && !raw.contains("params"));
+    assert!(
+        !raw.contains("\"signature\":")
+            && !raw.contains("\"body\":")
+            && !raw.contains("\"params\":")
+    );
+    assert_eq!(
+        evidence["binding"]["submission_params_keccak256"],
+        format!("{:#x}", alloy_primitives::keccak256(b"null"))
+    );
     let missing: Value =
         serde_json::from_str(&probe.order_evidence_json("UNKNOWN-ORDER").unwrap()).unwrap();
     assert_eq!(missing["kind"], "missing");

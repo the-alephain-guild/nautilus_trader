@@ -111,10 +111,12 @@ impl JournalEntry {
 
 mod evidence;
 mod identity;
+mod params;
 pub(crate) use evidence::ExpiryCandidate;
 pub use evidence::JournalOrderEvidence;
 pub use identity::JournalIdentitySnapshot;
 use identity::{JournalStorage, REVISION_KEY, UUID_KEY};
+pub(crate) use params::submission_params_keccak256;
 
 #[derive(Debug)]
 pub struct Journal {
