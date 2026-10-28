@@ -38,4 +38,13 @@ pub trait ExecutionJournalIdentityProbe: Debug + Send + Sync {
     ///
     /// Returns an error when the original journal is unavailable or its identity cannot be verified.
     fn snapshot(&self) -> anyhow::Result<ExecutionJournalIdentity>;
+
+    /// Returns closed, adapter-specific per-order evidence from the held journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the adapter does not support this capability or the original journal is unavailable.
+    fn order_evidence_json(&self, _client_order_id: &str) -> anyhow::Result<String> {
+        anyhow::bail!("Per-order execution journal evidence is unsupported")
+    }
 }

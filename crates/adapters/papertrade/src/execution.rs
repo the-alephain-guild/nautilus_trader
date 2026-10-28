@@ -158,7 +158,14 @@ impl PapertradeExecutionClient {
                 *minimum_revision,
             )?,
         };
-        journal.recover_unsent()?;
+        if matches!(
+            config.journal_open,
+            PapertradeJournalOpenMode::RecoverExisting { .. }
+        ) {
+            journal.seal_registered_unsent()?;
+        } else {
+            journal.recover_unsent()?;
+        }
         let checkpoint = journal.snapshot()?;
         if let Some(snapshot) = &checkpoint {
             snapshot.validate(wallet)?;
@@ -421,7 +428,7 @@ impl PapertradeExecutionClient {
 #[async_trait(?Send)]
 impl ExecutionClient for PapertradeExecutionClient {
     fn journal_identity_probe(&self) -> Option<Arc<dyn ExecutionJournalIdentityProbe>> {
-        Some(self.inner.journal.identity_probe())
+        Some(self.inner.journal.identity_probe(self.core.client_id))
     }
 
     fn is_connected(&self) -> bool {

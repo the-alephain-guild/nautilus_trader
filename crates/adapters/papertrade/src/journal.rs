@@ -23,7 +23,11 @@ use alloy_primitives::{Address, B256, U256};
 use anyhow::{Result, ensure};
 use nautilus_common::{clients::ExecutionJournalIdentityProbe, messages::execution::SubmitOrder};
 use nautilus_core::UUID4;
-use nautilus_model::{enums::OrderStatus, identifiers::ClientOrderId, reports::FillReport};
+use nautilus_model::{
+    enums::OrderStatus,
+    identifiers::{ClientId, ClientOrderId},
+    reports::FillReport,
+};
 use redb::{Durability, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -42,6 +46,7 @@ const CLOSES: TableDefinition<&str, &str> = TableDefinition::new("observed_close
 struct JournalProbe {
     journal: Weak<Journal>,
     process_id: u32,
+    client_id: ClientId,
 }
 
 impl ExecutionJournalIdentityProbe for JournalProbe {
@@ -54,6 +59,19 @@ impl ExecutionJournalIdentityProbe for JournalProbe {
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("Original execution journal is unavailable"))?
             .identity_snapshot()
+    }
+
+    fn order_evidence_json(&self, client_order_id: &str) -> Result<String> {
+        ensure!(
+            std::process::id() == self.process_id,
+            "Original execution journal belongs to another process"
+        );
+        let journal = self
+            .journal
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("Original execution journal is unavailable"))?;
+        serde_json::to_string(&journal.order_evidence_snapshot(self.client_id, client_order_id)?)
+            .map_err(Into::into)
     }
 }
 
@@ -91,7 +109,9 @@ impl JournalEntry {
     }
 }
 
+mod evidence;
 mod identity;
+pub use evidence::JournalOrderEvidence;
 pub use identity::JournalIdentitySnapshot;
 use identity::{JournalStorage, REVISION_KEY, UUID_KEY};
 
@@ -101,10 +121,14 @@ pub struct Journal {
 }
 
 impl Journal {
-    pub(crate) fn identity_probe(self: &Arc<Self>) -> Arc<dyn ExecutionJournalIdentityProbe> {
+    pub(crate) fn identity_probe(
+        self: &Arc<Self>,
+        client_id: ClientId,
+    ) -> Arc<dyn ExecutionJournalIdentityProbe> {
         Arc::new(JournalProbe {
             journal: Arc::downgrade(self),
             process_id: self.storage.process_id,
+            client_id,
         })
     }
 

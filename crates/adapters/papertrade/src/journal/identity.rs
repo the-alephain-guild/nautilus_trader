@@ -24,7 +24,7 @@ use anyhow::{Result, ensure};
 pub use nautilus_common::clients::ExecutionJournalIdentity as JournalIdentitySnapshot;
 use nautilus_core::UUID4;
 use redb::{
-    Database, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
+    Database, ReadTransaction, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
     backends::FileBackend,
 };
 use same_file::Handle;
@@ -74,6 +74,7 @@ pub(super) struct JournalStorage {
     pub(super) journal_id: UUID4,
     pub(super) owner: String,
     pub(super) process_id: u32,
+    pub(super) account: String,
     path: PathBuf,
     canonical_path: PathBuf,
     file: Handle,
@@ -125,6 +126,7 @@ impl JournalStorage {
             journal_id: UUID4::new(),
             owner: Self::domain(wallet, account),
             process_id: std::process::id(),
+            account: account.to_owned(),
         };
         storage.secure_permissions()?;
         Ok(storage)
@@ -174,6 +176,7 @@ impl JournalStorage {
             journal_id,
             owner,
             process_id: std::process::id(),
+            account: account.to_owned(),
             path,
             canonical_path,
             file,
@@ -200,6 +203,14 @@ impl JournalStorage {
         canonical_path: &Path,
     ) -> Result<Option<JournalIdentitySnapshot>> {
         let tx = db.begin_read()?;
+        Self::read_identity_in(&tx, owner, canonical_path)
+    }
+
+    fn read_identity_in(
+        tx: &ReadTransaction,
+        owner: &str,
+        canonical_path: &Path,
+    ) -> Result<Option<JournalIdentitySnapshot>> {
         let meta = tx.open_table(META)?;
         let actual_owner = meta
             .get("owner")?
@@ -264,19 +275,39 @@ impl JournalStorage {
 
     pub(super) fn identity_snapshot(&self) -> Result<JournalIdentitySnapshot> {
         self.ensure_path_current()?;
-        let snapshot = Self::read_identity(&self.db, &self.owner, &self.canonical_path)?
+        let tx = self.db.begin_read()?;
+        let snapshot = self.identity_in_read(&tx)?;
+        self.ensure_path_current()?;
+        Ok(snapshot)
+    }
+
+    pub(super) fn identity_in_read(&self, tx: &ReadTransaction) -> Result<JournalIdentitySnapshot> {
+        let snapshot = Self::read_identity_in(tx, &self.owner, &self.canonical_path)?
             .ok_or_else(|| anyhow::anyhow!("Journal identity metadata is missing"))?;
         ensure!(
             snapshot.journal_id == self.journal_id,
             "Journal UUID changed while open"
         );
-        self.ensure_path_current()?;
         Ok(snapshot)
+    }
+
+    pub(super) fn next_revision(tx: &WriteTransaction) -> Result<u64> {
+        let meta = tx.open_table(META)?;
+        let previous = meta
+            .get(REVISION_KEY)?
+            .ok_or_else(|| anyhow::anyhow!("Journal revision is missing"))?
+            .value()
+            .to_owned();
+        parse_revision(&previous)?
+            .checked_add(1)
+            .filter(|value| *value <= MAX_REVISION)
+            .ok_or_else(|| anyhow::anyhow!("Journal revision exhausted"))
     }
 
     pub(super) fn commit(&self, mut tx: WriteTransaction) -> Result<()> {
         self.ensure_path_current()?;
         tx.set_durability(redb::Durability::Immediate)?;
+        let next = Self::next_revision(&tx)?;
         {
             let mut meta = tx.open_table(META)?;
             ensure!(
@@ -289,15 +320,6 @@ impl JournalStorage {
                     .is_some_and(|value| value.value() == self.journal_id.to_string()),
                 "Journal UUID changed"
             );
-            let previous = meta
-                .get(REVISION_KEY)?
-                .ok_or_else(|| anyhow::anyhow!("Journal revision is missing"))?
-                .value()
-                .to_owned();
-            let next = parse_revision(&previous)?
-                .checked_add(1)
-                .filter(|value| *value <= MAX_REVISION)
-                .ok_or_else(|| anyhow::anyhow!("Journal revision exhausted"))?;
             meta.insert(REVISION_KEY, next.to_string().as_str())?;
         }
         self.ensure_path_current()?;
@@ -361,9 +383,20 @@ mod tests {
         let journal = Arc::new(
             Journal::initialize_new(&path, Address::repeat_byte(7), "PAPERTRADE-001").unwrap(),
         );
-        let probe = journal.identity_probe();
+        let probe =
+            journal.identity_probe(nautilus_model::identifiers::ClientId::from("PAPERTRADE"));
         Python::initialize();
         Python::attach(|py| {
+            let order_probe = probe.clone();
+            let order_evidence = PyCFunction::new_closure(py, None, None, move |_args, _kwargs| {
+                order_probe
+                    .order_evidence_json("UNKNOWN-ORDER")
+                    .map(|_| ())
+                    .map_err(|_| {
+                        pyo3::exceptions::PyRuntimeError::new_err("native order evidence refused")
+                    })
+            })
+            .unwrap();
             let snapshot = PyCFunction::new_closure(py, None, None, move |_args, _kwargs| {
                 probe.snapshot().map(|_| ()).map_err(|_| {
                     pyo3::exceptions::PyRuntimeError::new_err("native journal refused")
@@ -372,8 +405,9 @@ mod tests {
             .unwrap();
             let locals = PyDict::new(py);
             locals.set_item("snapshot", snapshot).unwrap();
+            locals.set_item("order_evidence", order_evidence).unwrap();
             py.run(pyo3::ffi::c_str!(
-                "import os, select, signal, warnings\nwith warnings.catch_warnings():\n    warnings.simplefilter('ignore', DeprecationWarning)\n    reader, writer = os.pipe()\n    child = os.fork()\nif child == 0:\n    os.close(reader)\n    try:\n        snapshot()\n    except RuntimeError:\n        os.write(writer, b'refused')\n    else:\n        os.write(writer, b'accepted')\n    os._exit(0)\nos.close(writer)\ntry:\n    assert select.select([reader], [], [], 3)[0], 'native probe waited on inherited database'\n    assert os.read(reader, 16) == b'refused', 'native probe accepted inherited database'\nfinally:\n    os.close(reader)\n    waited, _ = os.waitpid(child, os.WNOHANG)\n    if waited == 0:\n        os.kill(child, signal.SIGKILL)\n        os.waitpid(child, 0)"
+                "import os, select, signal, warnings\nwith warnings.catch_warnings():\n    warnings.simplefilter('ignore', DeprecationWarning)\n    reader, writer = os.pipe()\n    child = os.fork()\nif child == 0:\n    os.close(reader)\n    try:\n        refused = 0\n        for read in (snapshot, order_evidence):\n            try:\n                read()\n            except RuntimeError:\n                refused += 1\n        os.write(writer, str(refused).encode())\n    except BaseException:\n        os.write(writer, b'error')\n    finally:\n        os._exit(0)\nos.close(writer)\ntry:\n    assert select.select([reader], [], [], 3)[0], 'native probe waited on inherited database'\n    assert os.read(reader, 16) == b'2', 'native probe accepted inherited database'\nfinally:\n    os.close(reader)\n    waited, _ = os.waitpid(child, os.WNOHANG)\n    if waited == 0:\n        os.kill(child, signal.SIGKILL)\n        os.waitpid(child, 0)\nsnapshot()\norder_evidence()"
             ), Some(&locals), None).unwrap();
         });
         assert!(journal.identity_snapshot().is_ok());

@@ -48,6 +48,18 @@ impl PyExecutionJournalIdentityProbe {
         let snapshot = self.inner.snapshot().map_err(to_pyruntime_err)?;
         serde_json::to_string(&snapshot).map_err(to_pyruntime_err)
     }
+
+    /// Returns per-order evidence from the original adapter-owned journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported adapters or unavailable original storage.
+    #[pyo3(name = "order_evidence_json")]
+    fn py_order_evidence_json(&self, client_order_id: &str) -> PyResult<String> {
+        self.inner
+            .order_evidence_json(client_order_id)
+            .map_err(to_pyruntime_err)
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +210,10 @@ mod tests {
                 .unwrap();
             let constructor_error = probe.bind(py).get_type().call0().unwrap_err();
             assert!(constructor_error.is_instance_of::<PyTypeError>(py));
+            let unsupported = probe
+                .call_method1(py, "order_evidence_json", ("UNKNOWN-ORDER",))
+                .unwrap_err();
+            assert!(unsupported.is_instance_of::<PyRuntimeError>(py));
             let first: String = probe
                 .call_method0(py, "snapshot_json")
                 .unwrap()

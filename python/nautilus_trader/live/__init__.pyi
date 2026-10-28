@@ -358,6 +358,7 @@ class PluginConfig:
 @typing.final
 class ExecutionJournalIdentityProbe:
     def snapshot_json(self) -> str: ...
+    def order_evidence_json(self, client_order_id: str) -> str: ...
 
 @typing.final
 class LiveNode:

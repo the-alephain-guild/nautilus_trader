@@ -33,6 +33,266 @@ fn configured_client(
     )
 }
 
+#[tokio::test]
+async fn per_order_probe_proves_only_a_sealed_unsent_recovery() {
+    use nautilus_papertrade::{
+        config::PapertradeJournalOpenMode, journal::Journal, wire::VenuePosition,
+    };
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let entry = prepared_open(&harness, &position, now, now + 3600);
+    let wallet = source["address"].as_str().unwrap().parse().unwrap();
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+    )
+    .unwrap();
+    let original = journal.identity_snapshot().unwrap();
+    drop(journal);
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: original.journal_id,
+        minimum_revision: original.revision,
+    };
+    let client = configured_client(&harness).unwrap();
+    let probe = client.journal_identity_probe().unwrap();
+    let raw = probe
+        .order_evidence_json(entry.command.client_order_id.as_str())
+        .unwrap();
+    let evidence: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(evidence["kind"], "proven_no_fill");
+    assert_eq!(evidence["proof"]["source"]["kind"], "never_submitted");
+    assert_eq!(
+        evidence["journal"]["journal_id"],
+        original.journal_id.to_string()
+    );
+    assert_eq!(evidence["client_id"], "PAPERTRADE");
+    assert_eq!(evidence["account_id"], harness.config.account_id.as_str());
+    assert_eq!(
+        evidence["client_order_id"],
+        entry.command.client_order_id.as_str()
+    );
+    assert_eq!(
+        evidence["binding"]["intent_id"],
+        serde_json::to_value(entry.intent_id).unwrap()
+    );
+    assert_eq!(
+        evidence["proof"]["sealed_at_revision"],
+        original.revision + 1
+    );
+    assert_eq!(evidence["journal"]["revision"], original.revision + 1);
+    assert!(
+        evidence["proof"]["sealed_at_revision"].as_u64().unwrap()
+            <= evidence["journal"]["revision"].as_u64().unwrap()
+    );
+    assert!(!raw.contains("signature") && !raw.contains("body") && !raw.contains("params"));
+    let missing: Value =
+        serde_json::from_str(&probe.order_evidence_json("UNKNOWN-ORDER").unwrap()).unwrap();
+    assert_eq!(missing["kind"], "missing");
+    assert_eq!(missing["journal"], evidence["journal"]);
+    drop(client);
+    assert!(
+        probe
+            .order_evidence_json(entry.command.client_order_id.as_str())
+            .is_err()
+    );
+}
+
+#[rstest::rstest]
+#[case::attempted("attempted")]
+#[case::old_service_terminal("terminal")]
+#[case::unregistered("unregistered")]
+#[case::success_without_fill("success")]
+#[tokio::test]
+async fn per_order_probe_does_not_infer_no_fill_from_an_unproved_status(#[case] mode: &str) {
+    use nautilus_model::enums::OrderStatus;
+    use nautilus_papertrade::{
+        config::PapertradeJournalOpenMode, journal::Journal, wire::VenuePosition,
+    };
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let mut entry = prepared_open(&harness, &position, now, now + 3600);
+    let wallet = source["address"].as_str().unwrap().parse().unwrap();
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+    )
+    .unwrap();
+    if mode == "attempted" || mode == "success" {
+        journal
+            .begin_submission(entry.command.client_order_id)
+            .unwrap()
+            .unwrap();
+        if mode == "success" {
+            entry.execution_succeeded = true;
+            journal.update(&entry).unwrap();
+        }
+    } else if mode == "terminal" {
+        entry.status = OrderStatus::Rejected;
+        journal.update(&entry).unwrap();
+    }
+    let original = journal.identity_snapshot().unwrap();
+    drop(journal);
+    if mode != "unregistered" {
+        harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+            journal_id: original.journal_id,
+            minimum_revision: original.revision,
+        };
+    }
+    let client = configured_client(&harness).unwrap();
+    let evidence: Value = serde_json::from_str(
+        &client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json(entry.command.client_order_id.as_str())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(evidence["kind"], "unproven");
+    assert!(evidence.get("proof").is_none());
+}
+
+#[tokio::test]
+async fn a_failed_seal_commits_neither_partial_status_nor_proof() {
+    use nautilus_model::{enums::OrderStatus, identifiers::ClientId};
+    use nautilus_papertrade::{
+        config::PapertradeJournalOpenMode, journal::Journal, wire::VenuePosition,
+    };
+    use redb::{Database, TableDefinition};
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let first = support::prepared_open_with_id(&harness, &position, "PT-A", now, now + 3600);
+    let second = support::prepared_open_with_id(&harness, &position, "PT-B", now, now + 3600);
+    let wallet = source["address"].as_str().unwrap().parse().unwrap();
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+    )
+    .unwrap();
+    let before = journal.identity_snapshot().unwrap();
+    drop(journal);
+    {
+        let db = Database::open(&harness.config.journal_path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut proofs = tx
+                .open_table(TableDefinition::<&str, &str>::new("order_no_fill_proofs"))
+                .unwrap();
+            proofs
+                .insert(second.command.client_order_id.as_str(), "{}")
+                .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: before.journal_id,
+        minimum_revision: before.revision,
+    };
+    assert!(configured_client(&harness).is_err());
+    let journal = Journal::recover_existing(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+        before.journal_id,
+        before.revision,
+    )
+    .unwrap();
+    assert_eq!(journal.identity_snapshot().unwrap(), before);
+    assert!(
+        journal
+            .entries()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.status == OrderStatus::Submitted)
+    );
+    let observed = serde_json::to_value(
+        journal
+            .order_evidence_snapshot(
+                ClientId::from("PAPERTRADE"),
+                first.command.client_order_id.as_str(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(observed["kind"], "unproven");
+}
+
+#[tokio::test]
+async fn held_probe_refuses_unknown_fields_inside_the_persistent_proof_source() {
+    use nautilus_papertrade::{
+        config::PapertradeJournalOpenMode, journal::Journal, wire::VenuePosition,
+    };
+    use redb::{Database, ReadableTable, TableDefinition};
+    let _serial = SERIAL.lock().await;
+    let mut harness = Harness::new().await;
+    let source = harness.source.wallet.borrow().clone();
+    let position: VenuePosition =
+        serde_json::from_value(source["openPositions"][0].clone()).unwrap();
+    let now = source["indexedThroughTimestamp"].as_u64().unwrap();
+    let entry = prepared_open(&harness, &position, now, now + 3600);
+    let wallet = source["address"].as_str().unwrap().parse().unwrap();
+    let journal = Journal::open(
+        &harness.config.journal_path,
+        wallet,
+        harness.config.account_id.as_str(),
+    )
+    .unwrap();
+    let original = journal.identity_snapshot().unwrap();
+    drop(journal);
+    harness.config.journal_open = PapertradeJournalOpenMode::RecoverExisting {
+        journal_id: original.journal_id,
+        minimum_revision: original.revision,
+    };
+    drop(configured_client(&harness).unwrap());
+    {
+        let db = Database::open(&harness.config.journal_path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut proofs = tx
+                .open_table(TableDefinition::<&str, &str>::new("order_no_fill_proofs"))
+                .unwrap();
+            let mut proof: Value = serde_json::from_str(
+                proofs
+                    .get(entry.command.client_order_id.as_str())
+                    .unwrap()
+                    .unwrap()
+                    .value(),
+            )
+            .unwrap();
+            proof["source"]["unknown"] = json!(true);
+            proofs
+                .insert(
+                    entry.command.client_order_id.as_str(),
+                    serde_json::to_string(&proof).unwrap().as_str(),
+                )
+                .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let client = configured_client(&harness).unwrap();
+    assert!(
+        client
+            .journal_identity_probe()
+            .unwrap()
+            .order_evidence_json(entry.command.client_order_id.as_str())
+            .is_err()
+    );
+}
+
 #[rstest::rstest]
 #[case::missing(false)]
 #[case::empty(true)]
