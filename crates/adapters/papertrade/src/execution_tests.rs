@@ -16,6 +16,8 @@
 //! Loopback admission faults after preparation; no production venue is contacted.
 
 use nautilus_core::UUID4;
+use std::time::Duration;
+
 use nautilus_model::{
     enums::AccountType,
     identifiers::{ClientOrderId, TraderId},
@@ -60,6 +62,28 @@ pub(crate) fn client_at(
     )));
     Arc::get_mut(&mut client.inner).unwrap().clock = clock;
     (client, clock, now)
+}
+
+#[tokio::test]
+async fn submission_admission_source_fault_blocks_even_when_cached_reconciliation_sets_live() {
+    let _serial = support::SERIAL.lock().await;
+    let harness = support::Harness::new().await;
+    let (mut client, _, _) = client(&harness);
+    let (order, command) = order(&harness);
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    client.prepare_order(&command, &order).unwrap();
+    client
+        .inner
+        .account_source_fault
+        .store(true, Ordering::Release);
+    client.inner.live.store(true, Ordering::Release);
+    let result = client.inner.submit_prepared(command.client_order_id).await;
+    let attempted = client.inner.journal.entries().unwrap()[0].send_attempted;
+    client.disconnect().await.unwrap();
+    assert!(result.is_err());
+    assert!(!attempted);
+    assert_eq!(harness.source.intent_requests.load(Ordering::SeqCst), 0);
 }
 
 pub(crate) fn order(harness: &support::Harness) -> (OrderAny, SubmitOrder) {
@@ -878,14 +902,16 @@ async fn submission_admission_cancel_reads_time_after_waiting_for_reconciliation
 }
 
 #[rstest]
-#[case(true, true)]
-#[case(true, false)]
-#[case(false, true)]
-#[case(false, false)]
+#[case(true, true, false)]
+#[case(true, false, false)]
+#[case(false, true, false)]
+#[case(false, false, false)]
+#[case::source_fault_after_activity_wait(false, false, true)]
 #[tokio::test]
 async fn submission_admission_lock_waits_invalidate_earlier_time_and_availability(
     #[case] account_lock: bool,
     #[case] expire: bool,
+    #[case] source_fault: bool,
 ) {
     let _serial = support::SERIAL.lock().await;
     let harness = support::Harness::new().await;
@@ -914,7 +940,12 @@ async fn submission_admission_lock_waits_invalidate_earlier_time_and_availabilit
     });
     entering.recv_timeout(Duration::from_secs(3)).unwrap();
     let blocked = completion.recv_timeout(Duration::from_millis(50));
-    if expire {
+    if source_fault {
+        client
+            .inner
+            .account_source_fault
+            .store(true, Ordering::Release);
+    } else if expire {
         clock.set_time(UnixNanos::from(entry.deadline * 1_000_000_000));
     } else {
         client.inner.stream_healthy.store(false, Ordering::Release);

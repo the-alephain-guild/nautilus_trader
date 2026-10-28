@@ -105,6 +105,13 @@ impl WalletState {
             "Account frame wallet mismatch"
         );
         let is_patch = frame.get("baseAccountRevision").is_some();
+        if self.current {
+            ensure!(
+                frame["accountRevision"].as_u64()
+                    >= self.account.as_ref().map(|a| a.account_revision),
+                "Account revision regressed within the stream"
+            );
+        }
         if self.current
             && frame["accountRevision"].as_u64().is_some_and(|v| {
                 self.account
@@ -175,7 +182,8 @@ impl WalletState {
             ensure!(
                 next.wallet_revision >= old.wallet_revision
                     && next.queue_revision >= old.queue_revision
-                    && next.indexed_through_block >= old.indexed_through_block,
+                    && next.indexed_through_block >= old.indexed_through_block
+                    && next.indexed_through_timestamp >= old.indexed_through_timestamp,
                 "Account coverage regressed"
             );
         }

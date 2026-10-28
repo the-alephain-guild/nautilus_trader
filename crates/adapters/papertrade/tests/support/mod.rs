@@ -59,6 +59,9 @@ pub(crate) struct Source {
     pub(crate) intent_entered: tokio::sync::Notify,
     pub(crate) intent_release: tokio::sync::Notify,
     pub(crate) wallet: tokio::sync::watch::Sender<Value>,
+    pub(crate) wallet_requests: AtomicUsize,
+    pub(crate) wallet_initial_override: Mutex<Option<Value>>,
+    pub(crate) wallet_delay_ms: AtomicU64,
     pub(crate) unavailable: AtomicBool,
     pub(crate) trading: Mutex<Value>,
     pub(crate) history: Mutex<Value>,
@@ -76,19 +79,32 @@ pub(crate) struct Source {
     pub(crate) history_calls: AtomicUsize,
 }
 async fn wallet(State(source): State<Arc<Source>>) -> Response {
+    source.wallet_requests.fetch_add(1, Ordering::SeqCst);
+    let delay = source.wallet_delay_ms.load(Ordering::SeqCst);
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     if source.unavailable.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let stream = futures_util::stream::unfold(
-        (source.wallet.subscribe(), true),
-        |(mut rx, first)| async move {
+        (
+            source.wallet.subscribe(),
+            true,
+            source.wallet_initial_override.lock().clone(),
+        ),
+        |(mut rx, first, initial)| async move {
             if !first && rx.changed().await.is_err() {
                 return None;
             }
-            let value = rx.borrow().clone();
+            let value = if first {
+                initial.unwrap_or_else(|| rx.borrow().clone())
+            } else {
+                rx.borrow().clone()
+            };
             Some((
                 Ok::<_, Infallible>(Event::default().event("wallet").data(value.to_string())),
-                (rx, false),
+                (rx, false, None),
             ))
         },
     );
@@ -260,6 +276,9 @@ impl Harness {
             intent_entered: tokio::sync::Notify::new(),
             intent_release: tokio::sync::Notify::new(),
             wallet: tx,
+            wallet_requests: AtomicUsize::new(0),
+            wallet_initial_override: Mutex::new(None),
+            wallet_delay_ms: AtomicU64::new(0),
             unavailable: AtomicBool::new(false),
             history: Mutex::new(json!({"items":[],"nextCursor":null})),
             receipt: Mutex::new(None),

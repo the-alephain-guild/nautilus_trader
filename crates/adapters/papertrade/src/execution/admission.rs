@@ -33,6 +33,7 @@ use crate::{
 impl Inner {
     pub(super) fn available(&self) -> bool {
         self.live.load(Ordering::Acquire)
+            && !self.account_source_fault.load(Ordering::Acquire)
             && self.stream_healthy.load(Ordering::Acquire)
             && self
                 .stream_activity
@@ -120,6 +121,7 @@ impl Inner {
         ensure!(
             available
                 && self.live.load(Ordering::Acquire)
+                && !self.account_source_fault.load(Ordering::Acquire)
                 && self.stream_healthy.load(Ordering::Acquire),
             "Account stream unavailable before submission"
         );

@@ -106,3 +106,18 @@ fn sse_handles_arbitrary_chunk_boundaries_and_bounds_memory() {
             .is_err()
     );
 }
+
+#[rstest]
+#[case("accountRevision")]
+#[case("indexedThroughTimestamp")]
+fn same_connection_regression_does_not_become_a_new_source(#[case] field: &str) {
+    let mut raw = snapshot();
+    raw["accountRevision"] = json!(10);
+    let mut state = WalletState::new(raw["address"].as_str().unwrap().parse().unwrap());
+    state.apply(&raw).unwrap();
+    let mut changed = raw.clone();
+    changed["accountRevision"] = json!(11);
+    changed[field] = json!(raw[field].as_u64().unwrap() - 1);
+    assert!(state.apply(&changed).is_err());
+    assert!(state.current().is_none());
+}

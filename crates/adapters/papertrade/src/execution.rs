@@ -15,12 +15,9 @@
 
 //! Native execution client with durable intent identity and evidence-based reconciliation.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use alloy::signers::local::PrivateKeySigner;
@@ -85,12 +82,15 @@ pub(crate) struct Inner {
     pub bundle: RwLock<Option<ReportBundle>>,
     pub live: AtomicBool,
     pub stream_healthy: AtomicBool,
+    pub(super) account_refresh_requested: AtomicBool,
+    pub(super) account_source_fault: AtomicBool,
     stream_activity: RwLock<Option<WalletActivity>>,
     pub sync: tokio::sync::Mutex<()>,
     pub emitter: ExecutionEventEmitter,
     pub clock: &'static AtomicTime,
 }
 mod admission;
+mod observations;
 
 #[derive(Debug)]
 pub struct PapertradeExecutionClient {
@@ -191,6 +191,8 @@ impl PapertradeExecutionClient {
             bundle: RwLock::new(None),
             live: AtomicBool::new(false),
             stream_healthy: AtomicBool::new(false),
+            account_refresh_requested: AtomicBool::new(false),
+            account_source_fault: AtomicBool::new(false),
             stream_activity: RwLock::new(None),
             sync: tokio::sync::Mutex::new(()),
             emitter,
@@ -479,6 +481,9 @@ impl ExecutionClient for PapertradeExecutionClient {
     }
     fn stop(&mut self) -> Result<()> {
         self.cancellation.cancel();
+        self.inner
+            .account_source_fault
+            .store(true, Ordering::Release);
         self.inner.stream_healthy.store(false, Ordering::Release);
         self.inner.live.store(false, Ordering::Release);
         if let Some(task) = &self.task {
@@ -492,88 +497,38 @@ impl ExecutionClient for PapertradeExecutionClient {
         Ok(())
     }
     async fn connect(&mut self) -> Result<()> {
+        self.inner
+            .account_source_fault
+            .store(true, Ordering::Release);
         if let Some(task) = self.task.take() {
             task.abort();
             let _ = task.await;
         }
         self.inner.stream_healthy.store(false, Ordering::Release);
         self.inner.live.store(false, Ordering::Release);
-        let mut source_epoch = nautilus_core::UUID4::new();
+        self.inner
+            .account_refresh_requested
+            .store(false, Ordering::Release);
+        let source_epoch = nautilus_core::UUID4::new();
         let mut stream = self.inner.api.wallet_stream(self.inner.wallet).await?;
         let snapshot = stream.next().await?;
         *self.inner.stream_activity.write() = Some(stream.activity.clone());
         crate::reconciliation::synchronize_with_epoch(&self.inner, snapshot.clone(), source_epoch)
             .await?;
+        self.inner
+            .account_source_fault
+            .store(false, Ordering::Release);
         self.inner.stream_healthy.store(true, Ordering::Release);
         self.core.set_connected();
         let inner = self.inner.clone();
         let cancel = self.cancellation.clone();
-        self.task = Some(get_runtime().spawn(async move {
-            let mut latest = snapshot;
-            let mut interval = tokio::time::interval(Duration::from_millis(inner.config.poll_interval_ms));
-            'connected: loop {
-                // Preserve the pending read and its idle deadline across poll ticks.
-                let result = {
-                    let incoming = stream.next();
-                    tokio::pin!(incoming);
-                    loop {
-                        tokio::select! {
-                            () = cancel.cancelled() => break 'connected,
-                            result = &mut incoming => break result,
-                            _ = interval.tick() => {
-                                if let Err(e) = crate::reconciliation::synchronize_with_epoch(&inner, latest.clone(), source_epoch).await {
-                                    inner.live.store(false, Ordering::Release);
-                                    log::error!("papertrade_reconciliation_unavailable error={e}");
-                                }
-                            }
-                        }
-                    }
-                };
-                match result {
-                    Ok(snapshot) => latest = snapshot,
-                    Err(e) => {
-                        inner.stream_healthy.store(false, Ordering::Release);
-                        inner.live.store(false, Ordering::Release);
-                        log::warn!("papertrade_wallet_reconnecting error={e}");
-                        loop {
-                            tokio::select! {
-                                () = cancel.cancelled() => break 'connected,
-                                () = tokio::time::sleep(Duration::from_secs(1)) => {}
-                            }
-                            let replacement = tokio::select! {
-                                () = cancel.cancelled() => break 'connected,
-                                result = async {
-                                    let source_epoch = nautilus_core::UUID4::new();
-                                    let mut stream = inner.api.wallet_stream(inner.wallet).await?;
-                                    let snapshot = stream.next().await?;
-                                    Ok::<_, anyhow::Error>((stream, snapshot, source_epoch))
-                                } => result,
-                            };
-                            match replacement {
-                                Ok((replacement, snapshot, replacement_epoch)) => {
-                                    *inner.stream_activity.write() = Some(replacement.activity.clone());
-                                    stream = replacement;
-                                    latest = snapshot;
-                                    source_epoch = replacement_epoch;
-                                    break;
-                                }
-                                Err(e) => log::warn!("papertrade_wallet_connect_failed error={e}"),
-                            }
-                        }
-                    }
-                }
-                inner.stream_healthy.store(true, Ordering::Release);
-                match crate::reconciliation::synchronize_with_epoch(&inner, latest.clone(), source_epoch).await {
-                    Ok(()) => {},
-                    Err(e) => {
-                        inner.live.store(false, Ordering::Release);
-                        log::error!("papertrade_reconciliation_unavailable error={e}");
-                    }
-                }
-            }
-            inner.stream_healthy.store(false, Ordering::Release);
-            inner.live.store(false, Ordering::Release);
-        }));
+        self.task = Some(get_runtime().spawn(observations::run(
+            inner,
+            stream,
+            snapshot,
+            source_epoch,
+            cancel,
+        )));
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<()> {
@@ -722,21 +677,24 @@ impl ExecutionClient for PapertradeExecutionClient {
         }
         Ok(())
     }
-    fn query_account(&self, _cmd: QueryAccount) -> Result<()> {
-        let source_epoch = nautilus_core::UUID4::new();
-        let inner = self.inner.clone();
-        let task = get_runtime().spawn(async move {
-            let result = async {
-                let snapshot = inner.api.snapshot(inner.wallet).await?;
-                crate::reconciliation::synchronize_with_epoch(&inner, snapshot, source_epoch).await
-            }
-            .await;
-            if let Err(e) = result {
-                inner.live.store(false, Ordering::Release);
-                log::error!("papertrade_account_query_failed error={e}");
-            }
-        });
-        self.track(task);
+    fn query_account(&self, cmd: QueryAccount) -> Result<()> {
+        ensure!(
+            cmd.account_id == self.core.account_id
+                && cmd
+                    .client_id
+                    .is_none_or(|client| client == self.core.client_id),
+            "Account query selects another execution route"
+        );
+        ensure!(
+            self.core.is_connected()
+                && !self.cancellation.is_cancelled()
+                && self.task.as_ref().is_some_and(|task| !task.is_finished())
+                && self.inner.stream_healthy.load(Ordering::Acquire),
+            "Account query requires an active connected observation loop"
+        );
+        self.inner
+            .account_refresh_requested
+            .store(true, Ordering::Release);
         Ok(())
     }
     fn query_order(&self, cmd: QueryOrder) -> Result<()> {

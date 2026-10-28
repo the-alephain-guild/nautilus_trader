@@ -187,6 +187,8 @@ async fn lost_acknowledgement_reconnect_and_restart_do_not_resubmit_or_duplicate
             cache.clone().into(),
         )
         .unwrap();
+    // Exercise submission after the fixture's original wall-clock second.
+    tokio::time::sleep(Duration::from_secs(2)).await;
     client.start().unwrap();
     client.connect().await.unwrap();
     assert_eq!(
@@ -217,6 +219,13 @@ async fn lost_acknowledgement_reconnect_and_restart_do_not_resubmit_or_duplicate
         let mass = client.generate_mass_status(None).await.unwrap().unwrap();
         let _ = mass;
         let fields = &request["signed"];
+        let signed_at = fields["deadline"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            .checked_sub(3_600)
+            .unwrap();
         let signer = nautilus_papertrade::PapertradeSigner::new(key);
         signer
             .sign_open(
@@ -230,7 +239,7 @@ async fn lost_acknowledgement_reconnect_and_restart_do_not_resubmit_or_duplicate
                     nonce: fields["nonce"].as_str().unwrap().parse().unwrap(),
                     deadline: fields["deadline"].as_str().unwrap().parse().unwrap(),
                 },
-                now,
+                signed_at,
             )
             .unwrap()
             .id()
