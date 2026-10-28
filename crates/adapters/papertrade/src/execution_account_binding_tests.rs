@@ -325,3 +325,59 @@ async fn account_bound_checkpoint_commit_cannot_reuse_the_previous_memory_snapsh
     assert!(synchronized.is_ok(), "{synchronized:?}");
     assert_eq!(harness.source.intent_requests.load(Ordering::SeqCst), 0);
 }
+
+#[rstest]
+#[case(false, false, false)]
+#[case(true, false, true)]
+#[case(false, true, true)]
+#[case(true, true, false)]
+#[tokio::test]
+async fn terminal_market_final_admission_preserves_only_risk_reduction(
+    #[case] closing: bool,
+    #[case] cancelling: bool,
+    #[case] allowed: bool,
+) {
+    let _serial = support::SERIAL.lock().await;
+    let mut harness = support::Harness::new().await;
+    let now = get_atomic_clock_realtime().get_time_ns().as_u64() / 1_000_000_000;
+    bind_window(&mut harness, now, 7200, 10800);
+    let (mut client, _, _) = client_at(&harness, now);
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    wait_initial_source_poll(&client, &harness).await;
+    let (_, command) = if closing {
+        close_order(&harness, &client)
+    } else {
+        order(&harness)
+    };
+    let entry = legacy_prepared(&client, &command, closing, now);
+    let signed = if cancelling {
+        cancellation(&client, &entry, now)
+    } else {
+        entry.signed().unwrap()
+    };
+    {
+        let mut trading = client.inner.trading.write();
+        let market = trading
+            .as_mut()
+            .unwrap()
+            .instruments
+            .iter_mut()
+            .find(|market| reports::instrument_id(market) == command.instrument_id)
+            .unwrap();
+        market.terminal = true;
+    }
+    let result = client.inner.submission_time(&signed, cancelling);
+    assert_eq!(result.is_ok(), allowed, "{result:?}");
+    if !closing && !cancelling {
+        assert!(
+            client
+                .inner
+                .submit_prepared(command.client_order_id)
+                .await
+                .is_err()
+        );
+        assert_eq!(harness.source.intent_requests.load(Ordering::SeqCst), 0);
+    }
+    client.disconnect().await.unwrap();
+}

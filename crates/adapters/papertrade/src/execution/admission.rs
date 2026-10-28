@@ -125,6 +125,34 @@ impl Inner {
             } else {
                 None
             };
+        let risk_instrument = if increases_risk {
+            Some(
+                self.journal
+                    .entries()?
+                    .into_iter()
+                    .find(|entry| entry.intent_id == signed.id())
+                    .ok_or_else(|| anyhow::anyhow!("Risk increase has no original journal entry"))?
+                    .command
+                    .instrument_id,
+            )
+        } else {
+            None
+        };
+        let trading = increases_risk.then(|| self.trading.read());
+        if let (Some(identifier), Some(trading)) = (risk_instrument, trading.as_deref()) {
+            let trading = trading.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("No current trading configuration before risk increase")
+            })?;
+            let market = trading
+                .instruments
+                .iter()
+                .find(|market| crate::reports::instrument_id(market) == identifier)
+                .ok_or_else(|| anyhow::anyhow!("Risk increase market is no longer available"))?;
+            ensure!(
+                !trading.trading_paused && market.active && !market.paused && !market.terminal,
+                "Risk increase market is paused, inactive or terminal"
+            );
+        }
         let account = self.snapshot.read();
         let account = account
             .as_ref()

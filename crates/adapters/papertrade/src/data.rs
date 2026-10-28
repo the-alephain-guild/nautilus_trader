@@ -99,21 +99,11 @@ async fn reference_quote(
     market: &Market,
     clock: &'static AtomicTime,
 ) -> Result<QuoteTick> {
-    let (mid, time) = if market.terminal {
-        let bid = market
-            .frozen_bid
-            .ok_or_else(|| anyhow::anyhow!("Missing frozen bid"))?;
-        let ask = market
-            .frozen_ask
-            .ok_or_else(|| anyhow::anyhow!("Missing frozen ask"))?;
-        (
-            (reports::market_price(market, bid)? + reports::market_price(market, ask)?)
-                / rust_decimal::Decimal::from(2),
-            clock.get_time_ns().as_u64() / 1_000_000,
-        )
-    } else {
-        api.reference_mid(&market.symbol).await?
-    };
+    ensure!(
+        !market.terminal,
+        "Terminal market has no live reference quote"
+    );
+    let (mid, time) = api.reference_mid(&market.symbol).await?;
     let precision = u8::try_from(market.price_scale.to_string().len() - 1)?;
     let price = Price::from_decimal_dp(mid, precision)?;
     let zero = Quantity::zero(FIXED_PRECISION);
@@ -170,9 +160,11 @@ impl DataClient for PapertradeDataClient {
                 .write()
                 .insert(reports::instrument_id(&market), market.clone());
             self.send(DataEvent::Instrument(instrument))?;
-            self.send(DataEvent::Data(Data::Quote(
-                reference_quote(&self.api, &market, self.clock).await?,
-            )))?;
+            if !market.terminal {
+                self.send(DataEvent::Data(Data::Quote(
+                    reference_quote(&self.api, &market, self.clock).await?,
+                )))?;
+            }
         }
         self.connected.store(true, Ordering::Release);
         let api = self.api.clone();
@@ -281,5 +273,33 @@ impl DataClient for PapertradeDataClient {
                 cmd.params,
             ),
         ))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::{Raw, TradingState};
+    use alloy_primitives::U256;
+
+    #[tokio::test]
+    async fn terminal_market_cannot_emit_a_fresh_reference_quote() {
+        let trading: TradingState =
+            serde_json::from_str(include_str!("../test_data/live_trading.json")).unwrap();
+        let mut market = trading.instruments[0].clone();
+        market.terminal = true;
+        market.frozen_bid = Some(Raw(U256::from(250000)));
+        market.frozen_ask = Some(Raw(U256::from(250002)));
+        let api = PapertradeApi::new(
+            "http://127.0.0.1:1/".parse().unwrap(),
+            "http://127.0.0.1:1/".parse().unwrap(),
+            1,
+        )
+        .unwrap();
+        assert!(
+            reference_quote(&api, &market, get_atomic_clock_realtime())
+                .await
+                .is_err()
+        );
     }
 }

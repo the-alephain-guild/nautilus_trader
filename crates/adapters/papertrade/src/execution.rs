@@ -344,6 +344,7 @@ impl PapertradeExecutionClient {
             ensure!(
                 !trading.trading_paused
                     && market.active
+                    && !market.terminal
                     && !market.paused
                     && trading.action_enabled("openPosition"),
                 "Open intake paused"
