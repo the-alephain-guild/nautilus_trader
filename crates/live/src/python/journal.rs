@@ -96,6 +96,7 @@ mod tests {
                 journal_id: self.journal_id,
                 revision: revision.load(Ordering::SeqCst),
                 owner: "fixture-owner".to_owned(),
+                canonical_path: "/fixture/journal.redb".into(),
             })
         }
     }

@@ -15,7 +15,7 @@
 
 //! Read-only identity evidence from an execution client's persistent journal.
 
-use std::fmt::Debug;
+use std::{fmt::Debug, path::PathBuf};
 
 use nautilus_core::UUID4;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,7 @@ pub struct ExecutionJournalIdentity {
     pub journal_id: UUID4,
     pub revision: u64,
     pub owner: String,
+    pub canonical_path: PathBuf,
 }
 
 /// Reads current evidence from the journal already owned by an execution client.

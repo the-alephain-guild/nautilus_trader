@@ -73,6 +73,7 @@ pub(super) struct JournalStorage {
     pub(super) db: Database,
     pub(super) journal_id: UUID4,
     pub(super) owner: String,
+    pub(super) process_id: u32,
     path: PathBuf,
     canonical_path: PathBuf,
     file: Handle,
@@ -123,6 +124,7 @@ impl JournalStorage {
             file,
             journal_id: UUID4::new(),
             owner: Self::domain(wallet, account),
+            process_id: std::process::id(),
         };
         storage.secure_permissions()?;
         Ok(storage)
@@ -138,7 +140,7 @@ impl JournalStorage {
         let path = std::path::absolute(path)?;
         let (db, canonical_path, file) = Self::open_file(&path, false)?;
         let owner = Self::domain(wallet, account);
-        let snapshot = Self::read_identity(&db, &owner)?;
+        let snapshot = Self::read_identity(&db, &owner, &canonical_path)?;
         let legacy = snapshot.is_none();
         ensure!(
             !legacy || allow_legacy,
@@ -171,6 +173,7 @@ impl JournalStorage {
             db,
             journal_id,
             owner,
+            process_id: std::process::id(),
             path,
             canonical_path,
             file,
@@ -191,7 +194,11 @@ impl JournalStorage {
         Ok(())
     }
 
-    fn read_identity(db: &Database, owner: &str) -> Result<Option<JournalIdentitySnapshot>> {
+    fn read_identity(
+        db: &Database,
+        owner: &str,
+        canonical_path: &Path,
+    ) -> Result<Option<JournalIdentitySnapshot>> {
         let tx = db.begin_read()?;
         let meta = tx.open_table(META)?;
         let actual_owner = meta
@@ -222,6 +229,7 @@ impl JournalStorage {
                     journal_id,
                     revision: parsed_revision,
                     owner: owner.to_owned(),
+                    canonical_path: canonical_path.to_path_buf(),
                 }))
             }
             _ => anyhow::bail!("Journal identity metadata is incomplete"),
@@ -246,13 +254,17 @@ impl JournalStorage {
     }
 
     pub(super) fn ensure_path_current(&self) -> Result<()> {
+        ensure!(
+            std::process::id() == self.process_id,
+            "Original execution journal belongs to another process"
+        );
         Self::check_path(&self.path, &self.file)?;
         Self::check_path(&self.canonical_path, &self.file)
     }
 
     pub(super) fn identity_snapshot(&self) -> Result<JournalIdentitySnapshot> {
         self.ensure_path_current()?;
-        let snapshot = Self::read_identity(&self.db, &self.owner)?
+        let snapshot = Self::read_identity(&self.db, &self.owner, &self.canonical_path)?
             .ok_or_else(|| anyhow::anyhow!("Journal identity metadata is missing"))?;
         ensure!(
             snapshot.journal_id == self.journal_id,
@@ -320,6 +332,52 @@ mod tests {
     use rstest::rstest;
 
     use crate::{OpenPosition, PapertradeSigner, journal::Journal};
+
+    #[test]
+    fn identity_evidence_binds_the_original_canonical_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.redb");
+        let journal =
+            Journal::initialize_new(&path, Address::repeat_byte(7), "PAPERTRADE-001").unwrap();
+        let snapshot = serde_json::to_value(journal.identity_snapshot().unwrap()).unwrap();
+        assert_eq!(
+            snapshot["canonical_path"].as_str(),
+            Some(path.canonicalize().unwrap().to_str().unwrap())
+        );
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn inherited_native_journal_probe_refuses_before_database_access() {
+        use std::sync::Arc;
+
+        use pyo3::{
+            prelude::*,
+            types::{PyCFunction, PyDict},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fork.redb");
+        let journal = Arc::new(
+            Journal::initialize_new(&path, Address::repeat_byte(7), "PAPERTRADE-001").unwrap(),
+        );
+        let probe = journal.identity_probe();
+        Python::initialize();
+        Python::attach(|py| {
+            let snapshot = PyCFunction::new_closure(py, None, None, move |_args, _kwargs| {
+                probe.snapshot().map(|_| ()).map_err(|_| {
+                    pyo3::exceptions::PyRuntimeError::new_err("native journal refused")
+                })
+            })
+            .unwrap();
+            let locals = PyDict::new(py);
+            locals.set_item("snapshot", snapshot).unwrap();
+            py.run(pyo3::ffi::c_str!(
+                "import os, select, signal, warnings\nwith warnings.catch_warnings():\n    warnings.simplefilter('ignore', DeprecationWarning)\n    reader, writer = os.pipe()\n    child = os.fork()\nif child == 0:\n    os.close(reader)\n    try:\n        snapshot()\n    except RuntimeError:\n        os.write(writer, b'refused')\n    else:\n        os.write(writer, b'accepted')\n    os._exit(0)\nos.close(writer)\ntry:\n    assert select.select([reader], [], [], 3)[0], 'native probe waited on inherited database'\n    assert os.read(reader, 16) == b'refused', 'native probe accepted inherited database'\nfinally:\n    os.close(reader)\n    waited, _ = os.waitpid(child, os.WNOHANG)\n    if waited == 0:\n        os.kill(child, signal.SIGKILL)\n        os.waitpid(child, 0)"
+            ), Some(&locals), None).unwrap();
+        });
+        assert!(journal.identity_snapshot().is_ok());
+    }
 
     #[rstest]
     fn observed_success_keeps_its_committed_revision_when_reporting_a_conflict() {

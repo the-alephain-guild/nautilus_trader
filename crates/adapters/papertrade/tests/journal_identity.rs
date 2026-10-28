@@ -186,19 +186,21 @@ fn active_handle_rejects_a_removed_or_replaced_path(#[case] replace: bool) {
     assert!(journal.remember(&[], &[]).is_err());
     assert!(journal.entries().is_err());
     drop(journal);
-    assert_eq!(
-        Journal::recover_existing(
-            &retained,
-            Address::repeat_byte(7),
-            ACCOUNT,
-            identity.journal_id,
-            1
-        )
-        .unwrap()
-        .identity_snapshot()
-        .unwrap(),
-        identity
-    );
+    let recovered = Journal::recover_existing(
+        &retained,
+        Address::repeat_byte(7),
+        ACCOUNT,
+        identity.journal_id,
+        1,
+    )
+    .unwrap()
+    .identity_snapshot()
+    .unwrap();
+    assert_eq!(recovered.schema_version, identity.schema_version);
+    assert_eq!(recovered.journal_id, identity.journal_id);
+    assert_eq!(recovered.revision, identity.revision);
+    assert_eq!(recovered.owner, identity.owner);
+    assert_eq!(recovered.canonical_path, retained.canonicalize().unwrap());
 }
 
 #[cfg(unix)]

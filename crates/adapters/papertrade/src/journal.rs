@@ -39,11 +39,18 @@ const POSITIONS: TableDefinition<&str, &str> = TableDefinition::new("observed_po
 const CLOSES: TableDefinition<&str, &str> = TableDefinition::new("observed_closes");
 
 #[derive(Debug)]
-struct JournalProbe(Weak<Journal>);
+struct JournalProbe {
+    journal: Weak<Journal>,
+    process_id: u32,
+}
 
 impl ExecutionJournalIdentityProbe for JournalProbe {
     fn snapshot(&self) -> Result<JournalIdentitySnapshot> {
-        self.0
+        ensure!(
+            std::process::id() == self.process_id,
+            "Original execution journal belongs to another process"
+        );
+        self.journal
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("Original execution journal is unavailable"))?
             .identity_snapshot()
@@ -95,7 +102,10 @@ pub struct Journal {
 
 impl Journal {
     pub(crate) fn identity_probe(self: &Arc<Self>) -> Arc<dyn ExecutionJournalIdentityProbe> {
-        Arc::new(JournalProbe(Arc::downgrade(self)))
+        Arc::new(JournalProbe {
+            journal: Arc::downgrade(self),
+            process_id: self.storage.process_id,
+        })
     }
 
     /// Explicit first creation. Existing files are never reused or overwritten.
