@@ -30,6 +30,7 @@ extension-module = [
   "pyo3/extension-module",
 ]
 python = [
+  "nautilus-live?/python",
   "nautilus-common/python",
   "nautilus-core/python",
   "nautilus-execution/python",
@@ -61,10 +62,12 @@ nautilus-system = { workspace = true, optional = true }
 ahash = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+aws-lc-rs = { workspace = true }
 bon = { workspace = true }
 log = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 ustr = { workspace = true }
 
 nautilus-databento = { workspace = true, features = ["live"], optional = true }
@@ -76,6 +79,7 @@ pyo3-stub-gen = { workspace = true, optional = true }
 
 [dev-dependencies]
 nautilus-data = { workspace = true }
+nautilus-live = { workspace = true, default-features = false, features = ["node"] }
 nautilus-testkit = { workspace = true, default-features = false, features = [
   "testers",
 ] }

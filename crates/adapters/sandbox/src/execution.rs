@@ -15,6 +15,8 @@
 
 //! Sandbox execution client implementation.
 
+mod capture;
+
 use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
 use ahash::AHashMap;
@@ -40,7 +42,7 @@ use nautilus_common::{
     },
     timer::{TimeEvent, TimeEventCallback},
 };
-use nautilus_core::{DurationNanos, Params, UnixNanos, WeakCell};
+use nautilus_core::{DurationNanos, Params, UUID4, UnixNanos, WeakCell};
 use nautilus_execution::{
     client::core::ExecutionClientCore,
     matching_engine::OrderMatchingEngine,
@@ -69,6 +71,9 @@ const EXPIRED_ENGINE_SWEEP_INTERVAL: DurationNanos = DurationNanos::from_mins(1)
 /// to match orders against market data. This enables strategy testing in real-time
 /// without actual order execution on exchanges.
 pub struct SandboxExecutionClient {
+    capture_incarnation: UUID4,
+    capture_retired: Rc<std::cell::Cell<bool>>,
+    capture_connected: Rc<std::cell::Cell<bool>>,
     core: RefCell<ExecutionClientCore>,
     factory: OrderEventFactory,
     config: SandboxExecutionClientConfig,
@@ -147,6 +152,9 @@ impl SandboxExecutionClient {
         );
 
         Self {
+            capture_incarnation: UUID4::new(),
+            capture_retired: Rc::new(std::cell::Cell::new(false)),
+            capture_connected: Rc::new(std::cell::Cell::new(false)),
             core: RefCell::new(core),
             factory,
             config,
@@ -497,6 +505,7 @@ impl SandboxExecutionClient {
 
     /// Resets the sandbox to its initial state.
     pub fn reset(&self) {
+        self.capture_retired.set(true);
         let mut inner = self.inner.borrow_mut();
         for engine in inner.matching_engines.values_mut() {
             engine.reset();
@@ -566,6 +575,16 @@ impl ExecutionClient for SandboxExecutionClient {
         self.cache.borrow().account_owned(&account_id)
     }
 
+    fn account_capture_probe(
+        &self,
+    ) -> Option<Rc<dyn nautilus_common::clients::ExecutionAccountCaptureProbe>> {
+        capture::SandboxAccountCaptureProbe::new(self)
+            .ok()
+            .map(|probe| {
+                Rc::new(probe) as Rc<dyn nautilus_common::clients::ExecutionAccountCaptureProbe>
+            })
+    }
+
     fn generate_account_state(
         &self,
         balances: Vec<AccountBalance>,
@@ -618,6 +637,8 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
+        self.capture_retired.set(true);
+        self.capture_connected.set(false);
         if self.core.borrow().is_stopped() {
             return Ok(());
         }
@@ -644,6 +665,7 @@ impl ExecutionClient for SandboxExecutionClient {
         self.generate_account_state(balances, vec![], false, ts_event, None)?;
 
         self.core.borrow().set_connected();
+        self.capture_connected.set(true);
         log::info!(
             "Sandbox execution client connected: venue={}",
             self.config.venue
@@ -652,6 +674,8 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
+        self.capture_retired.set(true);
+        self.capture_connected.set(false);
         if self.core.borrow().is_disconnected() {
             return Ok(());
         }

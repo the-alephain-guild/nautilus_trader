@@ -143,10 +143,16 @@ pub mod config;
 #[cfg(feature = "plugin")]
 pub mod plugin;
 
+pub(crate) mod account_capture;
+
 mod metrics;
 mod queue;
 mod state;
 
+pub use account_capture::{
+    ExecutionAccountCapture, ExecutionAccountCaptureFailure, ExecutionAccountCaptureFrontier,
+    ExecutionAccountCaptureHandle,
+};
 use builder::ExternalMessageBusIngress;
 pub use builder::LiveNodeBuilder;
 use config::{LiveNodeConfig, PluginConfig, validate_live_environment};
@@ -181,6 +187,8 @@ impl Debug for StreamProcessor {
 pub struct LiveNode {
     kernel: NautilusKernel,
     runner: Option<AsyncRunner>,
+    capture_progress: std::sync::Arc<account_capture::CaptureProgress>,
+    capture_service: account_capture::CaptureService,
     config: LiveNodeConfig,
     handle: LiveNodeHandle,
     exec_manager: ExecutionManager,
@@ -215,6 +223,8 @@ impl LiveNode {
     ) -> Self {
         Self {
             kernel,
+            capture_progress: runner.capture_progress.clone(),
+            capture_service: account_capture::CaptureService::new(),
             runner: Some(runner),
             config,
             handle: LiveNodeHandle::new(),
@@ -290,6 +300,8 @@ impl LiveNode {
 
         let node = Self {
             kernel,
+            capture_progress: runner.capture_progress.clone(),
+            capture_service: account_capture::CaptureService::new(),
             runner: Some(runner),
             config,
             handle: LiveNodeHandle::new(),
@@ -633,6 +645,7 @@ impl LiveNode {
     }
 
     fn process_system_command(&self, command: SystemCommand) {
+        let _capture_dispatch = account_capture::dispatch_guard(account_capture::SYSTEM_COMMANDS);
         match command {
             SystemCommand::ReconnectSocket(command) => {
                 self.process_socket_reconnect(command);
@@ -690,6 +703,7 @@ impl LiveNode {
     }
 
     fn process_system_event(&self, event: SystemEvent) {
+        let _capture_dispatch = account_capture::dispatch_guard(account_capture::SYSTEM_EVENTS);
         match event {
             SystemEvent::SocketState(change) => self.publish_socket_state_change(change),
         }
@@ -1037,6 +1051,12 @@ impl LiveNode {
             mut data_evt_rx,
             mut data_cmd_rx,
         } = runner.take_channels();
+
+        let mut account_capture_rx = self
+            .capture_service
+            .receiver
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Account capture receiver already consumed"))?;
 
         log::info!("Event loop starting");
 
@@ -1642,6 +1662,7 @@ impl LiveNode {
                 // Maintenance dispatcher (before event processing to avoid
                 // starvation). See module docs for design rationale.
                 _ = maintenance_timer.tick(), if is_running => {
+                    let _capture_dispatch = account_capture::dispatch_guard(account_capture::MAINTENANCE);
                     let maintenance_start = dst::time::Instant::now();
                     metrics.publish_queue_depths(
                         RunnerChannelQueueDepths::from_receivers(
@@ -1838,6 +1859,16 @@ impl LiveNode {
                         metrics_start,
                     );
                 }
+                Some(request) = account_capture_rx.recv() => {
+                    let maintenance_pending = open_order_report_task.is_some()
+                        || targeted_order_report_task.is_some()
+                        || position_report_task.is_some();
+                    self.process_account_capture(request, || [
+                        time_evt_rx.len(), system_evt_rx.len(), system_cmd_rx.len(),
+                        exec_evt_rx.len(), exec_cmd_rx.len(), data_evt_rx.len(), data_cmd_rx.len(),
+                        external_msgbus_rx.as_ref().map_or(0, tokio::sync::mpsc::Receiver::len), 0,
+                    ], maintenance_pending);
+                }
             }
 
             dispatches_since_yield += 1;
@@ -1983,6 +2014,7 @@ impl LiveNode {
     }
 
     fn process_external_msgbus_message(&self, message: &BusMessage) {
+        let _capture_dispatch = account_capture::dispatch_guard(account_capture::EXTERNAL_EVENTS);
         if self.stream_processors.is_empty() {
             Self::republish_external_msgbus_message(message);
             return;
@@ -2058,6 +2090,7 @@ impl LiveNode {
     }
 
     fn process_exec_command(&mut self, message: TradingCommandMessage) {
+        let _capture_dispatch = account_capture::dispatch_guard(account_capture::EXEC_COMMANDS);
         let mut messages = vec![message];
         while let Some(message) = messages.pop() {
             if message.endpoint() == MessagingSwitchboard::exec_engine_execute() {

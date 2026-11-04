@@ -18,12 +18,18 @@
 //! Provides the core trait interfaces that define how clients interact with
 //! data providers and execution venues.
 
+mod account_capture;
 mod data;
 mod execution;
 mod journal;
 
 use std::fmt::{Debug, Display};
 
+pub use account_capture::{
+    ExecutionAccountCaptureBalance, ExecutionAccountCaptureError, ExecutionAccountCaptureOrder,
+    ExecutionAccountCapturePosition, ExecutionAccountCaptureProbe, ExecutionAccountCaptureSource,
+    ExecutionAccountSnapshot,
+};
 pub use data::DataClient;
 pub use execution::{DEFAULT_POSITION_RECONCILIATION_TOLERANCE, ExecutionClient};
 pub use journal::{ExecutionJournalIdentity, ExecutionJournalIdentityProbe};

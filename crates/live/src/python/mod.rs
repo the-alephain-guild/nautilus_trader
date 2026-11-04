@@ -15,6 +15,7 @@
 
 //! Python bindings from [PyO3](https://pyo3.rs).
 
+pub mod account_capture;
 pub mod config;
 pub mod journal;
 pub mod node;
@@ -35,6 +36,7 @@ pyo3_stub_gen::reexport_module_members!(
 /// Returns a `PyErr` if registering any module components fails.
 #[pymodule]
 pub fn live(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<account_capture::PyExecutionAccountCaptureHandle>()?;
     m.add_class::<journal::PyExecutionJournalIdentityProbe>()?;
     m.add_class::<node::PyLiveNode>()?;
     m.add_class::<node::PyLiveNodeHandle>()?;

@@ -1281,6 +1281,67 @@ impl OrderMatchingEngine {
         self.core.get_orders()
     }
 
+    /// Returns whether native updates or fills are still absent from their actual cache owner.
+    ///
+    /// Retained acknowledgements do not become pending work again merely because
+    /// the next market-data iteration has not pruned its bookkeeping maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for conflicting cache/entity borrows or missing account state.
+    pub fn account_capture_has_pending_work(
+        &self,
+        account_id: &AccountId,
+    ) -> Result<bool, nautilus_common::clients::ExecutionAccountCaptureError> {
+        use nautilus_common::clients::ExecutionAccountCaptureError::Borrowed;
+        let updates = self
+            .pending_order_updates
+            .try_borrow()
+            .map_err(|_| Borrowed)?;
+        if self.pending_resolution || self.queue_snapshot_in_progress {
+            return Ok(true);
+        }
+        if updates.is_empty() && self.pending_fills.is_empty() {
+            return Ok(false);
+        }
+        let cache = self.cache.try_borrow().map_err(|_| Borrowed)?;
+        // Validate every entity borrow before using the normal owned accessors,
+        // no callback or await can introduce another mutable borrow in this scope.
+        let _validated = cache.capture_account_state(account_id)?;
+        for (id, pending) in updates.iter() {
+            let Some(order) = cache.order_owned(id) else {
+                return Ok(true);
+            };
+            if !order.is_closed() && pending.iter().any(|update| {
+                !order.events().iter().any(|event| {
+                    matches!(event, OrderEventAny::Updated(applied) if applied.event_id == update.event_id)
+                })
+            }) {
+                return Ok(true);
+            }
+        }
+        for (trade_id, fill) in &self.pending_fills {
+            let position_id = fill
+                .position_id
+                .or_else(|| cache.position_id(&fill.client_order_id).copied());
+            let Some(position) = position_id.and_then(|id| cache.position_owned(&id)) else {
+                return Ok(true);
+            };
+            if position.account_id != *account_id {
+                return Ok(true);
+            }
+            let applied = position.trade_ids.contains(trade_id)
+                || position.replay_events.iter().any(|event| {
+                    matches!(event, PositionReplayEvent::Filled(event) if event.trade_id == *trade_id)
+                })
+                || cache.position_snapshots(Some(&position.id), None).iter().any(|snapshot| snapshot.trade_ids.contains(trade_id));
+            if !applied {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     #[must_use]
     /// Returns true if an order with the given client order ID exists in the matching engine.
     pub fn order_exists(&self, client_order_id: ClientOrderId) -> bool {

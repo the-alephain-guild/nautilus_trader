@@ -13,5 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+mod account_capture;
 mod execution;
 mod python;

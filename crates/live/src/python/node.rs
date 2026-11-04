@@ -905,6 +905,26 @@ impl PyLiveNode {
         }
     }
 
+    /// Captures a read-only queue handle from the actual sole execution client.
+    ///
+    /// Capture this before `run_async` takes the node, the handle remains a value
+    /// transport and never moves native account state to the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a running node, an unknown or unsupported client, or multiple clients.
+    #[pyo3(name = "account_capture_handle")]
+    fn py_account_capture_handle(
+        &self,
+        client_id: ClientId,
+    ) -> PyResult<super::account_capture::PyExecutionAccountCaptureHandle> {
+        let inner = self
+            .node()?
+            .account_capture_handle(client_id)
+            .map_err(to_pyruntime_err)?;
+        Ok(super::account_capture::PyExecutionAccountCaptureHandle { inner })
+    }
+
     /// Captures a supported execution client's read-only journal identity probe.
     ///
     /// Capture this before `run_async` takes the node. Subsequent probe reads do not borrow the

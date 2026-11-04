@@ -177,6 +177,8 @@ pub(crate) enum PendingRunnerEvent {
 }
 
 pub struct AsyncRunner {
+    #[cfg(feature = "node")]
+    pub(crate) capture_progress: std::sync::Arc<crate::node::account_capture::CaptureProgress>,
     channels: AsyncRunnerChannels,
     time_evt_tx: tokio::sync::mpsc::UnboundedSender<TimeEventMessage>,
     system_evt_tx: tokio::sync::mpsc::UnboundedSender<SystemEvent>,
@@ -236,6 +238,8 @@ impl AsyncRunner {
         let (data_cmd_tx, data_cmd_rx) = unbounded_channel::<DataCommand>();
 
         Self {
+            #[cfg(feature = "node")]
+            capture_progress: Arc::default(),
             channels: AsyncRunnerChannels {
                 time_evt_rx,
                 system_evt_rx,
@@ -263,6 +267,8 @@ impl AsyncRunner {
     /// and again before entering the event loop to reclaim ownership if another
     /// runner was constructed on this thread in the interim.
     pub fn bind_senders(&self) {
+        #[cfg(feature = "node")]
+        self.capture_progress.bind();
         replace_time_event_sender(Arc::new(AsyncTimeEventSender::new(
             self.time_evt_tx.clone(),
         )));
@@ -413,18 +419,28 @@ impl AsyncRunner {
     #[inline]
     #[must_use]
     pub fn handle_time_event(message: TimeEventMessage) -> bool {
+        #[cfg(feature = "node")]
+        let _capture_dispatch =
+            crate::node::account_capture::dispatch_guard(crate::node::account_capture::TIME_EVENTS);
         message.dispatch()
     }
 
     /// Handles a data command by sending to the `DataEngine`.
     #[inline]
     pub fn handle_data_command(cmd: DataCommand) {
+        #[cfg(feature = "node")]
+        let _capture_dispatch = crate::node::account_capture::dispatch_guard(
+            crate::node::account_capture::DATA_COMMANDS,
+        );
         msgbus::send_data_command(MessagingSwitchboard::data_engine_execute(), cmd);
     }
 
     /// Handles a data event by sending to the appropriate `DataEngine` endpoint.
     #[inline]
     pub fn handle_data_event(event: DataEvent) {
+        #[cfg(feature = "node")]
+        let _capture_dispatch =
+            crate::node::account_capture::dispatch_guard(crate::node::account_capture::DATA_EVENTS);
         match event {
             DataEvent::Data(data) => {
                 msgbus::send_data(MessagingSwitchboard::data_engine_process_data(), data);
@@ -454,12 +470,20 @@ impl AsyncRunner {
     /// Dispatches an internal execution command directly to the execution engine.
     #[inline]
     pub fn handle_exec_command(cmd: TradingCommand) {
+        #[cfg(feature = "node")]
+        let _capture_dispatch = crate::node::account_capture::dispatch_guard(
+            crate::node::account_capture::EXEC_COMMANDS,
+        );
         msgbus::send_trading_command(MessagingSwitchboard::exec_engine_execute(), cmd);
     }
 
     /// Dispatches a deferred trading command to its direct endpoint.
     #[inline]
     pub fn handle_trading_command(message: TradingCommandMessage) {
+        #[cfg(feature = "node")]
+        let _capture_dispatch = crate::node::account_capture::dispatch_guard(
+            crate::node::account_capture::EXEC_COMMANDS,
+        );
         let mut messages = vec![message];
         while let Some(message) = messages.pop() {
             messages.extend(message.dispatch().into_iter().rev());
@@ -469,6 +493,9 @@ impl AsyncRunner {
     /// Handles an execution event by sending to the appropriate engine endpoint.
     #[inline]
     pub fn handle_exec_event(event: ExecutionEvent) {
+        #[cfg(feature = "node")]
+        let _capture_dispatch =
+            crate::node::account_capture::dispatch_guard(crate::node::account_capture::EXEC_EVENTS);
         match event {
             ExecutionEvent::Order(order_event) => {
                 msgbus::send_order_event(MessagingSwitchboard::exec_engine_process(), order_event);
@@ -511,6 +538,9 @@ impl AsyncRunner {
 
     #[inline]
     pub fn handle_exec_report(report: ExecutionReport) {
+        #[cfg(feature = "node")]
+        let _capture_dispatch =
+            crate::node::account_capture::dispatch_guard(crate::node::account_capture::EXEC_EVENTS);
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_execution_report(endpoint, report);
     }
@@ -728,6 +758,8 @@ mod tests {
         let (exec_cmd_tx, _) = tokio::sync::mpsc::unbounded_channel();
 
         AsyncRunner {
+            #[cfg(feature = "node")]
+            capture_progress: Arc::default(),
             channels: AsyncRunnerChannels {
                 time_evt_rx,
                 system_evt_rx,

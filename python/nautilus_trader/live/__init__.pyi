@@ -14,6 +14,7 @@ from nautilus_trader.portfolio import PortfolioConfig
 
 __all__ = [
     "DataClientConfig",
+    "ExecutionAccountCaptureHandle",
     "ExecutionClientConfig",
     "ExecutionJournalIdentityProbe",
     "InstrumentProviderConfig",
@@ -356,6 +357,11 @@ class PluginConfig:
     ) -> PluginConfig: ...
 
 @typing.final
+class ExecutionAccountCaptureHandle:
+    def source_json(self) -> str: ...
+    def capture_json(self, timeout_ms: int = 1000) -> collections.abc.Awaitable[str]: ...
+
+@typing.final
 class ExecutionJournalIdentityProbe:
     def snapshot_json(self) -> str: ...
     def order_evidence_json(self, client_order_id: str) -> str: ...
@@ -382,6 +388,9 @@ class LiveNode:
         name: str, trader_id: model.TraderId, environment: common.Environment
     ) -> LiveNodeBuilder: ...
     def handle(self) -> LiveNodeHandle: ...
+    def account_capture_handle(
+        self, client_id: model.ClientId
+    ) -> ExecutionAccountCaptureHandle: ...
     def journal_identity_probe(
         self, client_id: model.ClientId, *, require_sole_execution_client: bool = False
     ) -> ExecutionJournalIdentityProbe: ...

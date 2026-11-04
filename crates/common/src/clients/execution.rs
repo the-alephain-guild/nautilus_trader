@@ -32,7 +32,7 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use super::{ExecutionJournalIdentityProbe, log_not_implemented};
+use super::{ExecutionAccountCaptureProbe, ExecutionJournalIdentityProbe, log_not_implemented};
 use crate::messages::execution::{
     BatchCancelOrders, BatchModifyOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
     GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -59,6 +59,11 @@ pub trait ExecutionClient {
     fn venue(&self) -> Venue;
     fn oms_type(&self) -> OmsType;
     fn get_account(&self) -> Option<AccountAny>;
+
+    /// Returns a thread-affine read-only probe from the actual account owner.
+    fn account_capture_probe(&self) -> Option<std::rc::Rc<dyn ExecutionAccountCaptureProbe>> {
+        None
+    }
 
     /// Returns a read-only probe for a supported persistent journal.
     ///

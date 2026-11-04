@@ -53,6 +53,7 @@ python = [
   "nautilus-testkit?/python",
   "nautilus-trading/python",
   "pyo3",
+  "pyo3-async-runtimes",
   "pyo3-stub-gen",
   "streaming",
 ]
@@ -115,11 +116,13 @@ rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tabled = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 ustr = { workspace = true }
 
 pyo3 = { workspace = true, optional = true }
+pyo3-async-runtimes = { workspace = true, optional = true }
 pyo3-stub-gen = { workspace = true, optional = true }
 
 [dev-dependencies]

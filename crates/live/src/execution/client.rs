@@ -175,6 +175,12 @@ impl LiveExecutionClient {
 
 #[async_trait(?Send)]
 impl ExecutionClient for LiveExecutionClient {
+    fn account_capture_probe(
+        &self,
+    ) -> Option<Rc<dyn nautilus_common::clients::ExecutionAccountCaptureProbe>> {
+        self.client.try_borrow().ok()?.account_capture_probe()
+    }
+
     fn journal_identity_probe(&self) -> Option<Arc<dyn ExecutionJournalIdentityProbe>> {
         self.client.borrow().journal_identity_probe()
     }

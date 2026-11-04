@@ -202,6 +202,229 @@ fn execution_client(test_context: TestContext) -> SandboxExecutionClient {
     test_context.client
 }
 
+#[rstest]
+fn test_account_capture_never_substitutes_starting_balances(test_context: TestContext) {
+    let probe = test_context
+        .client
+        .account_capture_probe()
+        .expect("Sandbox exposes its actual account owner");
+
+    let result = probe.capture();
+
+    assert!(
+        result.is_err(),
+        "An uninitialized account is not its configured balance"
+    );
+}
+
+#[rstest]
+fn test_account_capture_source_binds_the_actual_base_denomination(
+    trader_id: TraderId,
+    account_id: AccountId,
+    venue: Venue,
+) {
+    let original = create_test_context_with(trader_id, account_id, venue, |config| {
+        config.base_currency = Some(Currency::USD());
+    });
+    let changed = create_test_context_with(trader_id, account_id, venue, |config| {
+        let mut denomination = Currency::USD();
+        denomination.precision += 1;
+        config.base_currency = Some(denomination);
+    });
+    let original = original.client.account_capture_probe().unwrap();
+    let changed = changed.client.account_capture_probe().unwrap();
+    assert_ne!(
+        original.source().configuration_sha256,
+        changed.source().configuration_sha256,
+        "Code-only currency serialization must not erase the actual native configuration"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_account_capture_reads_the_actual_account_and_retires(
+    trader_id: TraderId,
+    account_id: AccountId,
+    venue: Venue,
+) {
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let mut context = create_test_context_with(trader_id, account_id, venue, |config| {
+        config.account_type = AccountType::Cash;
+        config.starting_balances = vec![Money::from("100 USD"), Money::from("2 BTC")];
+    });
+    setup_account_state_handler(context.cache.clone());
+    let probe = context.client.account_capture_probe().unwrap();
+    context.client.connect().await.unwrap();
+    let initial = probe.capture().unwrap();
+    assert!(initial.no_borrowing_model);
+    assert_eq!(initial.balances.len(), 2);
+    assert_eq!(initial.balances[0].asset_code, "BTC");
+    assert_eq!(initial.balances[0].total, "2");
+    assert_eq!(initial.source.configuration_sha256.len(), 64);
+
+    {
+        let mut cache = context.cache.borrow_mut();
+        let mut account = cache.account_owned(&account_id).unwrap();
+        let mut state = account.events().last().unwrap().clone();
+        state.event_id = UUID4::new();
+        *state
+            .balances
+            .iter_mut()
+            .find(|balance| balance.currency == Currency::USD())
+            .unwrap() = nautilus_model::types::AccountBalance::new(
+            Money::from("91 USD"),
+            Money::from("1 USD"),
+            Money::from("90 USD"),
+        );
+        state
+            .balances
+            .push(nautilus_model::types::AccountBalance::new(
+                Money::from("3 ETH"),
+                Money::zero(Currency::ETH()),
+                Money::from("3 ETH"),
+            ));
+        account.apply(state).unwrap();
+        cache.update_account(&account).unwrap();
+    }
+    let updated = probe.capture().unwrap();
+    assert_eq!(
+        updated
+            .balances
+            .iter()
+            .find(|balance| balance.asset_code == "USD")
+            .unwrap()
+            .total,
+        "91"
+    );
+    assert_eq!(
+        updated
+            .balances
+            .iter()
+            .find(|row| row.asset_code == "ETH")
+            .unwrap()
+            .total,
+        "3"
+    );
+    assert_eq!(updated.source.incarnation, initial.source.incarnation);
+    {
+        let _held = context.cache.borrow_mut();
+        assert_eq!(
+            probe.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Borrowed
+        );
+    }
+    *context.cache.borrow_mut() = Cache::default();
+    assert_eq!(
+        probe.capture().unwrap_err(),
+        nautilus_common::clients::ExecutionAccountCaptureError::AccountUnavailable
+    );
+    context.client.disconnect().await.unwrap();
+    assert_eq!(
+        probe.capture().unwrap_err(),
+        nautilus_common::clients::ExecutionAccountCaptureError::Retired
+    );
+}
+
+#[rstest]
+#[case::precision(0)]
+#[case::currency_type(1)]
+#[case::iso4217(2)]
+#[case::mixed_balance_denominations(3)]
+#[case::current_account_base_denomination(4)]
+#[tokio::test]
+async fn test_account_capture_rejects_same_code_denomination_changes(
+    trader_id: TraderId,
+    account_id: AccountId,
+    venue: Venue,
+    #[case] change: u8,
+) {
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let mut context = create_test_context_with(trader_id, account_id, venue, |config| {
+        config.account_type = AccountType::Cash;
+        config.starting_balances = vec![Money::from("100 USD")];
+    });
+    setup_account_state_handler(context.cache.clone());
+    let probe = context.client.account_capture_probe().unwrap();
+    context.client.connect().await.unwrap();
+    assert!(probe.capture().is_ok());
+    {
+        let mut cache = context.cache.borrow_mut();
+        let mut account = cache.account_owned(&account_id).unwrap();
+        let mut state = account.events().last().unwrap().clone();
+        state.event_id = UUID4::new();
+        let mut changed = Currency::USD();
+        match change {
+            0 | 3 | 4 => changed.precision += 1,
+            1 => changed.currency_type = nautilus_model::enums::CurrencyType::Crypto,
+            2 => changed.iso4217 += 1,
+            _ => unreachable!(),
+        }
+        let total_currency = if change >= 3 {
+            Currency::USD()
+        } else {
+            changed
+        };
+        state.balances = vec![nautilus_model::types::AccountBalance::new(
+            Money::new(100.0, total_currency),
+            Money::zero(if change == 4 {
+                Currency::USD()
+            } else {
+                changed
+            }),
+            Money::new(100.0, total_currency),
+        )];
+        account.apply(state).unwrap();
+        if change == 4 {
+            let AccountAny::Cash(cash) = &mut account else {
+                unreachable!()
+            };
+            cash.base.base_currency = Some(changed);
+        }
+        cache.update_account(&account).unwrap();
+    }
+    assert_eq!(
+        probe.capture().unwrap_err(),
+        nautilus_common::clients::ExecutionAccountCaptureError::InconsistentState
+    );
+    context.client.disconnect().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_account_capture_keeps_negative_native_balances_without_claiming_no_borrowing(
+    trader_id: TraderId,
+    account_id: AccountId,
+    venue: Venue,
+) {
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let mut context = create_test_context_with(trader_id, account_id, venue, |config| {
+        config.account_type = AccountType::Margin;
+        config.starting_balances = vec![Money::from("100 USD")];
+    });
+    setup_account_state_handler(context.cache.clone());
+    let probe = context.client.account_capture_probe().unwrap();
+    context.client.connect().await.unwrap();
+    {
+        let mut cache = context.cache.borrow_mut();
+        let mut account = cache.account_owned(&account_id).unwrap();
+        let mut state = account.events().last().unwrap().clone();
+        state.event_id = UUID4::new();
+        state.balances = vec![nautilus_model::types::AccountBalance::new(
+            Money::from("-1.25 USD"),
+            Money::zero(Currency::USD()),
+            Money::from("-1.25 USD"),
+        )];
+        account.apply(state).unwrap();
+        cache.update_account(&account).unwrap();
+    }
+    let captured = probe.capture().unwrap();
+    assert_eq!(captured.balances[0].total, "-1.25");
+    assert_eq!(captured.balances[0].free, "-1.25");
+    assert!(!captured.no_borrowing_model);
+    assert_eq!(captured.source.account_type, "MARGIN");
+    context.client.disconnect().await.unwrap();
+}
+
 fn create_quote_tick_with_price_precision(
     instrument_id: InstrumentId,
     bid: f64,
@@ -3855,4 +4078,120 @@ fn test_batch_reduce_only_modifies_share_pending_position_quantity(
     drop(position);
     drop(cache);
     engine.stop();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_account_capture_keeps_resting_orders_from_every_actual_matching_engine(
+    trader_id: TraderId,
+    account_id: AccountId,
+) {
+    use nautilus_model::instruments::stubs::currency_pair_btcusdt;
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let instruments = [
+        InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt()),
+        InstrumentAny::CurrencyPair(currency_pair_btcusdt()),
+    ];
+    let mut context =
+        create_test_context_with(trader_id, account_id, instruments[0].id().venue, |config| {
+            config.base_currency = Some(Currency::USDT());
+            config.starting_balances = vec![Money::from("100000 USDT")];
+        });
+    setup_account_state_handler(context.cache.clone());
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    nautilus_common::live::runner::replace_exec_event_sender(sender);
+    context.client.start().unwrap();
+    context.client.connect().await.unwrap();
+    for (index, instrument) in instruments.iter().enumerate() {
+        context
+            .cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let price =
+            Price::from_decimal_dp(Decimal::from(100), instrument.price_precision()).unwrap();
+        let size =
+            Quantity::from_decimal_dp(Decimal::from(100), instrument.size_precision()).unwrap();
+        context
+            .client
+            .process_quote_tick(&QuoteTick::new(
+                instrument.id(),
+                price,
+                price,
+                size,
+                size,
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+            ))
+            .unwrap();
+        let order = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(trader_id)
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from(format!("CAPTURE-RESTING-{index}")))
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from_decimal_dp(Decimal::ONE, instrument.size_precision()).unwrap())
+            .price(Price::from_decimal_dp(Decimal::from(50), instrument.price_precision()).unwrap())
+            .build();
+        context
+            .cache
+            .borrow_mut()
+            .add_order(order.clone(), None, Some(context.client.client_id()), false)
+            .unwrap();
+        context
+            .client
+            .submit_order(SubmitOrder::from_order(
+                &order,
+                trader_id,
+                Some(context.client.client_id()),
+                None,
+                UUID4::new(),
+                UnixNanos::from(2),
+            ))
+            .unwrap();
+        apply_order_events_from_channel(&context.cache, &mut events);
+    }
+    assert_eq!(context.client.matching_engine_count(), 2);
+    let captured = context
+        .client
+        .account_capture_probe()
+        .unwrap()
+        .capture()
+        .unwrap();
+    assert_eq!(captured.orders.len(), 2);
+    assert!(captured.orders.iter().all(|order| order.in_matching_engine
+        && !order.pending
+        && order.price.as_deref() == Some("50")));
+    assert_ne!(
+        captured.orders[0].instrument_id,
+        captured.orders[1].instrument_id
+    );
+    // A sole execution client can also receive default-routed commands. Until
+    // account assignment, a different instrument venue cannot prove exclusion.
+    let intent_id = ClientOrderId::from("CAPTURE-UNASSIGNED");
+    let intent = OrderTestBuilder::new(OrderType::Market)
+        .trader_id(trader_id)
+        .instrument_id(InstrumentId::from("ETHUSDT.UNROUTED"))
+        .client_order_id(intent_id)
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from("1"))
+        .build();
+    context
+        .cache
+        .borrow_mut()
+        .add_order(intent, None, Some(context.client.client_id()), false)
+        .unwrap();
+    let with_intent = context
+        .client
+        .account_capture_probe()
+        .unwrap()
+        .capture()
+        .unwrap();
+    let pending = with_intent
+        .orders
+        .iter()
+        .find(|order| order.client_order_id == intent_id.as_str())
+        .expect("An unassigned route is potential account work, not an empty order set");
+    assert!(pending.pending);
+    assert!(!pending.in_matching_engine);
+    context.client.stop().unwrap();
 }
