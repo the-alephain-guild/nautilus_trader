@@ -15,6 +15,10 @@
 
 //! Tests for sandbox execution client.
 
+#[cfg(feature = "python")]
+#[path = "execution/hosted_emulator_callbacks.rs"]
+mod hosted_emulator_callbacks;
+
 use std::{cell::RefCell, rc::Rc};
 
 use nautilus_common::{
@@ -2511,6 +2515,24 @@ mod hosted_account_connect {
         queries: Rc<RefCell<Vec<(QueryAccount, ConnectPhase)>>>,
         stopped: Rc<Cell<usize>>,
         completed_query_callback: Option<pyo3::Py<pyo3::PyAny>>,
+    }
+
+    pub(super) fn ready_hosted_sandbox_client(
+        inner: SandboxExecutionClient,
+        waiting_callback: pyo3::Py<pyo3::PyAny>,
+        stopped: Rc<Cell<usize>>,
+    ) -> Box<dyn ExecutionClient> {
+        let (finish_tx, finish_rx) = oneshot::channel();
+        finish_tx.send(()).unwrap();
+        Box::new(HeldSandboxConnect {
+            inner,
+            finish: Some(finish_rx),
+            phase: Rc::new(Cell::new(ConnectPhase::Before)),
+            waiting_callback,
+            queries: Rc::new(RefCell::new(Vec::new())),
+            stopped,
+            completed_query_callback: None,
+        })
     }
 
     #[async_trait::async_trait(?Send)]
