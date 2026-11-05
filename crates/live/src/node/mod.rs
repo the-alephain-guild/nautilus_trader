@@ -8328,6 +8328,171 @@ mod tests {
         node.dispose();
     }
 
+    #[expect(
+        clippy::await_holding_refcell_ref,
+        reason = "the connection owner keeps its actual engine borrow until the test-controlled return"
+    )]
+    async fn hold_engine_connect_return(
+        engine: Rc<RefCell<ExecutionEngine>>,
+        finish: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let mut owner = engine.borrow_mut();
+        owner.connect().await;
+        finish.await.unwrap();
+        drop(owner);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_pending_account_callback_uses_actual_async_command_buffer() {
+        use std::task::Poll;
+
+        use nautilus_model::{accounts::Account, events::PortfolioSnapshot};
+
+        let trader_id = TraderId::from("ASYNC-BUFFER-001");
+        let account_id = AccountId::from("BUFFER-001");
+        let mut node = LiveNode::builder(trader_id, Environment::Sandbox)
+            .unwrap()
+            .with_logging(nautilus_common::logging::logger::LoggerConfig {
+                bypass_logging: true,
+                ..Default::default()
+            })
+            .with_reconciliation(false)
+            .build()
+            .unwrap();
+        let engine = node.kernel().exec_engine().clone();
+        let cache = node.kernel().cache();
+        let runner = node.runner.take().unwrap();
+        runner.bind_senders();
+        let AsyncRunnerChannels {
+            mut time_evt_rx,
+            mut system_evt_rx,
+            mut system_cmd_rx,
+            mut exec_evt_rx,
+            mut exec_cmd_rx,
+            mut data_evt_rx,
+            mut data_cmd_rx,
+        } = runner.take_channels();
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let direct = received.clone();
+        let direct_engine = engine.clone();
+        // This recipient measures dispatch only; the Sandbox hosted tests prove real query effects
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_execute(),
+            TypedIntoHandler::from(move |command: TradingCommand| {
+                assert!(direct_engine.try_borrow_mut().is_ok());
+                direct.borrow_mut().push(command);
+            }),
+        );
+        let balance = Money::from("100000 USD");
+        let original = AccountState::new(
+            account_id,
+            AccountType::Cash,
+            vec![AccountBalance::new(balance, Money::from("0 USD"), balance)],
+            Vec::new(),
+            true,
+            UUID4::new(),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+            Some(Currency::USD()),
+        );
+        let ids = [UUID4::new(), UUID4::new()];
+        let commands = ids.map(|id| {
+            QueryAccount::new(
+                trader_id,
+                None,
+                account_id,
+                id,
+                UnixNanos::from(1),
+                None,
+                None,
+            )
+        });
+        let command_templates = commands.clone();
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let snapshots = observed.clone();
+        let callback_cache = cache.clone();
+        let callback_engine = engine.clone();
+        let original_id = original.event_id;
+        let handler = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
+            let current = callback_cache.borrow().account_owned(&account_id).unwrap();
+            assert_eq!(current.balance_total(None), Some(balance));
+            assert_eq!(current.events().len(), 1);
+            assert_eq!(current.last_event().unwrap().event_id, original_id);
+            assert!(callback_engine.try_borrow_mut().is_err());
+            snapshots.borrow_mut().push(snapshot.clone());
+            for template in &command_templates {
+                let mut command = template.clone();
+                command.causation_id = Some(snapshot.event_id);
+                msgbus::send_trading_command(
+                    MessagingSwitchboard::exec_engine_queue_execute(),
+                    TradingCommand::QueryAccount(command),
+                );
+            }
+        });
+        msgbus::subscribe_portfolio_snapshot("events.portfolio.*".into(), handler.clone(), None);
+        get_exec_event_sender()
+            .send(ExecutionEvent::Account(original))
+            .unwrap();
+        let (finish, waiting) = tokio::sync::oneshot::channel();
+        let mut pending = PendingEvents::default();
+        let mut driven = Box::pin(drive_with_event_buffering(
+            hold_engine_connect_return(engine.clone(), waiting),
+            &mut pending,
+            &mut time_evt_rx,
+            &mut system_evt_rx,
+            &mut system_cmd_rx,
+            &mut exec_evt_rx,
+            &mut exec_cmd_rx,
+            &mut data_evt_rx,
+            &mut data_cmd_rx,
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(driven.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(observed.borrow().len(), 1);
+        assert!(engine.try_borrow_mut().is_err());
+        assert!(received.borrow().is_empty());
+        finish.send(()).unwrap();
+        driven.await;
+
+        assert!(engine.try_borrow_mut().is_ok());
+        assert_eq!(exec_evt_rx.len(), 0);
+        assert_eq!(exec_cmd_rx.len(), 0);
+        assert_eq!(pending.exec_cmds.len(), 2);
+        assert!(received.borrow().is_empty());
+        for (index, message) in pending.exec_cmds.iter().enumerate() {
+            let mut expected = commands[index].clone();
+            expected.causation_id = Some(observed.borrow()[0].event_id);
+            assert_eq!(
+                message.endpoint(),
+                MessagingSwitchboard::exec_engine_execute()
+            );
+            assert_eq!(message.command(), &TradingCommand::QueryAccount(expected));
+        }
+        pending.drain();
+        assert!(pending.exec_cmds.is_empty());
+        assert_eq!(received.borrow().len(), 2);
+        for (index, message) in received.borrow().iter().enumerate() {
+            let mut expected = commands[index].clone();
+            expected.causation_id = Some(observed.borrow()[0].event_id);
+            assert_eq!(message, &TradingCommand::QueryAccount(expected));
+        }
+        assert_eq!(
+            cache
+                .borrow()
+                .account_owned(&account_id)
+                .unwrap()
+                .events()
+                .len(),
+            1
+        );
+        msgbus::unsubscribe_portfolio_snapshot("events.portfolio.*".into(), &handler);
+        node.dispose();
+    }
+
     #[rstest]
     fn test_flush_all_pending_drains_buffered_channels() {
         let (time_tx, mut time_rx) = tokio::sync::mpsc::unbounded_channel::<TimeEventMessage>();

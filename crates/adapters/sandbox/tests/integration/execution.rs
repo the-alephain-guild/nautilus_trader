@@ -2452,6 +2452,621 @@ def cleanup(): directory.cleanup()
     node.dispose();
 }
 
+#[cfg(feature = "python")]
+mod hosted_account_connect {
+    use std::{any::Any, cell::Cell, sync::Mutex, time::Duration};
+
+    use nautilus_common::{
+        clients::ExecutionAccountCaptureProbe,
+        enums::Environment,
+        logging::logger::LoggerConfig,
+        messages::execution::{
+            BatchCancelOrders, CancelOrder, GenerateFillReports, GenerateOrderStatusReport,
+            GenerateOrderStatusReports, GeneratePositionStatusReports, QueryAccount, QueryOrder,
+        },
+        msgbus::{BusTap, Endpoint, MStr, Topic},
+    };
+    use nautilus_live::{
+        config::{LiveExecutionEngineConfig, LiveNodeConfig},
+        node::{NodeState, builder::LiveNodeBuilder},
+        python::node::PyLiveNode,
+    };
+    use nautilus_model::{
+        accounts::Account,
+        enums::LiquiditySide,
+        events::PortfolioSnapshot,
+        identifiers::VenueOrderId,
+        reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
+        types::{AccountBalance, MarginBalance},
+    };
+    use pyo3::types::{PyCFunction, PyDict, PyModule, PyModuleMethods, PyTuple};
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ConnectPhase {
+        Before,
+        Waiting,
+        Returned,
+        Dropped,
+    }
+
+    struct ConnectWaitGuard(Rc<Cell<ConnectPhase>>);
+
+    impl Drop for ConnectWaitGuard {
+        fn drop(&mut self) {
+            if self.0.get() == ConnectPhase::Waiting {
+                self.0.set(ConnectPhase::Dropped);
+            }
+        }
+    }
+
+    // Only the return from connect is delayed; account state and queries use the real client
+    struct HeldSandboxConnect {
+        inner: SandboxExecutionClient,
+        finish: Option<oneshot::Receiver<()>>,
+        phase: Rc<Cell<ConnectPhase>>,
+        waiting_callback: pyo3::Py<pyo3::PyAny>,
+        queries: Rc<RefCell<Vec<(QueryAccount, ConnectPhase)>>>,
+        stopped: Rc<Cell<usize>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl ExecutionClient for HeldSandboxConnect {
+        fn is_connected(&self) -> bool {
+            self.inner.is_connected()
+        }
+        fn client_id(&self) -> ClientId {
+            self.inner.client_id()
+        }
+        fn account_id(&self) -> AccountId {
+            self.inner.account_id()
+        }
+        fn venue(&self) -> Venue {
+            self.inner.venue()
+        }
+        fn oms_type(&self) -> OmsType {
+            self.inner.oms_type()
+        }
+        fn get_account(&self) -> Option<AccountAny> {
+            self.inner.get_account()
+        }
+        fn account_capture_probe(&self) -> Option<Rc<dyn ExecutionAccountCaptureProbe>> {
+            self.inner.account_capture_probe()
+        }
+        fn handles_order_venue(&self, venue: Venue) -> bool {
+            self.inner.handles_order_venue(venue)
+        }
+        fn provides_bulk_position_coverage(&self, instrument_id: InstrumentId) -> bool {
+            self.inner.provides_bulk_position_coverage(instrument_id)
+        }
+        fn position_reconciliation_tolerance(&self) -> Decimal {
+            self.inner.position_reconciliation_tolerance()
+        }
+        fn generate_account_state(
+            &self,
+            balances: Vec<AccountBalance>,
+            margins: Vec<MarginBalance>,
+            reported: bool,
+            ts_event: UnixNanos,
+            info: Option<nautilus_core::Params>,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .generate_account_state(balances, margins, reported, ts_event, info)
+        }
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.inner.start()
+        }
+        fn stop(&mut self) -> anyhow::Result<()> {
+            self.inner.stop()?;
+            self.stopped.set(self.stopped.get() + 1);
+            Ok(())
+        }
+        fn reset(&mut self) -> anyhow::Result<()> {
+            ExecutionClient::reset(&mut self.inner)
+        }
+        fn dispose(&mut self) -> anyhow::Result<()> {
+            self.inner.dispose()
+        }
+        async fn connect(&mut self) -> anyhow::Result<()> {
+            self.inner.connect().await?;
+            self.phase.set(ConnectPhase::Waiting);
+            let _guard = ConnectWaitGuard(self.phase.clone());
+            Python::attach(|py| self.waiting_callback.call0(py))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            self.finish.take().unwrap().await?;
+            self.phase.set(ConnectPhase::Returned);
+            Ok(())
+        }
+        async fn disconnect(&mut self) -> anyhow::Result<()> {
+            self.inner.disconnect().await
+        }
+        fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
+            self.inner.submit_order(cmd)
+        }
+        fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
+            self.inner.submit_order_list(cmd)
+        }
+        fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
+            self.inner.modify_order(cmd)
+        }
+        fn batch_modify_orders(&self, cmd: BatchModifyOrders) -> anyhow::Result<()> {
+            self.inner.batch_modify_orders(cmd)
+        }
+        fn cancel_order(&self, cmd: CancelOrder) -> anyhow::Result<()> {
+            self.inner.cancel_order(cmd)
+        }
+        fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
+            self.inner.batch_cancel_orders(cmd)
+        }
+        fn cancel_all_orders(&self, cmd: CancelAllOrders) -> anyhow::Result<()> {
+            self.inner.cancel_all_orders(cmd)
+        }
+        fn query_account(&self, cmd: QueryAccount) -> anyhow::Result<()> {
+            self.queries
+                .borrow_mut()
+                .push((cmd.clone(), self.phase.get()));
+            self.inner.query_account(cmd)
+        }
+        fn query_order(&self, cmd: QueryOrder) -> anyhow::Result<()> {
+            self.inner.query_order(cmd)
+        }
+        async fn generate_order_status_report(
+            &self,
+            cmd: &GenerateOrderStatusReport,
+        ) -> anyhow::Result<Option<OrderStatusReport>> {
+            self.inner.generate_order_status_report(cmd).await
+        }
+        async fn generate_order_status_reports(
+            &self,
+            cmd: &GenerateOrderStatusReports,
+        ) -> anyhow::Result<Vec<OrderStatusReport>> {
+            self.inner.generate_order_status_reports(cmd).await
+        }
+        async fn generate_fill_reports(
+            &self,
+            cmd: GenerateFillReports,
+        ) -> anyhow::Result<Vec<FillReport>> {
+            self.inner.generate_fill_reports(cmd).await
+        }
+        async fn generate_position_status_reports(
+            &self,
+            cmd: &GeneratePositionStatusReports,
+        ) -> anyhow::Result<Vec<PositionStatusReport>> {
+            self.inner.generate_position_status_reports(cmd).await
+        }
+        async fn generate_mass_status(
+            &self,
+            lookback: Option<u64>,
+        ) -> anyhow::Result<Option<ExecutionMassStatus>> {
+            self.inner.generate_mass_status(lookback).await
+        }
+        fn register_external_order(
+            &self,
+            client_order_id: ClientOrderId,
+            venue_order_id: VenueOrderId,
+            instrument_id: InstrumentId,
+            strategy_id: StrategyId,
+            ts_init: UnixNanos,
+        ) {
+            self.inner.register_external_order(
+                client_order_id,
+                venue_order_id,
+                instrument_id,
+                strategy_id,
+                ts_init,
+            );
+        }
+        fn on_instrument(&mut self, instrument: InstrumentAny) {
+            self.inner.on_instrument(instrument);
+        }
+        fn calculate_commission(
+            &self,
+            instrument: &InstrumentAny,
+            qty: Quantity,
+            price: Price,
+            side: LiquiditySide,
+        ) -> anyhow::Result<Option<Money>> {
+            self.inner
+                .calculate_commission(instrument, qty, price, side)
+        }
+    }
+
+    struct HostedQueryTap {
+        engine: Rc<RefCell<ExecutionEngine>>,
+        queued: Rc<RefCell<Vec<QueryAccount>>>,
+        dispatched: Rc<RefCell<Vec<QueryAccount>>>,
+        callback: pyo3::Py<pyo3::PyAny>,
+    }
+
+    impl BusTap for HostedQueryTap {
+        fn on_publish(&self, _topic: MStr<Topic>, _message: &dyn Any) {}
+        fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+            let Some(TradingCommand::QueryAccount(query)) =
+                message.downcast_ref::<TradingCommand>()
+            else {
+                return;
+            };
+            if endpoint == MessagingSwitchboard::exec_engine_queue_execute() {
+                self.queued.borrow_mut().push(query.clone());
+            } else if endpoint == MessagingSwitchboard::exec_engine_execute() {
+                assert!(self.engine.try_borrow_mut().is_ok());
+                self.dispatched.borrow_mut().push(query.clone());
+                Python::attach(|py| {
+                    self.callback
+                        .call1(py, (query.command_id.to_string(),))
+                        .unwrap();
+                });
+            }
+        }
+    }
+
+    #[rstest]
+    #[case::normal("normal")]
+    #[case::timeout("timeout")]
+    #[case::cancel("cancel")]
+    fn test_run_async_buffers_callback_queries_until_connect_finishes(#[case] outcome: &str) {
+        Python::initialize();
+        let trader_id = TraderId::from("HOSTED-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("HOSTED");
+        let timeout = if outcome == "timeout" {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(3)
+        };
+        let node_config = LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: timeout,
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::ZERO,
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let node = LiveNodeBuilder::from_config(node_config)
+            .unwrap()
+            .with_logging(LoggerConfig {
+                bypass_logging: true,
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let handle = node.handle();
+        let (finish_tx, finish_rx) = oneshot::channel();
+        let finish_tx = Mutex::new(Some(finish_tx));
+        let query_ids = [UUID4::new(), UUID4::new(), UUID4::new()];
+        let query_template: Vec<_> = query_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                QueryAccount::new(
+                    trader_id,
+                    Some(client_id),
+                    account_id,
+                    *id,
+                    UnixNanos::from(100 + index as u64),
+                    None,
+                    None,
+                )
+            })
+            .collect();
+        let queue_template = query_template.clone();
+        let observer = Python::attach(|py| {
+            let module = PyModule::new(py, "hosted_account_observer").unwrap();
+            let enqueue = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _kwargs| -> pyo3::PyResult<()> {
+                    let cause: UUID4 = args
+                        .get_item(0)?
+                        .extract::<String>()?
+                        .parse()
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                    let late = args.get_item(1)?.extract::<bool>()?;
+                    for template in if late {
+                        &queue_template[2..]
+                    } else {
+                        &queue_template[..2]
+                    } {
+                        let mut query = template.clone();
+                        query.causation_id = Some(cause);
+                        msgbus::send_trading_command(
+                            MessagingSwitchboard::exec_engine_queue_execute(),
+                            TradingCommand::QueryAccount(query),
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+            module.setattr("enqueue", enqueue).unwrap();
+            py.run(
+                c_str!(
+                    r#"
+import asyncio
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "hosted.sqlite3"
+connection = sqlite3.connect(database)
+connection.execute("CREATE TABLE observations (kind TEXT, identity TEXT)")
+connection.commit()
+connection.close()
+pending = asyncio.Event()
+queries_done = asyncio.Event()
+snapshots = []
+dispatches = []
+
+def on_snapshot(snapshot_id, account_event_id, balance, borrowed):
+    with sqlite3.connect(database, timeout=0) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO observations VALUES ('snapshot', ?)", (snapshot_id,))
+    snapshots.append((snapshot_id, account_event_id, balance, borrowed))
+    if len(snapshots) == 1:
+        assert borrowed
+        enqueue(snapshot_id, False)
+
+def mark_waiting():
+    pending.set()
+
+def on_dispatch(command_id):
+    with sqlite3.connect(database, timeout=0) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO observations VALUES ('dispatch', ?)", (command_id,))
+    dispatches.append(command_id)
+    if len(dispatches) == 2:
+        queries_done.set()
+
+def cleanup():
+    directory.cleanup()
+"#
+                ),
+                Some(&module.dict()),
+                None,
+            )
+            .unwrap();
+            module.unbind()
+        });
+        let phase = Rc::new(Cell::new(ConnectPhase::Before));
+        let queries = Rc::new(RefCell::new(Vec::new()));
+        let stopped = Rc::new(Cell::new(0));
+        let client_config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            account_type: AccountType::Cash,
+            base_currency: Some(Currency::USDC()),
+            starting_balances: vec![Money::from("100000 USDC")],
+            ..Default::default()
+        };
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            client_config.venue,
+            client_config.oms_type,
+            account_id,
+            client_config.account_type,
+            client_config.base_currency,
+            cache.clone(),
+        );
+        let inner =
+            SandboxExecutionClient::new(core, client_config, node.kernel().clock(), cache.clone());
+        let probe = inner.account_capture_probe().unwrap();
+        let client = HeldSandboxConnect {
+            inner,
+            finish: Some(finish_rx),
+            phase: phase.clone(),
+            waiting_callback: Python::attach(|py| {
+                observer.bind(py).getattr("mark_waiting").unwrap().unbind()
+            }),
+            queries: queries.clone(),
+            stopped: stopped.clone(),
+        };
+        engine
+            .borrow_mut()
+            .register_client(Box::new(client))
+            .unwrap();
+        let queued = Rc::new(RefCell::new(Vec::new()));
+        let dispatched = Rc::new(RefCell::new(Vec::new()));
+        msgbus::set_bus_tap(Rc::new(HostedQueryTap {
+            engine: engine.clone(),
+            queued: queued.clone(),
+            dispatched: dispatched.clone(),
+            callback: Python::attach(|py| {
+                observer.bind(py).getattr("on_dispatch").unwrap().unbind()
+            }),
+        }));
+        let snapshot_records = Rc::new(RefCell::new(Vec::new()));
+        let records = snapshot_records.clone();
+        let callback_cache = cache.clone();
+        let callback_engine = engine.clone();
+        let callback =
+            Python::attach(|py| observer.bind(py).getattr("on_snapshot").unwrap().unbind());
+        let snapshot_handler = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
+            let account = callback_cache
+                .borrow()
+                .account_owned(&snapshot.account_id)
+                .unwrap();
+            let account_event = account.last_event().unwrap();
+            assert_eq!(
+                account.balance_total(None),
+                Some(Money::from("100000 USDC"))
+            );
+            records.borrow_mut().push((
+                snapshot.clone(),
+                account_event.clone(),
+                account.events().len(),
+            ));
+            Python::attach(|py| {
+                callback
+                    .call1(
+                        py,
+                        (
+                            snapshot.event_id.to_string(),
+                            account_event.event_id.to_string(),
+                            account.balance_total(None).unwrap().to_string(),
+                            callback_engine.try_borrow_mut().is_err(),
+                        ),
+                    )
+                    .unwrap();
+            });
+        });
+        msgbus::subscribe_portfolio_snapshot(
+            "events.portfolio.*".into(),
+            snapshot_handler.clone(),
+            None,
+        );
+        let py_node = Python::attach(|py| {
+            let finish = PyCFunction::new_closure(py, None, None, move |_args, _kwargs| -> bool {
+                finish_tx
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .is_some_and(|sender| sender.send(()).is_ok())
+            })
+            .unwrap();
+            let py_node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &py_node).unwrap();
+            globals.set_item("observer", observer.bind(py)).unwrap();
+            globals.set_item("finish_connect", finish).unwrap();
+            globals.set_item("outcome", outcome).unwrap();
+            py.run(
+                c_str!(
+                    r#"
+import asyncio
+
+async def exercise():
+    handle = node.handle()
+    task = asyncio.create_task(node.run_async())
+    await asyncio.wait_for(observer.pending.wait(), timeout=2)
+    assert not task.done()
+    assert not handle.is_running
+    assert observer.dispatches == []
+    assert len(observer.snapshots) == 1
+    if outcome == "normal":
+        assert finish_connect()
+        await asyncio.wait_for(observer.queries_done.wait(), timeout=2)
+        assert handle.is_running
+        handle.stop()
+        await asyncio.wait_for(task, timeout=3)
+    elif outcome == "cancel":
+        task.cancel()
+        checkpoint = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(checkpoint.set_result, None)
+        await checkpoint
+        assert handle.is_stopping
+        assert not task.done()
+        assert finish_connect()
+        try:
+            await asyncio.wait_for(task, timeout=3)
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("hosted cancellation was not re-raised")
+    else:
+        try:
+            await asyncio.wait_for(task, timeout=3)
+        except RuntimeError as error:
+            assert "exec-connect" in str(error), str(error)
+        else:
+            raise AssertionError("held native connect did not time out")
+    assert not handle.is_running
+    assert handle.is_stopping == (outcome != "timeout")
+    assert len(observer.dispatches) == 2
+    assert len(observer.snapshots) == 2
+    assert not finish_connect()
+    observer.enqueue(observer.snapshots[0][0], True)
+
+asyncio.run(exercise())
+"#
+                ),
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                py_node
+                    .call_method0(py, "handle")
+                    .unwrap()
+                    .getattr(py, "state")
+                    .unwrap()
+                    .extract::<NodeState>(py)
+                    .unwrap(),
+                NodeState::Stopped
+            );
+            msgbus::unsubscribe_portfolio_snapshot("events.portfolio.*".into(), &snapshot_handler);
+            msgbus::clear_bus_tap();
+            py_node
+        });
+        assert_eq!(handle.state(), NodeState::Stopped);
+        assert!(stopped.get() >= 1);
+        assert_eq!(
+            probe.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        assert_eq!(snapshot_records.borrow().len(), 2);
+        assert_eq!(snapshot_records.borrow()[0].2, 1);
+        assert_eq!(snapshot_records.borrow()[1].2, 3);
+        let account = cache.borrow().account_owned(&account_id).unwrap();
+        assert_eq!(account.events().len(), 3);
+        let event_ids: std::collections::HashSet<_> = account
+            .events()
+            .iter()
+            .map(|event| event.event_id)
+            .collect();
+        assert_eq!(event_ids.len(), 3);
+        assert_eq!(engine.borrow().command_count(), 2);
+        assert_eq!(queued.borrow().len(), 3);
+        assert_eq!(dispatched.borrow().len(), 2);
+        assert_eq!(queries.borrow().len(), 2);
+        assert_eq!(dispatched.borrow().as_slice(), &queued.borrow()[..2]);
+        let expected_phase = if outcome == "timeout" {
+            ConnectPhase::Dropped
+        } else {
+            ConnectPhase::Returned
+        };
+        assert_eq!(phase.get(), expected_phase);
+        for (index, (query, query_phase)) in queries.borrow().iter().enumerate() {
+            assert_eq!(*query, queued.borrow()[index]);
+            assert_eq!(*query_phase, expected_phase);
+            assert_eq!(query.command_id, query_ids[index]);
+            assert_eq!(
+                query.causation_id,
+                Some(snapshot_records.borrow()[0].0.event_id)
+            );
+            assert_eq!(query.ts_init, query_template[index].ts_init);
+        }
+        eprintln!(
+            "Hosted {outcome}: query phases={:?}; direct IDs={:?}; capture retired after stop",
+            queries
+                .borrow()
+                .iter()
+                .map(|(_, phase)| *phase)
+                .collect::<Vec<_>>(),
+            dispatched
+                .borrow()
+                .iter()
+                .map(|query| query.command_id)
+                .collect::<Vec<_>>()
+        );
+        Python::attach(|py| {
+            py_node.call_method0(py, "dispose").unwrap();
+            observer.bind(py).call_method0("cleanup").unwrap();
+        });
+    }
+}
+
 #[rstest]
 #[case::normal(None)]
 #[case::first_publication_closed(Some(0))]
