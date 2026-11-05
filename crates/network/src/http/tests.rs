@@ -381,12 +381,13 @@ async fn canceled_request_releases_partial_response() {
             .unwrap();
         ready.send(()).unwrap();
         let mut byte = [0];
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(3), stream.read(&mut byte))
-                .await
-                .unwrap()
-                .unwrap(),
-            0
+        let closed = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(
+            matches!(closed, Ok(0))
+                || matches!(closed, Err(ref error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+            "canceled request kept the response connection open: {closed:?}"
         );
     });
     let client = HttpClient::builder()
