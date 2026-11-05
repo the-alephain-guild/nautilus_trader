@@ -485,9 +485,12 @@ fn first_poll(
         state.inner.lock().may_have_sent = true;
         future.as_mut().poll(&mut Context::from_waker(&waker))
     }));
-    entered
-        .finish(result.is_err())
-        .map_err(|_| HandoffFailure::ControlExit)?;
+    if entered.finish(result.is_err()).is_err() {
+        if let Ok(Poll::Ready(Ok(response))) = result {
+            state.inner.lock().response = Some(response);
+        }
+        return Err(HandoffFailure::ControlExit);
+    }
     let poll = result.map_err(|_| HandoffFailure::PollPanicked)?;
     Ok((poll, future))
 }
@@ -531,6 +534,111 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn control_exit_failure_retains_an_actual_response_in_the_ready_poll_domain() {
+        let fixture = SqliteScope::new();
+        let scope = Python::attach(|py| {
+            let module = fixture.module.bind(py);
+            py.run(
+                &CString::new(
+                    r#"
+@contextlib.contextmanager
+def failing_exit():
+    with transaction():
+        yield
+    raise RuntimeError("exit observer failed after the actual SQLite writer closed")
+"#,
+                )
+                .unwrap(),
+                Some(&module.dict()),
+                None,
+            )
+            .unwrap();
+            Arc::new(
+                PythonControlScope::new(module.getattr("failing_exit").unwrap().unbind()).unwrap(),
+            )
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                header.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let response = actual_hyper_future(address).await.unwrap();
+        server.await.unwrap();
+        // Exercise first_poll's Ready domain with an actual received response. This does not
+        // claim that the first poll of a newly created Hyper request completed synchronously.
+        let ready: TransportFuture = Box::pin(std::future::ready(Ok(response)));
+        let state = Arc::new(OperationState::default());
+        let driver_state = state.clone();
+        let runtime = Handle::current();
+        let driver = tokio::spawn(async move {
+            let worker_state = driver_state.clone();
+            let worker = tokio::task::spawn_blocking(move || {
+                let failure = first_poll(ready, &scope, &runtime, &worker_state, Arc::default())
+                    .err()
+                    .expect("the real exit observer must fail");
+                worker_state.finish(Err(failure));
+            })
+            .map(|result| {
+                classify_join(
+                    result,
+                    HandoffFailure::WorkerPanicked,
+                    HandoffFailure::WorkerLost,
+                )
+            })
+            .boxed()
+            .shared();
+            driver_state.inner.lock().worker = Some(worker.clone());
+            worker.await.unwrap();
+        });
+        state.inner.lock().driver = Some(
+            driver
+                .map(|result| {
+                    classify_join(
+                        result,
+                        HandoffFailure::DriverPanicked,
+                        HandoffFailure::DriverLost,
+                    )
+                })
+                .boxed()
+                .shared(),
+        );
+        let operation = ControlledHttpOperation {
+            state,
+            owner: Arc::default(),
+            id: 1,
+        };
+        let error = operation.wait().await.unwrap_err();
+        assert_eq!(error.failure, HandoffFailure::ControlExit);
+        assert!(error.may_have_sent);
+        fixture.assert_rows_and_unlocked(1);
+        let (first, second) = tokio::join!(
+            operation.take_received_response(),
+            operation.take_received_response(),
+        );
+        let response = match (first, second) {
+            (Some(response), None) | (None, Some(response)) => response,
+            _ => panic!("the actually received response must remain available exactly once"),
+        };
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "ok"
+        );
+        assert!(operation.take_received_response().await.is_none());
+        let error = operation.wait().await.unwrap_err();
+        assert_eq!(error.failure, HandoffFailure::ControlExit);
+        assert!(error.may_have_sent);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_hyper_future_survives_early_wakes_and_pending_owner_transfer() {
