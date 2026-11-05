@@ -57,6 +57,20 @@ impl Client {
         use_system_proxy: bool,
         settings: Settings,
     ) -> Result<Self, HttpClientError> {
+        Self::build(proxy, use_system_proxy, settings, true)
+    }
+
+    #[cfg(feature = "python")]
+    pub(super) fn new_controlled(settings: Settings) -> Result<Self, HttpClientError> {
+        Self::build(None, false, settings, false)
+    }
+
+    fn build(
+        proxy: Option<&str>,
+        use_system_proxy: bool,
+        settings: Settings,
+        retry_canceled_requests: bool,
+    ) -> Result<Self, HttpClientError> {
         let provider = rustls::crypto::CryptoProvider::get_default()
             .cloned()
             .ok_or_else(|| {
@@ -76,6 +90,7 @@ impl Client {
         let connector = HttpsConnector::from((connector, tls));
 
         let client = HyperClient::builder(TokioExecutor::new())
+            .retry_canceled_requests(retry_canceled_requests)
             .pool_timer(TokioTimer::new())
             .timer(TokioTimer::new())
             .pool_max_idle_per_host(settings.pool_max_idle_per_host)
@@ -85,6 +100,14 @@ impl Client {
             .http2_adaptive_window(settings.adaptive_window)
             .build(connector);
         Ok(Self { client, proxies })
+    }
+
+    #[cfg(feature = "python")]
+    pub(super) fn request_once(
+        &self,
+        request: Request<Full<Bytes>>,
+    ) -> hyper_util::client::legacy::ResponseFuture {
+        self.client.request(request)
     }
 
     pub(super) async fn send(
@@ -217,7 +240,7 @@ impl Policy<Full<Bytes>, HttpClientError> for Redirects {
     }
 }
 
-fn retryable(e: &(dyn Error + 'static)) -> bool {
+pub(super) fn retryable(e: &(dyn Error + 'static)) -> bool {
     let mut cause = e.source();
     while let Some(e) = cause {
         if let Some(e) = e.downcast_ref::<h2::Error>() {

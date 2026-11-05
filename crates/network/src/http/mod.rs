@@ -34,6 +34,11 @@
 //! status codes do not trigger retries. Adapters can apply [`crate::retry::RetryManager`] when the
 //! operation and venue error are safe to retry.
 //!
+//! With the `python` feature, `handoff::ControlledHttpTransport` provides a separate, bounded
+//! transport pool with same-thread synchronous Python control scopes around each initial poll.
+//! It disables library-internal canceled-request retries and preserves cleanup failures alongside
+//! received responses. This Rust-only mechanism does not grant trading or platform authority.
+//!
 //! # Connection and response policy
 //!
 //! Production clients built through [`HttpClient::builder`] enable `TCP_NODELAY`, pooled idle
@@ -50,6 +55,9 @@
 pub mod client;
 pub mod error;
 pub mod types;
+
+#[cfg(all(feature = "python", not(all(feature = "simulation", madsim))))]
+pub mod handoff;
 
 #[cfg(not(all(feature = "simulation", madsim)))]
 mod connector;

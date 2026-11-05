@@ -22,6 +22,9 @@
 #![allow(unexpected_cfgs)]
 use pyo3::prelude::*;
 
+#[cfg(not(all(feature = "simulation", madsim)))]
+pub mod control_handoff;
+
 /// Exposed through `nautilus_trader.network`.
 ///
 /// # Errors
