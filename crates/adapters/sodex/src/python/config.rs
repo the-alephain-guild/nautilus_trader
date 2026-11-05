@@ -135,6 +135,20 @@ impl SodexExecClientConfig {
         self.market
     }
 
+    /// Returns the explicitly configured numeric account id, without environment resolution.
+    #[getter]
+    #[pyo3(name = "account_id")]
+    const fn py_account_id(&self) -> Option<u64> {
+        self.account_id
+    }
+
+    /// Returns the explicitly configured public wallet address, without environment resolution.
+    #[getter]
+    #[pyo3(name = "wallet_address")]
+    fn py_wallet_address(&self) -> Option<String> {
+        self.wallet_address.clone()
+    }
+
     #[getter]
     #[pyo3(name = "timeout_secs")]
     const fn py_timeout_secs(&self) -> u64 {
