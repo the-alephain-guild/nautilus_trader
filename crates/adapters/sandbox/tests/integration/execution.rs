@@ -1758,6 +1758,1538 @@ fn test_client_stop_when_not_started(mut execution_client: SandboxExecutionClien
     assert!(result.is_ok());
 }
 
+#[cfg(feature = "python")]
+#[rstest]
+fn test_expiration_initialized_publication_waits_for_writer_exit(
+    trader_id: TraderId,
+    account_id: AccountId,
+) {
+    use pyo3::types::{PyModule, PyModuleMethods};
+
+    setup_order_event_handler();
+    let mut harness = setup_pending_resolution_harness(trader_id, account_id, "PUBLICATION-WRITER");
+    Python::initialize();
+    let module = Python::attach(|py| {
+        let module = PyModule::new(py, "initialized_publication_writer").unwrap();
+        py.run(
+            c_str!(
+                r#"
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "scope.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE observations (value INTEGER NOT NULL)")
+writer = sqlite3.connect(database, timeout=0)
+writer.execute("BEGIN IMMEDIATE")
+observed = []
+
+def observe():
+    observed.append(writer is not None)
+    connection = sqlite3.connect(database, timeout=0)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO observations VALUES (1)")
+        connection.commit()
+    finally:
+        connection.close()
+
+def close_writer():
+    global writer
+    writer.rollback()
+    writer.close()
+    writer = None
+
+def cleanup():
+    directory.cleanup()
+"#
+            ),
+            Some(&module.dict()),
+            None,
+        )
+        .unwrap();
+        module.unbind()
+    });
+    let callback = Python::attach(|py| module.bind(py).getattr("observe").unwrap().unbind());
+    let errors = Rc::new(RefCell::new(Vec::new()));
+    let callback_errors = errors.clone();
+    let handler = TypedHandler::from(move |event: &OrderEventAny| {
+        if matches!(event, OrderEventAny::Initialized(_))
+            && event.client_order_id().as_str().starts_with("EXPIRATION-")
+        {
+            Python::attach(|py| {
+                if let Err(error) = callback.call0(py) {
+                    callback_errors.borrow_mut().push(error.to_string());
+                }
+            });
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+    let close = InstrumentClose::new(
+        harness.instrument.id(),
+        Price::from("1.000"),
+        InstrumentCloseType::ContractExpired,
+        UnixNanos::from(300),
+        UnixNanos::from(300),
+    );
+    msgbus::publish_any(
+        nautilus_common::msgbus::switchboard::get_instrument_close_topic(harness.instrument.id()),
+        &close,
+    );
+    let before_exit = Python::attach(|py| {
+        let module = module.bind(py);
+        let observed = module
+            .getattr("observed")
+            .unwrap()
+            .extract::<Vec<bool>>()
+            .unwrap();
+        module.call_method0("close_writer").unwrap();
+        observed
+    });
+    if !before_exit.is_empty() {
+        Python::attach(|py| {
+            module.bind(py).call_method0("cleanup").unwrap();
+        });
+        msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+        assert!(
+            before_exit.is_empty(),
+            "Initialized reached Python before the real writer exited: {before_exit:?}; errors={:?}",
+            errors.borrow(),
+        );
+    }
+    while let Ok(event) = harness.rx.try_recv() {
+        nautilus_live::runner::AsyncRunner::handle_exec_event(event);
+    }
+    let after_exit = Python::attach(|py| {
+        let module = module.bind(py);
+        let observed = module
+            .getattr("observed")
+            .unwrap()
+            .extract::<Vec<bool>>()
+            .unwrap();
+        module.call_method0("cleanup").unwrap();
+        observed
+    });
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+    assert_eq!(after_exit, vec![false]);
+    assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_initialized_publication_channel_closed_is_not_a_success(
+    trader_id: TraderId,
+    account_id: AccountId,
+) {
+    use nautilus_common::clients::ExecutionAccountCaptureError;
+    use nautilus_execution::matching_engine::{
+        InitializedPublicationFault, InitializedPublicationSource,
+    };
+
+    setup_order_event_handler();
+    let mut harness = setup_pending_resolution_harness(trader_id, account_id, "PUBLICATION-CLOSED");
+    setup_account_state_handler(harness.context.cache.clone());
+    harness.context.client.connect().await.unwrap();
+    let probe = harness.context.client.account_capture_probe().unwrap();
+    harness.rx.close();
+    assert!(harness.rx.is_closed());
+    let initialized = Rc::new(RefCell::new(Vec::new()));
+    let observed = initialized.clone();
+    let handler = TypedHandler::from(move |event: &OrderEventAny| {
+        if let OrderEventAny::Initialized(event) = event
+            && event.client_order_id.as_str().starts_with("EXPIRATION-")
+        {
+            observed.borrow_mut().push(event.clone());
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+    let close = InstrumentClose::new(
+        harness.instrument.id(),
+        Price::from("1.000"),
+        InstrumentCloseType::ContractExpired,
+        UnixNanos::from(300),
+        UnixNanos::from(300),
+    );
+    msgbus::publish_any(
+        nautilus_common::msgbus::switchboard::get_instrument_close_topic(harness.instrument.id()),
+        &close,
+    );
+    let quote = QuoteTick::new(
+        harness.instrument.id(),
+        Price::new(0.40, 3),
+        Price::new(0.41, 3),
+        Quantity::new(100.0, 2),
+        Quantity::new(100.0, 2),
+        UnixNanos::from(301),
+        UnixNanos::from(301),
+    );
+    let result = harness.context.client.process_quote_tick(&quote);
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+    assert!(
+        result.is_err(),
+        "closed execution receiver must leave an observable owner failure, got {result:?}; synchronous Initialized publications={}",
+        initialized.borrow().len(),
+    );
+    assert!(initialized.borrow().is_empty());
+    let error = result.unwrap_err();
+    let returned = error.downcast_ref::<InitializedPublicationFault>().unwrap();
+    let retained = harness
+        .context
+        .client
+        .initialized_publication_failure()
+        .unwrap();
+    assert_eq!(returned.failure.event(), retained.failure.event());
+    let event = retained.failure.event().clone();
+    assert!(matches!(
+        retained.source,
+        InitializedPublicationSource::Expiration { close: Some(saved), .. } if saved == close
+    ));
+    let cache = harness.context.cache.clone();
+    let automatic = cache.borrow().order_owned(&event.client_order_id).unwrap();
+    assert_eq!(automatic.init_event(), &event);
+    assert_eq!(automatic.status(), OrderStatus::Initialized);
+    assert_eq!(automatic.events().len(), 1);
+    assert_eq!(
+        probe.capture().unwrap_err(),
+        ExecutionAccountCaptureError::PendingNativeState,
+    );
+    let before_orders = cache
+        .borrow()
+        .orders_total_count(None, None, None, None, None);
+    let positions_before: Vec<_> = cache
+        .borrow()
+        .positions_open(None, None, None, None, None)
+        .iter()
+        .map(|position| (position.id, position.quantity))
+        .collect();
+    msgbus::publish_any(
+        nautilus_common::msgbus::switchboard::get_instrument_close_topic(harness.instrument.id()),
+        &close,
+    );
+    let after_fault = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(harness.instrument.id())
+        .client_order_id("AFTER-TERMINAL-PUBLICATION".into())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from("1.00"))
+        .build();
+    let result = harness.context.client.submit_order(SubmitOrder::from_order(
+        &after_fault,
+        trader_id,
+        Some(harness.context.client.client_id()),
+        None,
+        UUID4::new(),
+        UnixNanos::from(301),
+    ));
+    assert!(result.unwrap_err().is::<InitializedPublicationFault>());
+    harness.context.client.reset();
+    assert_eq!(
+        harness
+            .context
+            .client
+            .initialized_publication_failure()
+            .unwrap()
+            .failure
+            .event(),
+        &event,
+    );
+    assert!(
+        harness
+            .context
+            .client
+            .process_quote_tick(&quote)
+            .unwrap_err()
+            .is::<InitializedPublicationFault>()
+    );
+    assert_eq!(
+        cache
+            .borrow()
+            .orders_total_count(None, None, None, None, None),
+        before_orders
+    );
+    let positions_after: Vec<_> = cache
+        .borrow()
+        .positions_open(None, None, None, None, None)
+        .iter()
+        .map(|position| (position.id, position.quantity))
+        .collect();
+    assert_eq!(positions_after, positions_before);
+    // An independently observed closing fill may later reach this owner. Cleanup must not
+    // discard the failed initialization merely because the original position is now closed.
+    let mut externally_closed = cache
+        .borrow()
+        .position_owned(&positions_before[0].0)
+        .unwrap();
+    let external = OrderTestBuilder::new(OrderType::Market)
+        .trader_id(externally_closed.trader_id)
+        .strategy_id(externally_closed.strategy_id)
+        .instrument_id(externally_closed.instrument_id)
+        .client_order_id("OBSERVED-EXTERNAL-CLOSE".into())
+        .side(OrderSide::Sell)
+        .quantity(externally_closed.quantity)
+        .submit(true)
+        .build();
+    let OrderEventAny::Filled(observed_close) = TestOrderEventStubs::filled(
+        &external,
+        &harness.instrument,
+        Some(TradeId::from("OBSERVED-EXTERNAL-CLOSE")),
+        Some(externally_closed.id),
+        Some(Price::from("1.000")),
+        None,
+        None,
+        Some(Money::from("0 USDC")),
+        Some(UnixNanos::from(302)),
+        Some(account_id),
+    ) else {
+        unreachable!()
+    };
+    externally_closed.apply(&observed_close);
+    assert!(externally_closed.is_closed());
+    cache
+        .borrow_mut()
+        .update_position(&externally_closed)
+        .unwrap();
+    msgbus::publish_position_event(
+        "events.position.TEST".into(),
+        &position_closed_event(&externally_closed, account_id),
+    );
+    assert_eq!(harness.context.client.matching_engine_count(), 1);
+    assert_eq!(
+        harness
+            .context
+            .client
+            .initialized_publication_failure()
+            .unwrap()
+            .failure
+            .event(),
+        &event
+    );
+    assert!(
+        harness
+            .context
+            .client
+            .process_quote_tick(&quote)
+            .unwrap_err()
+            .is::<InitializedPublicationFault>()
+    );
+    harness.context.client.stop().unwrap();
+    assert_eq!(
+        harness
+            .context
+            .client
+            .initialized_publication_failure()
+            .unwrap()
+            .failure
+            .event(),
+        &event
+    );
+}
+
+#[cfg(feature = "python")]
+#[rstest]
+#[case::existing_engine(true)]
+#[case::later_engine(false)]
+#[tokio::test]
+async fn test_real_python_strategy_observes_publication_after_writer_and_queues_child(
+    #[case] existing_engine: bool,
+) {
+    use std::sync::Arc;
+
+    use nautilus_common::{
+        enums::Environment,
+        live::runner::replace_exec_event_sender,
+        logging::logger::LoggerConfig,
+        runner::{
+            SyncTradingCommandSender, TradingCommandMessage, drain_trading_cmd_queue,
+            replace_exec_cmd_sender, trading_cmd_queue_is_empty,
+        },
+    };
+    use nautilus_live::{node::LiveNode, runner::AsyncRunner};
+    use nautilus_model::python::orders::order_any_to_pyobject;
+    use nautilus_trading::python::strategy::PyStrategy;
+    use pyo3::types::{PyModule, PyModuleMethods};
+
+    Python::initialize();
+    let trader_id = TraderId::from("PUBLICATION-001");
+    let account_id = AccountId::from("SIM-001");
+    let client_id = ClientId::from("PUBLICATION");
+    let test_clock = Rc::new(RefCell::new(TestClock::new()));
+    test_clock.borrow_mut().set_time(UnixNanos::from(50));
+    let clock: Rc<RefCell<dyn Clock>> = test_clock.clone();
+    let factory_clock = clock.clone();
+    let mut node = LiveNode::builder(trader_id, Environment::Sandbox)
+        .unwrap()
+        .with_clock_factory(move || factory_clock.clone())
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .with_reconciliation(false)
+        .build()
+        .unwrap();
+    let cache = node.kernel().cache();
+    let mut parent = binary_option();
+    parent.id = InstrumentId::from("PARENT.SIM");
+    parent.activation_ns = UnixNanos::from(1);
+    parent.expiration_ns = UnixNanos::from(100);
+    parent.maker_fee = Decimal::ZERO;
+    parent.taker_fee = Decimal::ZERO;
+    let mut child_instrument = parent.clone();
+    child_instrument.id = InstrumentId::from("CHILD.SIM");
+    child_instrument.expiration_ns = UnixNanos::from(10_000);
+    let parent = InstrumentAny::BinaryOption(parent);
+    let child_instrument = InstrumentAny::BinaryOption(child_instrument);
+    let quote = QuoteTick::new(
+        parent.id(),
+        Price::from("0.400"),
+        Price::from("0.410"),
+        Quantity::from("100.00"),
+        Quantity::from("100.00"),
+        UnixNanos::from(50),
+        UnixNanos::from(50),
+    );
+    let child_quote = QuoteTick::new(
+        child_instrument.id(),
+        quote.bid_price,
+        quote.ask_price,
+        quote.bid_size,
+        quote.ask_size,
+        quote.ts_event,
+        quote.ts_init,
+    );
+    {
+        let mut cache = cache.borrow_mut();
+        cache.add_instrument(parent.clone()).unwrap();
+        cache.add_instrument(child_instrument.clone()).unwrap();
+        cache.add_quote(quote).unwrap();
+        cache.add_quote(child_quote).unwrap();
+    }
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    replace_exec_event_sender(sender);
+    replace_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+    let config = SandboxExecutionClientConfig {
+        account_id,
+        venue: Venue::from("SIM"),
+        base_currency: Some(Currency::USDC()),
+        starting_balances: vec![Money::from("100000 USDC")],
+        ..Default::default()
+    };
+    let core = ExecutionClientCore::new(
+        trader_id,
+        client_id,
+        config.venue,
+        config.oms_type,
+        account_id,
+        config.account_type,
+        config.base_currency,
+        cache.clone(),
+    );
+    let mut client = SandboxExecutionClient::new(core, config, clock.clone(), cache.clone());
+    if existing_engine {
+        client.process_quote_tick(&quote).unwrap();
+    }
+    client.start().unwrap();
+    client.connect().await.unwrap();
+    if !existing_engine {
+        client.process_quote_tick(&quote).unwrap();
+    }
+    node.kernel()
+        .exec_engine()
+        .borrow_mut()
+        .register_client(Box::new(client))
+        .unwrap();
+    let module = Python::attach(|py| {
+        let module = PyModule::new(py, "actual_strategy_publication").unwrap();
+        module
+            .setattr("Strategy", py.get_type::<PyStrategy>())
+            .unwrap();
+        py.run(
+            c_str!(
+                r#"
+import sqlite3
+import tempfile
+from pathlib import Path
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "control.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE observations (value INTEGER NOT NULL)")
+writer = None
+observed = []
+errors = []
+seen = []
+class PublicationStrategy(Strategy):
+    def on_start(self): pass
+    def on_stop(self): pass
+    def on_dispose(self): pass
+    def on_order_initialized(self, event):
+        if not str(event.client_order_id).startswith("EXPIRATION-"): return
+        try:
+            cached = self.cache.order(event.client_order_id)
+            assert cached is not None
+            observed.append((str(cached.status), writer is not None))
+            connection = sqlite3.connect(database, timeout=0)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("INSERT INTO observations VALUES (1)")
+                connection.commit()
+            finally:
+                connection.close()
+            self.submit_order(self.child, client_id=client_id)
+        except BaseException as error:
+            errors.append(repr(error))
+    def on_order_event(self, event):
+        seen.append((str(event.client_order_id), type(event).__name__))
+strategy = PublicationStrategy()
+def open_writer():
+    global writer
+    writer = sqlite3.connect(database, timeout=0)
+    writer.execute("BEGIN IMMEDIATE")
+def close_writer():
+    global writer
+    writer.rollback()
+    writer.close()
+    writer = None
+def cleanup(): directory.cleanup()
+"#
+            ),
+            Some(&module.dict()),
+            None,
+        )
+        .unwrap();
+        module.unbind()
+    });
+    let strategy = Python::attach(|py| module.bind(py).getattr("strategy").unwrap().unbind());
+    let strategy_id = node
+        .kernel()
+        .trader()
+        .borrow_mut()
+        .add_python_strategy_instance(&strategy)
+        .unwrap();
+    let child = OrderTestBuilder::new(OrderType::Limit)
+        .trader_id(trader_id)
+        .strategy_id(strategy_id)
+        .instrument_id(child_instrument.id())
+        .client_order_id("PUBLICATION-CHILD".into())
+        .side(OrderSide::Buy)
+        .price(Price::from("0.050"))
+        .quantity(Quantity::from("1.00"))
+        .build();
+    Python::attach(|py| {
+        strategy
+            .bind(py)
+            .setattr("child", order_any_to_pyobject(py, child.clone()).unwrap())
+            .unwrap();
+        module
+            .bind(py)
+            .setattr("client_id", client_id.into_py_any(py).unwrap())
+            .unwrap();
+        strategy.call_method0(py, "start").unwrap();
+    });
+    let opening = OrderTestBuilder::new(OrderType::Market)
+        .trader_id(trader_id)
+        .strategy_id(strategy_id)
+        .instrument_id(parent.id())
+        .client_order_id("PUBLICATION-OPEN".into())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from("1.00"))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(opening.clone(), None, Some(client_id), false)
+        .unwrap();
+    let command = SubmitOrder::from_order(
+        &opening,
+        trader_id,
+        Some(client_id),
+        None,
+        UUID4::new(),
+        UnixNanos::from(50),
+    );
+    assert!(
+        TradingCommandMessage::new(
+            MessagingSwitchboard::exec_engine_execute(),
+            TradingCommand::SubmitOrder(command)
+        )
+        .dispatch()
+        .is_empty()
+    );
+    assert_eq!(
+        cache
+            .borrow()
+            .order_owned(&opening.client_order_id())
+            .unwrap()
+            .status(),
+        OrderStatus::Initialized
+    );
+    while let Ok(event) = events.try_recv() {
+        AsyncRunner::handle_exec_event(event);
+    }
+    assert_eq!(
+        cache
+            .borrow()
+            .order_owned(&opening.client_order_id())
+            .unwrap()
+            .status(),
+        OrderStatus::Filled
+    );
+    let parent_position_id = {
+        let cache = cache.borrow();
+        let positions = cache.positions_open(None, Some(&parent.id()), None, None, None);
+        assert_eq!(positions.len(), 1);
+        positions[0].id
+    };
+    Python::attach(|py| {
+        module.bind(py).call_method0("open_writer").unwrap();
+    });
+    test_clock.borrow_mut().set_time(UnixNanos::from(200));
+    let close = InstrumentClose::new(
+        parent.id(),
+        Price::from("1.000"),
+        InstrumentCloseType::ContractExpired,
+        UnixNanos::from(200),
+        UnixNanos::from(200),
+    );
+    msgbus::publish_any(
+        nautilus_common::msgbus::switchboard::get_instrument_close_topic(parent.id()),
+        &close,
+    );
+    let before = Python::attach(|py| {
+        let module = module.bind(py);
+        let observed = module
+            .getattr("observed")
+            .unwrap()
+            .extract::<Vec<(String, bool)>>()
+            .unwrap();
+        module.call_method0("close_writer").unwrap();
+        observed
+    });
+    assert!(before.is_empty());
+    while let Ok(event) = events.try_recv() {
+        AsyncRunner::handle_exec_event(event);
+    }
+    assert!(!trading_cmd_queue_is_empty());
+    let (observed, errors, seen) = Python::attach(|py| {
+        let module = module.bind(py);
+        (
+            module
+                .getattr("observed")
+                .unwrap()
+                .extract::<Vec<(String, bool)>>()
+                .unwrap(),
+            module
+                .getattr("errors")
+                .unwrap()
+                .extract::<Vec<String>>()
+                .unwrap(),
+            module
+                .getattr("seen")
+                .unwrap()
+                .extract::<Vec<(String, String)>>()
+                .unwrap(),
+        )
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(observed.len(), 1);
+    assert!(observed[0].0.ends_with("INITIALIZED"), "{observed:?}");
+    assert!(!observed[0].1);
+    let automatic_events: Vec<_> = seen
+        .iter()
+        .filter(|(id, _)| id.starts_with("EXPIRATION-"))
+        .map(|(_, kind)| kind.as_str())
+        .collect();
+    assert_eq!(
+        automatic_events,
+        ["OrderInitialized", "OrderAccepted", "OrderFilled"]
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|(id, kind)| id == "PUBLICATION-CHILD" && kind == "OrderSubmitted")
+    );
+    drain_trading_cmd_queue();
+    while let Ok(event) = events.try_recv() {
+        AsyncRunner::handle_exec_event(event);
+    }
+    assert!(trading_cmd_queue_is_empty());
+    assert_eq!(
+        cache
+            .borrow()
+            .order_owned(&child.client_order_id())
+            .unwrap()
+            .status(),
+        OrderStatus::Accepted
+    );
+    let closed_position = cache.borrow().position_owned(&parent_position_id).unwrap();
+    assert!(closed_position.is_closed());
+    assert_eq!(closed_position.quantity, Quantity::zero(2));
+    let automatic_ids: std::collections::HashSet<_> = seen
+        .iter()
+        .filter(|(id, _)| id.starts_with("EXPIRATION-"))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(automatic_ids.len(), 1);
+    // Expiry cleanup removes instrument indexes; inspect retained entities by their actual IDs.
+    let automatic_id = ClientOrderId::from(*automatic_ids.iter().next().unwrap());
+    let automatic = cache.borrow().order_owned(&automatic_id).unwrap();
+    assert_eq!(automatic.status(), OrderStatus::Filled);
+    assert_eq!(automatic.events().len(), 3);
+    assert_eq!(
+        cache
+            .borrow()
+            .account_owned(&account_id)
+            .unwrap()
+            .balances()
+            .get(&Currency::USDC())
+            .unwrap()
+            .total,
+        Money::from("100000.59 USDC")
+    );
+    Python::attach(|py| {
+        strategy.call_method0(py, "stop").unwrap();
+        module.bind(py).call_method0("cleanup").unwrap();
+    });
+    node.dispose();
+}
+
+#[rstest]
+#[case::normal(None)]
+#[case::first_publication_closed(Some(0))]
+#[case::second_publication_closed(Some(1))]
+fn test_option_settlement_publications_preserve_cached_plan_and_stop_on_channel_failure(
+    #[case] fail_at: Option<usize>,
+) {
+    use std::cell::Cell;
+
+    use nautilus_execution::matching_engine::{
+        InitializedPublicationFailure, InitializedPublicationSource, OrderMatchingEngine,
+    };
+    use nautilus_model::instruments::stubs::{equity_aapl, option_contract_appl};
+
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let mut option = option_contract_appl();
+    option.activation_ns = UnixNanos::from(1);
+    option.expiration_ns = UnixNanos::from(100);
+    let option = InstrumentAny::OptionContract(option);
+    let mut underlying = equity_aapl();
+    underlying.id = InstrumentId::from("AAPL.OPRA");
+    let underlying = InstrumentAny::Equity(underlying);
+    cache.borrow_mut().add_instrument(option.clone()).unwrap();
+    cache
+        .borrow_mut()
+        .add_instrument(underlying.clone())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_trade(TradeTick::new(
+            underlying.id(),
+            Price::from("160.00"),
+            Quantity::from(1),
+            AggressorSide::NoAggressor,
+            TradeId::from("OPTION-UNDERLYING"),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+        ))
+        .unwrap();
+    let opening = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(option.id())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(1))
+        .submit(true)
+        .build();
+    let position_id = PositionId::from("PUBLICATION-OPTION-POSITION");
+    let account_id = AccountId::from("OPRA-001");
+    cache
+        .borrow_mut()
+        .add_order(opening.clone(), Some(position_id), None, false)
+        .unwrap();
+    let fill = TestOrderEventStubs::filled(
+        &opening,
+        &option,
+        Some(TradeId::from("OPTION-OPEN")),
+        Some(position_id),
+        Some(Price::from("5.00")),
+        Some(Quantity::from(1)),
+        None,
+        Some(Money::from("0 USD")),
+        Some(UnixNanos::from(1)),
+        Some(account_id),
+    );
+    cache.borrow_mut().update_order(&fill).unwrap();
+    let OrderEventAny::Filled(fill) = fill else {
+        unreachable!()
+    };
+    let position = Position::new(&option, fill);
+    cache
+        .borrow_mut()
+        .add_position(&position, OmsType::Netting)
+        .unwrap();
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock.borrow_mut().set_time(UnixNanos::from(100));
+    let mut engine = OrderMatchingEngine::new(
+        option.clone(),
+        1,
+        FillModelHandle::default(),
+        Default::default(),
+        BookType::L1_MBP,
+        OmsType::Netting,
+        AccountType::Cash,
+        clock,
+        cache.clone(),
+        Default::default(),
+    );
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let emitted = outcomes.clone();
+    let handler_cache = cache.clone();
+    engine.set_event_handler(Rc::new(move |event| {
+        handler_cache.borrow_mut().update_order(&event).unwrap();
+        emitted.borrow_mut().push(event);
+    }));
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
+    let receiver = Rc::new(RefCell::new(receiver));
+    let close_receiver = receiver.clone();
+    let count = Cell::new(0);
+    engine.set_initialized_publication_handler(Rc::new(move |event| {
+        if fail_at == Some(count.get()) {
+            close_receiver.borrow_mut().close();
+        }
+        count.set(count.get() + 1);
+        sender
+            .send(ExecutionEvent::OrderInitializedPublication(event))
+            .map_err(|error| {
+                let ExecutionEvent::OrderInitializedPublication(event) = error.0 else {
+                    unreachable!()
+                };
+                InitializedPublicationFailure::ChannelClosed(Box::new(event))
+            })
+    }));
+    let close = InstrumentClose::new(
+        option.id(),
+        Price::from("7.50"),
+        InstrumentCloseType::ContractExpired,
+        UnixNanos::from(100),
+        UnixNanos::from(100),
+    );
+    engine.process_instrument_close(close);
+    let publications: Vec<_> = std::iter::from_fn(|| receiver.borrow_mut().try_recv().ok())
+        .map(|event| {
+            let ExecutionEvent::OrderInitializedPublication(event) = event else {
+                unreachable!()
+            };
+            event
+        })
+        .collect();
+    match fail_at {
+        Some(failed_index) => {
+            assert!(!engine.is_expiration_processed());
+            assert!(outcomes.borrow().is_empty());
+            assert_eq!(publications.len(), failed_index);
+            let fault = engine.initialized_publication_failure().unwrap().clone();
+            let InitializedPublicationSource::OptionSettlement {
+                leg_position_id,
+                timestamp,
+                close: saved_close,
+                cached_plan_initializations,
+            } = &fault.source
+            else {
+                panic!("expected real option settlement evidence")
+            };
+            assert_eq!(*timestamp, UnixNanos::from(100));
+            assert_eq!(*saved_close, Some(close));
+            assert_eq!(
+                *leg_position_id,
+                if failed_index == 0 {
+                    Some(position_id)
+                } else {
+                    None
+                }
+            );
+            assert_eq!(cached_plan_initializations.len(), 2);
+            assert_eq!(
+                fault.failure.event(),
+                &cached_plan_initializations[failed_index]
+            );
+            assert_eq!(&publications, &cached_plan_initializations[..failed_index]);
+            for event in cached_plan_initializations.iter() {
+                let order = cache.borrow().order_owned(&event.client_order_id).unwrap();
+                assert_eq!(order.init_event(), event);
+                assert_eq!(order.status(), OrderStatus::Initialized);
+                assert_eq!(order.events().len(), 1);
+            }
+            assert!(
+                engine
+                    .account_capture_has_pending_work(&account_id)
+                    .unwrap()
+            );
+            let before = cache
+                .borrow()
+                .orders_total_count(None, None, None, None, None);
+            engine.process_status(MarketStatusAction::Trading);
+            engine.reset();
+            engine.process_instrument_close(close);
+            engine.iterate(UnixNanos::from(101), AggressorSide::NoAggressor);
+            engine.fill_market_order(fault.failure.event().client_order_id);
+            assert!(outcomes.borrow().is_empty());
+            assert_eq!(
+                cache
+                    .borrow()
+                    .orders_total_count(None, None, None, None, None),
+                before
+            );
+            assert_eq!(
+                engine
+                    .initialized_publication_failure()
+                    .unwrap()
+                    .failure
+                    .event(),
+                fault.failure.event()
+            );
+            assert_eq!(
+                cache
+                    .borrow()
+                    .position_owned(&position_id)
+                    .unwrap()
+                    .quantity,
+                position.quantity
+            );
+        }
+        None => {
+            assert!(engine.is_expiration_processed());
+            assert!(engine.initialized_publication_failure().is_none());
+            assert_eq!(publications.len(), 2);
+            let outcomes = outcomes.borrow();
+            assert_eq!(outcomes.len(), 4);
+            assert!(matches!(outcomes[0], OrderEventAny::Accepted(_)));
+            assert!(matches!(outcomes[1], OrderEventAny::Accepted(_)));
+            let OrderEventAny::Filled(close_fill) = &outcomes[2] else {
+                panic!("expected option close fill")
+            };
+            let OrderEventAny::Filled(delivery_fill) = &outcomes[3] else {
+                panic!("expected underlying delivery")
+            };
+            assert_eq!(close_fill.client_order_id, publications[0].client_order_id);
+            assert_eq!(
+                delivery_fill.client_order_id,
+                publications[1].client_order_id
+            );
+            assert_eq!(close_fill.position_id, Some(position_id));
+            assert_eq!(delivery_fill.position_id, None);
+            assert_eq!(close_fill.last_px, Price::from("7.50"));
+            assert_eq!(delivery_fill.last_px, Price::from("149.00"));
+            assert_eq!(close_fill.last_qty, Quantity::from(1));
+            assert_eq!(delivery_fill.last_qty, Quantity::from(1));
+            assert_eq!(close_fill.commission, Some(Money::from("0 USD")));
+            assert_eq!(delivery_fill.commission, Some(Money::from("0 USD")));
+            for event in publications {
+                assert_eq!(
+                    cache
+                        .borrow()
+                        .order_owned(&event.client_order_id)
+                        .unwrap()
+                        .status(),
+                    OrderStatus::Filled
+                );
+            }
+        }
+    }
+}
+
+#[rstest]
+#[case::normal_cancel(false, "cancel")]
+#[case::normal_reduce(false, "reduce")]
+#[case::quote(true, "quote")]
+#[case::trade(true, "trade")]
+#[case::bar(true, "bar")]
+#[case::submit(true, "submit")]
+#[case::modify(true, "modify")]
+#[case::cancel(true, "cancel")]
+#[case::cancel_all(true, "cancel_all")]
+#[case::batch_modify(true, "batch_modify")]
+#[case::batch_cancel(true, "batch_cancel")]
+#[case::iterate(true, "iterate")]
+#[case::fill_market(true, "fill_market")]
+#[case::fill_limit(true, "fill_limit")]
+#[case::trigger_stop(true, "trigger_stop")]
+#[case::close(true, "close")]
+#[case::expiration(true, "expiration")]
+#[case::liquidation(true, "liquidation")]
+#[case::update_instrument(true, "update_instrument")]
+#[case::book_delta(true, "book_delta")]
+#[case::book_deltas(true, "book_deltas")]
+#[case::book_depth(true, "book_depth")]
+#[case::reset_and_trading(true, "reset_and_trading")]
+#[case::replace_handler(true, "replace_handler")]
+fn test_terminal_publication_fault_prevents_effectful_matching_entries(
+    #[case] faulted: bool,
+    #[case] action: &str,
+) {
+    use nautilus_common::messages::execution::{BatchCancelOrders, CancelOrder};
+    use nautilus_execution::matching_engine::{
+        InitializedPublicationFailure, InitializedPublicationFault, OrderMatchingEngine,
+        config::OrderMatchingEngineConfig,
+    };
+    use nautilus_model::{
+        data::{OrderBookDelta, OrderBookDeltas, OrderBookDepth10, order::BookOrder},
+        enums::{BookAction, MarketStatus},
+    };
+
+    let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone())
+        .unwrap();
+    let account_id = AccountId::from("BINANCE-001");
+    let position_id = PositionId::from("PUBLICATION-GUARD-POSITION");
+    let opening = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .client_order_id("GUARD-OPEN".into())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from("1.000"))
+        .submit(true)
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(opening.clone(), Some(position_id), None, false)
+        .unwrap();
+    let fill = TestOrderEventStubs::filled(
+        &opening,
+        &instrument,
+        Some(TradeId::from("GUARD-OPEN")),
+        Some(position_id),
+        Some(Price::from("100.00")),
+        None,
+        None,
+        Some(Money::from("0 USDT")),
+        None,
+        Some(account_id),
+    );
+    cache.borrow_mut().update_order(&fill).unwrap();
+    let OrderEventAny::Filled(fill) = fill else {
+        unreachable!()
+    };
+    let position = Position::new(&instrument, fill);
+    cache
+        .borrow_mut()
+        .add_position(&position, OmsType::Netting)
+        .unwrap();
+    let mut engine = OrderMatchingEngine::new(
+        instrument.clone(),
+        1,
+        FillModelHandle::default(),
+        Default::default(),
+        BookType::L1_MBP,
+        OmsType::Netting,
+        AccountType::Margin,
+        Rc::new(RefCell::new(TestClock::new())),
+        cache.clone(),
+        OrderMatchingEngineConfig {
+            bar_execution: true,
+            trade_execution: true,
+            ..Default::default()
+        },
+    );
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let emitted = outcomes.clone();
+    let handler_cache = cache.clone();
+    engine.set_event_handler(Rc::new(move |event| {
+        handler_cache.borrow_mut().update_order(&event).unwrap();
+        emitted.borrow_mut().push(event);
+    }));
+    let quote = QuoteTick::new(
+        instrument.id(),
+        Price::from("99.00"),
+        Price::from("100.00"),
+        Quantity::from("100.000"),
+        Quantity::from("100.000"),
+        UnixNanos::from(1),
+        UnixNanos::from(1),
+    );
+    engine.process_quote_tick(&quote);
+    let mut resting = if action == "trigger_stop" {
+        OrderTestBuilder::new(OrderType::StopLimit)
+            .instrument_id(instrument.id())
+            .client_order_id("GUARD-RESTING".into())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("1.000"))
+            .trigger_price(Price::from("150.00"))
+            .price(Price::from("149.00"))
+            .submit(true)
+            .build()
+    } else {
+        OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .client_order_id("GUARD-RESTING".into())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("1.000"))
+            .price(Price::from("99.00"))
+            .submit(true)
+            .build()
+    };
+    cache
+        .borrow_mut()
+        .add_order(resting.clone(), None, None, false)
+        .unwrap();
+    engine.process_order(&mut resting, account_id);
+    assert_eq!(
+        cache
+            .borrow()
+            .order_owned(&resting.client_order_id())
+            .unwrap()
+            .status(),
+        OrderStatus::Accepted
+    );
+    assert_eq!(engine.get_open_orders().len(), 1);
+    assert!(
+        !engine
+            .account_capture_has_pending_work(&account_id)
+            .unwrap()
+    );
+    let mut candidate = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .client_order_id("GUARD-CANDIDATE".into())
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("1.000"))
+        .reduce_only(true)
+        .submit(true)
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(candidate.clone(), Some(position_id), None, false)
+        .unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
+    if faulted {
+        receiver.close();
+    }
+    engine.set_initialized_publication_handler(Rc::new(move |event| {
+        sender
+            .send(ExecutionEvent::OrderInitializedPublication(event))
+            .map_err(|error| {
+                let ExecutionEvent::OrderInitializedPublication(event) = error.0 else {
+                    unreachable!()
+                };
+                InitializedPublicationFailure::ChannelClosed(Box::new(event))
+            })
+    }));
+    let before_events = outcomes.borrow().len();
+    if faulted {
+        engine.liquidate_open_positions(
+            UnixNanos::from(2),
+            false,
+            instrument.settlement_currency(),
+        );
+        assert!(engine.initialized_publication_failure().is_some());
+        assert_eq!(engine.market_status, MarketStatus::Open);
+        assert_eq!(outcomes.borrow().len(), before_events);
+        assert!(
+            engine
+                .account_capture_has_pending_work(&account_id)
+                .unwrap()
+        );
+    }
+    let fault_event = engine
+        .initialized_publication_failure()
+        .map(|fault| fault.failure.event().event_id);
+    let before_orders = cache
+        .borrow()
+        .orders_total_count(None, None, None, None, None);
+    let before_bid = engine.best_bid_price();
+    let before_ask = engine.best_ask_price();
+    let modify = ModifyOrder::new(
+        resting.trader_id(),
+        None,
+        resting.strategy_id(),
+        instrument.id(),
+        resting.client_order_id(),
+        resting.venue_order_id(),
+        Some(Quantity::from("0.500")),
+        Some(Price::from("98.00")),
+        None,
+        UUID4::new(),
+        UnixNanos::from(3),
+        None,
+        None,
+    );
+    let cancel = CancelOrder::new(
+        resting.trader_id(),
+        None,
+        resting.strategy_id(),
+        instrument.id(),
+        resting.client_order_id(),
+        resting.venue_order_id(),
+        UUID4::new(),
+        UnixNanos::from(3),
+        None,
+        None,
+    );
+    match action {
+        "cancel" => engine.process_cancel(&cancel, account_id),
+        "reduce" | "submit" => engine.process_order(&mut candidate, account_id),
+        "modify" => engine.process_modify(&modify, account_id),
+        "cancel_all" => engine.process_cancel_all(
+            &CancelAllOrders::new(
+                resting.trader_id(),
+                None,
+                resting.strategy_id(),
+                instrument.id(),
+                None,
+                UUID4::new(),
+                UnixNanos::from(3),
+                None,
+                None,
+            ),
+            account_id,
+        ),
+        "batch_cancel" => engine.process_batch_cancel(
+            &BatchCancelOrders::new(
+                resting.trader_id(),
+                None,
+                resting.strategy_id(),
+                instrument.id(),
+                vec![cancel],
+                UUID4::new(),
+                UnixNanos::from(3),
+                None,
+                None,
+            ),
+            account_id,
+        ),
+        "batch_modify" => engine.process_batch_modify(
+            &BatchModifyOrders::new(
+                resting.trader_id(),
+                None,
+                resting.strategy_id(),
+                instrument.id(),
+                vec![modify],
+                UUID4::new(),
+                UnixNanos::from(3),
+                None,
+                None,
+            ),
+            account_id,
+        ),
+        "iterate" => engine.iterate(UnixNanos::from(3), AggressorSide::Sell),
+        "fill_market" => engine.fill_market_order(candidate.client_order_id()),
+        "fill_limit" => engine.fill_limit_order(resting.client_order_id()),
+        "trigger_stop" => engine.trigger_stop_order(resting.client_order_id()),
+        "close" => engine.process_instrument_close(InstrumentClose::new(
+            instrument.id(),
+            Price::from("100.00"),
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(3),
+            UnixNanos::from(3),
+        )),
+        "expiration" => engine.process_instrument_expiration(UnixNanos::from(u64::MAX)),
+        "liquidation" => engine.liquidate_open_positions(
+            UnixNanos::from(3),
+            true,
+            instrument.settlement_currency(),
+        ),
+        "quote" => engine.process_quote_tick(&QuoteTick::new(
+            instrument.id(),
+            Price::from("98.00"),
+            Price::from("99.00"),
+            quote.bid_size,
+            quote.ask_size,
+            UnixNanos::from(3),
+            UnixNanos::from(3),
+        )),
+        "trade" => engine.process_trade_tick(&TradeTick::new(
+            instrument.id(),
+            Price::from("99.00"),
+            Quantity::from("1.000"),
+            AggressorSide::Sell,
+            TradeId::from("GUARD-TRIGGER"),
+            UnixNanos::from(3),
+            UnixNanos::from(3),
+        )),
+        "bar" => engine.process_bar(&Bar::new(
+            format!("{}-1-MINUTE-LAST-EXTERNAL", instrument.id())
+                .parse()
+                .unwrap(),
+            Price::from("100.00"),
+            Price::from("101.00"),
+            Price::from("98.00"),
+            Price::from("99.00"),
+            Quantity::from("1.000"),
+            UnixNanos::from(3),
+            UnixNanos::from(3),
+        )),
+        "update_instrument" => assert!(
+            engine
+                .update_instrument(instrument)
+                .unwrap_err()
+                .is::<InitializedPublicationFault>()
+        ),
+        "book_delta" | "book_deltas" => {
+            let delta = OrderBookDelta::new(
+                instrument.id(),
+                BookAction::Add,
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("98.00"),
+                    Quantity::from("1.000"),
+                    1,
+                ),
+                0,
+                1,
+                UnixNanos::from(3),
+                UnixNanos::from(3),
+            );
+            let result = if action == "book_delta" {
+                engine.process_order_book_delta(&delta)
+            } else {
+                engine
+                    .process_order_book_deltas(&OrderBookDeltas::new(instrument.id(), vec![delta]))
+            };
+            assert!(result.unwrap_err().is::<InitializedPublicationFault>());
+        }
+        "book_depth" => {
+            let depth = OrderBookDepth10::new(
+                instrument.id(),
+                [BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("98.00"),
+                    Quantity::from("1.000"),
+                    1,
+                ); 10],
+                [BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from("99.00"),
+                    Quantity::from("1.000"),
+                    2,
+                ); 10],
+                [1; 10],
+                [1; 10],
+                0,
+                1,
+                UnixNanos::from(3),
+                UnixNanos::from(3),
+            );
+            assert!(
+                engine
+                    .process_order_book_depth10(&depth)
+                    .unwrap_err()
+                    .is::<InitializedPublicationFault>()
+            );
+        }
+        "reset_and_trading" => {
+            engine.reset();
+            engine.process_status(MarketStatusAction::Trading);
+            engine.process_order(&mut candidate, account_id);
+        }
+        "replace_handler" => {
+            engine.set_initialized_publication_handler(Rc::new(|_| Ok(())));
+            engine.process_order(&mut candidate, account_id);
+        }
+        _ => panic!("unknown matching entry test"),
+    }
+    if faulted {
+        assert_eq!(
+            outcomes.borrow().len(),
+            before_events,
+            "unexpected effect for {action}"
+        );
+        assert_eq!(engine.get_open_orders().len(), 1);
+        assert_eq!(engine.best_bid_price(), before_bid);
+        assert_eq!(engine.best_ask_price(), before_ask);
+        assert_eq!(
+            cache
+                .borrow()
+                .orders_total_count(None, None, None, None, None),
+            before_orders
+        );
+        let retained = engine.initialized_publication_failure().unwrap();
+        assert_eq!(Some(retained.failure.event().event_id), fault_event);
+        let retained_order = cache
+            .borrow()
+            .order_owned(&retained.failure.event().client_order_id)
+            .unwrap();
+        assert_eq!(retained_order.status(), OrderStatus::Initialized);
+        assert_eq!(retained_order.events().len(), 1);
+        assert_eq!(
+            cache
+                .borrow()
+                .position_owned(&position_id)
+                .unwrap()
+                .quantity,
+            position.quantity
+        );
+        assert_eq!(
+            cache
+                .borrow()
+                .order_owned(&resting.client_order_id())
+                .unwrap()
+                .status(),
+            OrderStatus::Accepted
+        );
+    } else {
+        assert!(engine.initialized_publication_failure().is_none());
+        assert!(outcomes.borrow().len() > before_events);
+        match action {
+            "cancel" => assert_eq!(cache.borrow().order_owned(&resting.client_order_id()).unwrap().status(), OrderStatus::Canceled),
+            "reduce" => assert!(outcomes.borrow().iter().any(|event| matches!(event, OrderEventAny::Filled(fill) if fill.client_order_id == candidate.client_order_id() && fill.last_qty == Quantity::from("1.000")))),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[rstest]
+#[case::delta("delta")]
+#[case::deltas("deltas")]
+#[case::depth("depth")]
+fn test_matching_result_reports_a_publication_fault_created_by_the_same_book_call(
+    #[case] entry: &str,
+) {
+    use nautilus_execution::matching_engine::{
+        InitializedPublicationFailure, InitializedPublicationFault, OrderMatchingEngine,
+    };
+    use nautilus_model::{
+        data::{OrderBookDelta, OrderBookDeltas, OrderBookDepth10, order::BookOrder},
+        enums::{BookAction, RecordFlag},
+        instruments::stubs::futures_contract_es,
+    };
+
+    let mut future = futures_contract_es(None, None);
+    future.activation_ns = UnixNanos::from(1);
+    future.expiration_ns = UnixNanos::from(100);
+    let instrument = InstrumentAny::FuturesContract(future);
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone())
+        .unwrap();
+    let account_id = AccountId::from("XCME-001");
+    let position_id = PositionId::from("BOOK-PUBLICATION-POSITION");
+    let opening = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .client_order_id("BOOK-PUBLICATION-OPEN".into())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(1))
+        .submit(true)
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(opening.clone(), Some(position_id), None, false)
+        .unwrap();
+    let fill = TestOrderEventStubs::filled(
+        &opening,
+        &instrument,
+        Some(TradeId::from("BOOK-PUBLICATION-OPEN")),
+        Some(position_id),
+        Some(Price::from("5000.00")),
+        None,
+        None,
+        Some(Money::from("0 USD")),
+        None,
+        Some(account_id),
+    );
+    cache.borrow_mut().update_order(&fill).unwrap();
+    let OrderEventAny::Filled(fill) = fill else {
+        unreachable!()
+    };
+    cache
+        .borrow_mut()
+        .add_position(&Position::new(&instrument, fill), OmsType::Netting)
+        .unwrap();
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock.borrow_mut().set_time(UnixNanos::from(50));
+    let mut engine = OrderMatchingEngine::new(
+        instrument.clone(),
+        1,
+        FillModelHandle::default(),
+        Default::default(),
+        BookType::L1_MBP,
+        OmsType::Netting,
+        AccountType::Margin,
+        clock.clone(),
+        cache.clone(),
+        Default::default(),
+    );
+    engine.set_event_handler(Rc::new(|_| {
+        panic!("a failed initialization must not produce a verdict or fill")
+    }));
+    engine.process_quote_tick(&QuoteTick::new(
+        instrument.id(),
+        Price::from("5000.00"),
+        Price::from("5000.25"),
+        Quantity::from(100),
+        Quantity::from(100),
+        UnixNanos::from(50),
+        UnixNanos::from(50),
+    ));
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
+    receiver.close();
+    engine.set_initialized_publication_handler(Rc::new(move |event| {
+        sender
+            .send(ExecutionEvent::OrderInitializedPublication(event))
+            .map_err(|error| {
+                let ExecutionEvent::OrderInitializedPublication(event) = error.0 else {
+                    unreachable!()
+                };
+                InitializedPublicationFailure::ChannelClosed(Box::new(event))
+            })
+    }));
+    clock.borrow_mut().set_time(UnixNanos::from(100));
+    let delta = OrderBookDelta::new(
+        instrument.id(),
+        BookAction::Add,
+        BookOrder::new(OrderSide::Buy, Price::from("4999.75"), Quantity::from(1), 1),
+        RecordFlag::F_LAST as u8,
+        1,
+        UnixNanos::from(100),
+        UnixNanos::from(100),
+    );
+    let result = match entry {
+        "delta" => engine.process_order_book_delta(&delta),
+        "deltas" => {
+            engine.process_order_book_deltas(&OrderBookDeltas::new(instrument.id(), vec![delta]))
+        }
+        "depth" => {
+            let mut bids = [BookOrder::default(); 10];
+            let mut asks = [BookOrder::default(); 10];
+            bids[0] = BookOrder::new(
+                OrderSide::Buy,
+                Price::from("5000.00"),
+                Quantity::from(100),
+                1,
+            );
+            asks[0] = BookOrder::new(
+                OrderSide::Sell,
+                Price::from("5000.25"),
+                Quantity::from(100),
+                2,
+            );
+            engine.process_order_book_depth10(&OrderBookDepth10::new(
+                instrument.id(),
+                bids,
+                asks,
+                [1; 10],
+                [1; 10],
+                0,
+                1,
+                UnixNanos::from(100),
+                UnixNanos::from(100),
+            ))
+        }
+        _ => unreachable!(),
+    };
+    let fault = engine
+        .initialized_publication_failure()
+        .expect("the real expired position must hit the closed channel");
+    assert!(
+        result.is_err(),
+        "{entry} returned success after creating terminal fault: {fault}"
+    );
+    assert!(result.unwrap_err().is::<InitializedPublicationFault>());
+    let order = cache
+        .borrow()
+        .order_owned(&fault.failure.event().client_order_id)
+        .unwrap();
+    assert_eq!(order.init_event(), fault.failure.event());
+    assert_eq!(order.status(), OrderStatus::Initialized);
+}
+
 #[rstest]
 fn test_paper_binary_option_pending_resolution_then_close_settlement(
     trader_id: TraderId,

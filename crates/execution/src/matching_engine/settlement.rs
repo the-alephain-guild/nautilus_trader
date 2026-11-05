@@ -28,10 +28,11 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
-use super::OrderMatchingEngine;
+use super::{InitializedPublicationSource, OrderMatchingEngine};
 
 impl OrderMatchingEngine {
     pub(super) fn process_option_expiry(&mut self, ts_now: UnixNanos) -> anyhow::Result<bool> {
+        self.ensure_matching_available()?;
         let instrument_id = self.instrument.id();
 
         let positions: Vec<Position> = {
@@ -151,6 +152,7 @@ impl OrderMatchingEngine {
     }
 
     fn option_apply_settlement_plan(&mut self, plan: OptionSettlementPlan) -> anyhow::Result<()> {
+        self.ensure_matching_available()?;
         self.option_register_settlement_plan(&plan)?;
 
         for leg in &plan.legs {
@@ -158,8 +160,21 @@ impl OrderMatchingEngine {
                 .insert(leg.fill.trader_id, leg.fill.account_id);
         }
 
+        let cached_initializations: std::sync::Arc<[_]> = plan
+            .legs
+            .iter()
+            .map(|leg| leg.order.init_event().clone())
+            .collect();
         for leg in &plan.legs {
-            self.publish_order_initialized(&leg.order);
+            self.publish_order_initialized(
+                &leg.order,
+                InitializedPublicationSource::OptionSettlement {
+                    leg_position_id: leg.fill.position_id,
+                    timestamp: leg.fill.ts_event,
+                    close: self.instrument_close,
+                    cached_plan_initializations: cached_initializations.clone(),
+                },
+            )?;
         }
 
         for leg in &plan.legs {

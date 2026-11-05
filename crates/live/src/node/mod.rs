@@ -108,7 +108,7 @@ use nautilus_core::{
 #[cfg(test)]
 use nautilus_model::reports::OrderStatusReport;
 use nautilus_model::{
-    events::OrderEventAny,
+    events::{OrderEventAny, OrderInitialized},
     identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     orders::Order,
     reports::{FillReport, PositionStatusReport},
@@ -2530,7 +2530,7 @@ impl LiveNode {
                     close_ids.push(client_order_id);
                 }
             }
-            ExecutionEvent::Account(_) => {}
+            ExecutionEvent::OrderInitializedPublication(_) | ExecutionEvent::Account(_) => {}
         }
 
         Some(close_ids)
@@ -3754,6 +3754,11 @@ fn flush_all_pending(
 
     while let Ok(evt) = exec_evt_rx.try_recv() {
         match evt {
+            ExecutionEvent::OrderInitializedPublication(initialized) => {
+                pending
+                    .order_evts
+                    .push(PendingOrderDispatch::PublishInitialized(initialized));
+            }
             ExecutionEvent::Account(_) => {
                 AsyncRunner::handle_exec_event(evt);
             }
@@ -3761,21 +3766,27 @@ fn flush_all_pending(
                 pending.exec_reports.push(report);
             }
             ExecutionEvent::Order(order_evt) => {
-                pending.order_evts.push(order_evt);
+                pending.order_evts.push(order_evt.into());
             }
             ExecutionEvent::OrderSubmittedBatch(batch) => {
                 for submitted in batch {
-                    pending.order_evts.push(OrderEventAny::Submitted(submitted));
+                    pending
+                        .order_evts
+                        .push(OrderEventAny::Submitted(submitted).into());
                 }
             }
             ExecutionEvent::OrderAcceptedBatch(batch) => {
                 for accepted in batch {
-                    pending.order_evts.push(OrderEventAny::Accepted(accepted));
+                    pending
+                        .order_evts
+                        .push(OrderEventAny::Accepted(accepted).into());
                 }
             }
             ExecutionEvent::OrderCanceledBatch(batch) => {
                 for canceled in batch {
-                    pending.order_evts.push(OrderEventAny::Canceled(canceled));
+                    pending
+                        .order_evts
+                        .push(OrderEventAny::Canceled(canceled).into());
                 }
             }
         }
@@ -3830,6 +3841,9 @@ async fn drive_with_event_buffering<F: std::future::Future>(
                 // Order events need ExecEngine borrow_mut which may conflict
                 // with the borrow held by the driven future.
                 match evt {
+                    ExecutionEvent::OrderInitializedPublication(initialized) => {
+                        pending.order_evts.push(PendingOrderDispatch::PublishInitialized(initialized));
+                    }
                     ExecutionEvent::Account(_) => {
                         AsyncRunner::handle_exec_event(evt);
                     }
@@ -3837,21 +3851,21 @@ async fn drive_with_event_buffering<F: std::future::Future>(
                         pending.exec_reports.push(report);
                     }
                     ExecutionEvent::Order(order_evt) => {
-                        pending.order_evts.push(order_evt);
+                        pending.order_evts.push(order_evt.into());
                     }
                     ExecutionEvent::OrderSubmittedBatch(batch) => {
                         for submitted in batch {
-                            pending.order_evts.push(OrderEventAny::Submitted(submitted));
+                            pending.order_evts.push(OrderEventAny::Submitted(submitted).into());
                         }
                     }
                     ExecutionEvent::OrderAcceptedBatch(batch) => {
                         for accepted in batch {
-                            pending.order_evts.push(OrderEventAny::Accepted(accepted));
+                            pending.order_evts.push(OrderEventAny::Accepted(accepted).into());
                         }
                     }
                     ExecutionEvent::OrderCanceledBatch(batch) => {
                         for canceled in batch {
-                            pending.order_evts.push(OrderEventAny::Canceled(canceled));
+                            pending.order_evts.push(OrderEventAny::Canceled(canceled).into());
                         }
                     }
                 }
@@ -3869,6 +3883,17 @@ async fn drive_with_event_buffering<F: std::future::Future>(
     }
 }
 
+enum PendingOrderDispatch {
+    Process(OrderEventAny),
+    PublishInitialized(OrderInitialized),
+}
+
+impl From<OrderEventAny> for PendingOrderDispatch {
+    fn from(event: OrderEventAny) -> Self {
+        Self::Process(event)
+    }
+}
+
 #[derive(Default)]
 struct PendingEvents {
     system_events: Vec<SystemEvent>,
@@ -3876,7 +3901,7 @@ struct PendingEvents {
     data_evts: Vec<DataEvent>,
     data_cmds: Vec<DataCommand>,
     exec_reports: Vec<ExecutionReport>,
-    order_evts: Vec<OrderEventAny>,
+    order_evts: Vec<PendingOrderDispatch>,
     exec_cmds: Vec<TradingCommandMessage>,
 }
 
@@ -3950,7 +3975,13 @@ impl PendingEvents {
         }
 
         for evt in self.order_evts.drain(..) {
-            AsyncRunner::handle_exec_event(ExecutionEvent::Order(evt));
+            let event = match evt {
+                PendingOrderDispatch::Process(event) => ExecutionEvent::Order(event),
+                PendingOrderDispatch::PublishInitialized(initialized) => {
+                    ExecutionEvent::OrderInitializedPublication(initialized)
+                }
+            };
+            AsyncRunner::handle_exec_event(event);
         }
 
         for cmd in self.exec_cmds.drain(..) {
@@ -8103,6 +8134,201 @@ mod tests {
     }
 
     #[rstest]
+    #[case::flush(false)]
+    #[case::connect_wait(true)]
+    #[tokio::test]
+    async fn test_startup_order_publications_share_fifo_without_reapplying_initialization(
+        #[case] connect_wait: bool,
+    ) {
+        assert_startup_order_publications_share_fifo(connect_wait).await;
+    }
+
+    #[expect(
+        clippy::await_holding_refcell_ref,
+        reason = "the real startup future holds the engine borrow while owner events must remain buffered"
+    )]
+    async fn assert_startup_order_publications_share_fifo(connect_wait: bool) {
+        use std::task::Poll;
+
+        let trader_id = TraderId::from("PUBLICATION-FIFO-001");
+        let mut node = LiveNode::builder(trader_id, Environment::Sandbox)
+            .unwrap()
+            .with_logging(nautilus_common::logging::logger::LoggerConfig {
+                bypass_logging: true,
+                ..Default::default()
+            })
+            .with_reconciliation(false)
+            .build()
+            .unwrap();
+        let cache = node.kernel().cache();
+        cache
+            .borrow_mut()
+            .add_instrument(InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt()))
+            .unwrap();
+        msgbus::send_account_state(
+            MessagingSwitchboard::portfolio_update_account(),
+            &AccountState::new(
+                AccountId::from("BINANCE-001"),
+                AccountType::Margin,
+                vec![AccountBalance::new(
+                    Money::from("100000 USDT"),
+                    Money::from("0 USDT"),
+                    Money::from("100000 USDT"),
+                )],
+                Vec::new(),
+                true,
+                UUID4::new(),
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+                Some(Currency::USDT()),
+            ),
+        );
+        let first = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(trader_id)
+            .instrument_id(InstrumentId::from("ETHUSDT-PERP.BINANCE"))
+            .client_order_id("PUBLICATION-FIFO-A".into())
+            .price(Price::from("99.00"))
+            .quantity(Quantity::from("1.000"))
+            .build();
+        let second = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(trader_id)
+            .instrument_id(first.instrument_id())
+            .client_order_id("PUBLICATION-FIFO-B".into())
+            .price(Price::from("98.00"))
+            .quantity(Quantity::from("1.000"))
+            .build();
+        cache
+            .borrow_mut()
+            .add_order(first.clone(), None, None, false)
+            .unwrap();
+        cache
+            .borrow_mut()
+            .add_order(second.clone(), None, None, false)
+            .unwrap();
+        let trace = Rc::new(RefCell::new(Vec::new()));
+        let observed = trace.clone();
+        let observed_cache = cache.clone();
+        let first_id = first.client_order_id();
+        let handler = TypedHandler::from(move |event: &OrderEventAny| {
+            let kind = match event {
+                OrderEventAny::Initialized(_) => "initialized",
+                OrderEventAny::Submitted(_) => "submitted",
+                OrderEventAny::Accepted(_) => "accepted",
+                _ => panic!("unexpected FIFO fixture event"),
+            };
+            observed.borrow_mut().push((
+                event.client_order_id(),
+                kind,
+                observed_cache
+                    .borrow()
+                    .order_owned(&first_id)
+                    .unwrap()
+                    .status(),
+            ));
+        });
+        msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+        let (_time_tx, mut time_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_system_evt_tx, mut system_evt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_system_cmd_tx, mut system_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_data_evt_tx, mut data_evt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_data_cmd_tx, mut data_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (exec_evt_tx, mut exec_evt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_exec_cmd_tx, mut exec_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        exec_evt_tx
+            .send(ExecutionEvent::OrderInitializedPublication(
+                first.init_event().clone(),
+            ))
+            .unwrap();
+        exec_evt_tx
+            .send(ExecutionEvent::Order(TestOrderEventStubs::submitted(
+                &first,
+                AccountId::from("BINANCE-001"),
+            )))
+            .unwrap();
+        exec_evt_tx
+            .send(ExecutionEvent::OrderInitializedPublication(
+                second.init_event().clone(),
+            ))
+            .unwrap();
+        exec_evt_tx
+            .send(ExecutionEvent::Order(TestOrderEventStubs::accepted(
+                &first,
+                AccountId::from("BINANCE-001"),
+                VenueOrderId::from("PUBLICATION-FIFO-A"),
+            )))
+            .unwrap();
+        let mut pending = PendingEvents::default();
+        if connect_wait {
+            let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+            let engine = node.kernel().exec_engine().clone();
+            let borrowed = engine.borrow_mut();
+            let mut driven = Box::pin(drive_with_event_buffering(
+                waiting,
+                &mut pending,
+                &mut time_rx,
+                &mut system_evt_rx,
+                &mut system_cmd_rx,
+                &mut exec_evt_rx,
+                &mut exec_cmd_rx,
+                &mut data_evt_rx,
+                &mut data_cmd_rx,
+            ));
+            std::future::poll_fn(|cx| {
+                assert!(driven.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            assert!(trace.borrow().is_empty());
+            release.send(()).unwrap();
+            driven.await.unwrap();
+            drop(borrowed);
+            assert_eq!(pending.order_evts.len(), 4);
+            pending.drain();
+        } else {
+            flush_all_pending(
+                &mut pending,
+                &mut time_rx,
+                &mut system_evt_rx,
+                &mut system_cmd_rx,
+                &mut exec_evt_rx,
+                &mut exec_cmd_rx,
+                &mut data_evt_rx,
+                &mut data_cmd_rx,
+            );
+        }
+        assert_eq!(
+            trace.borrow().as_slice(),
+            &[
+                (
+                    first.client_order_id(),
+                    "initialized",
+                    OrderStatus::Initialized
+                ),
+                (first.client_order_id(), "submitted", OrderStatus::Submitted),
+                (
+                    second.client_order_id(),
+                    "initialized",
+                    OrderStatus::Submitted
+                ),
+                (first.client_order_id(), "accepted", OrderStatus::Accepted),
+            ]
+        );
+        let first = cache
+            .borrow()
+            .order_owned(&first.client_order_id())
+            .unwrap();
+        let second = cache
+            .borrow()
+            .order_owned(&second.client_order_id())
+            .unwrap();
+        assert_eq!(first.events().len(), 3);
+        assert_eq!(second.events().len(), 1);
+        assert_eq!(second.status(), OrderStatus::Initialized);
+        msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+        node.dispose();
+    }
+
+    #[rstest]
     fn test_flush_all_pending_drains_buffered_channels() {
         let (time_tx, mut time_rx) = tokio::sync::mpsc::unbounded_channel::<TimeEventMessage>();
         let (system_evt_tx, mut system_evt_rx) =
@@ -8364,7 +8590,7 @@ mod tests {
         let mut pending = PendingEvents::default();
 
         if let ExecutionEvent::Order(order_evt) = stub_order_event() {
-            pending.order_evts.push(order_evt);
+            pending.order_evts.push(order_evt.into());
         }
 
         assert!(!pending.is_empty());
@@ -8488,6 +8714,11 @@ mod tests {
         // Manually replicate what flush_all_pending does before drain
         while let Ok(evt) = exec_evt_rx.try_recv() {
             match evt {
+                ExecutionEvent::OrderInitializedPublication(initialized) => {
+                    pending
+                        .order_evts
+                        .push(PendingOrderDispatch::PublishInitialized(initialized));
+                }
                 ExecutionEvent::Account(_) => {
                     AsyncRunner::handle_exec_event(evt);
                 }
@@ -8495,21 +8726,27 @@ mod tests {
                     pending.exec_reports.push(report);
                 }
                 ExecutionEvent::Order(order_evt) => {
-                    pending.order_evts.push(order_evt);
+                    pending.order_evts.push(order_evt.into());
                 }
                 ExecutionEvent::OrderSubmittedBatch(batch) => {
                     for submitted in batch {
-                        pending.order_evts.push(OrderEventAny::Submitted(submitted));
+                        pending
+                            .order_evts
+                            .push(OrderEventAny::Submitted(submitted).into());
                     }
                 }
                 ExecutionEvent::OrderAcceptedBatch(batch) => {
                     for accepted in batch {
-                        pending.order_evts.push(OrderEventAny::Accepted(accepted));
+                        pending
+                            .order_evts
+                            .push(OrderEventAny::Accepted(accepted).into());
                     }
                 }
                 ExecutionEvent::OrderCanceledBatch(batch) => {
                     for canceled in batch {
-                        pending.order_evts.push(OrderEventAny::Canceled(canceled));
+                        pending
+                            .order_evts
+                            .push(OrderEventAny::Canceled(canceled).into());
                     }
                 }
             }
@@ -8517,10 +8754,10 @@ mod tests {
 
         assert_eq!(pending.order_evts.len(), 2);
         assert!(
-            matches!(&pending.order_evts[0], OrderEventAny::Canceled(c) if c.client_order_id == ClientOrderId::from("O-001"))
+            matches!(&pending.order_evts[0], PendingOrderDispatch::Process(OrderEventAny::Canceled(c)) if c.client_order_id == ClientOrderId::from("O-001"))
         );
         assert!(
-            matches!(&pending.order_evts[1], OrderEventAny::Canceled(c) if c.client_order_id == ClientOrderId::from("O-002"))
+            matches!(&pending.order_evts[1], PendingOrderDispatch::Process(OrderEventAny::Canceled(c)) if c.client_order_id == ClientOrderId::from("O-002"))
         );
     }
 

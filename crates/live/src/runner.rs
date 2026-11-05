@@ -497,6 +497,12 @@ impl AsyncRunner {
         let _capture_dispatch =
             crate::node::account_capture::dispatch_guard(crate::node::account_capture::EXEC_EVENTS);
         match event {
+            ExecutionEvent::OrderInitializedPublication(initialized) => {
+                let topic = nautilus_common::msgbus::switchboard::get_event_order_topic(
+                    initialized.strategy_id,
+                );
+                msgbus::publish_order_event(topic, &OrderEventAny::Initialized(initialized));
+            }
             ExecutionEvent::Order(order_event) => {
                 msgbus::send_order_event(MessagingSwitchboard::exec_engine_process(), order_event);
             }

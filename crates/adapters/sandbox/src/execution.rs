@@ -45,7 +45,10 @@ use nautilus_common::{
 use nautilus_core::{DurationNanos, Params, UUID4, UnixNanos, WeakCell};
 use nautilus_execution::{
     client::core::ExecutionClientCore,
-    matching_engine::OrderMatchingEngine,
+    matching_engine::{
+        InitializedPublicationFailure, InitializedPublicationFault, InitializedPublicationHandler,
+        OrderMatchingEngine,
+    },
     models::{fee::FeeModelHandle, fill::FillModelHandle},
 };
 use nautilus_model::{
@@ -142,6 +145,7 @@ impl SandboxExecutionClient {
             next_engine_raw_id: 0,
             balances,
             event_handler: None,
+            initialized_publication_handler: None,
         }));
 
         let factory = OrderEventFactory::new(
@@ -175,6 +179,17 @@ impl SandboxExecutionClient {
     #[must_use]
     pub fn matching_engine_count(&self) -> usize {
         self.inner.borrow().matching_engines.len()
+    }
+
+    /// Returns retained terminal publication evidence without removing or retrying it.
+    #[must_use]
+    pub fn initialized_publication_failure(&self) -> Option<InitializedPublicationFault> {
+        self.inner
+            .borrow()
+            .matching_engines
+            .values()
+            .find_map(OrderMatchingEngine::initialized_publication_failure)
+            .cloned()
     }
 
     fn dispatch_order_event(&self, event: OrderEventAny) {
@@ -421,6 +436,7 @@ impl SandboxExecutionClient {
     ///
     /// Returns an error if the instrument is not found in the cache.
     pub fn process_quote_tick(&self, quote: &QuoteTick) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = quote.instrument_id;
         let instrument = self.cache.borrow().try_instrument(&instrument_id)?.clone();
 
@@ -433,6 +449,7 @@ impl SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_quote_tick(quote);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
@@ -442,6 +459,7 @@ impl SandboxExecutionClient {
     ///
     /// Returns an error if the instrument is not found in the cache.
     pub fn process_trade_tick(&self, trade: &TradeTick) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         if !self.config.trade_execution {
             return Ok(());
         }
@@ -458,6 +476,7 @@ impl SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_trade_tick(trade);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
@@ -467,6 +486,7 @@ impl SandboxExecutionClient {
     ///
     /// Returns an error if the instrument is not found in the cache.
     pub fn process_bar(&self, bar: &Bar) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         if !self.config.bar_execution {
             return Ok(());
         }
@@ -483,6 +503,7 @@ impl SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_bar(bar);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
@@ -492,6 +513,7 @@ impl SandboxExecutionClient {
     ///
     /// Returns an error if the instrument is not found in the cache.
     pub fn process_order_book_deltas(&self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = deltas.instrument_id;
         let instrument = self.cache.borrow().try_instrument(&instrument_id)?.clone();
 
@@ -500,13 +522,19 @@ impl SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_order_book_deltas(deltas)?;
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     /// Resets the sandbox to its initial state.
+    ///
+    /// A retained terminal publication fault leaves the matching and balance state intact.
     pub fn reset(&self) {
         self.capture_retired.set(true);
         let mut inner = self.inner.borrow_mut();
+        if inner.ensure_matching_available().is_err() {
+            return;
+        }
         for engine in inner.matching_engines.values_mut() {
             engine.reset();
         }
@@ -593,6 +621,7 @@ impl ExecutionClient for SandboxExecutionClient {
         ts_event: UnixNanos,
         info: Option<Params>,
     ) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let ts_init = self.clock.borrow().timestamp_ns();
         let state = self
             .factory
@@ -600,15 +629,27 @@ impl ExecutionClient for SandboxExecutionClient {
         let endpoint = MessagingSwitchboard::portfolio_update_account();
         msgbus::send_account_state(endpoint, &state);
         self.sync_cached_account_config()?;
-        Ok(())
+        self.inner.borrow().ensure_matching_available()
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         if self.core.borrow().is_started() {
             return Ok(());
         }
 
         if let Some(sender) = try_get_exec_event_sender() {
+            let publication_sender = sender.clone();
+            let publication_handler: InitializedPublicationHandler = Rc::new(move |initialized| {
+                publication_sender
+                    .send(ExecutionEvent::OrderInitializedPublication(initialized))
+                    .map_err(|error| match error.0 {
+                        ExecutionEvent::OrderInitializedPublication(initialized) => {
+                            InitializedPublicationFailure::ChannelClosed(Box::new(initialized))
+                        }
+                        _ => unreachable!("the rejected event must be the submitted publication"),
+                    })
+            });
             let handler: Rc<dyn Fn(OrderEventAny)> = Rc::new(move |event: OrderEventAny| {
                 if let Err(e) = sender.send(ExecutionEvent::Order(event)) {
                     log::warn!("Failed to send order event: {e}");
@@ -616,8 +657,10 @@ impl ExecutionClient for SandboxExecutionClient {
             });
             let mut inner = self.inner.borrow_mut();
             inner.event_handler = Some(handler.clone());
+            inner.initialized_publication_handler = Some(publication_handler.clone());
             for engine in inner.matching_engines.values_mut() {
                 engine.set_event_handler(handler.clone());
+                engine.set_initialized_publication_handler(publication_handler.clone());
             }
         }
 
@@ -656,6 +699,7 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         if self.core.borrow().is_connected() {
             return Ok(());
         }
@@ -689,6 +733,7 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let mut order = self.get_order(&cmd.client_order_id)?;
 
         if order.is_closed() {
@@ -731,10 +776,12 @@ impl ExecutionClient for SandboxExecutionClient {
             inner.sync_expired_cleanup(instrument_id);
         }
 
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let ts_init = self.clock.borrow().timestamp_ns();
         let mut cleanup_instrument_ids = Vec::new();
 
@@ -768,6 +815,7 @@ impl ExecutionClient for SandboxExecutionClient {
 
             if let Some(instrument) = instrument {
                 let mut inner = self.inner.borrow_mut();
+                inner.ensure_matching_available()?;
                 inner.ensure_matching_engine(&instrument);
 
                 let cache = self.cache.borrow();
@@ -787,11 +835,13 @@ impl ExecutionClient for SandboxExecutionClient {
                     }
                 }
                 drop(cache);
+                inner.ensure_matching_available()?;
 
                 if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
                     let mut order_clone = order.clone();
                     engine.process_order(&mut order_clone, account_id);
                 }
+                inner.ensure_matching_available()?;
             }
         }
 
@@ -801,10 +851,12 @@ impl ExecutionClient for SandboxExecutionClient {
                 .sync_expired_cleanup_many(&cleanup_instrument_ids);
         }
 
+        self.inner.borrow().ensure_matching_available()?;
         Ok(())
     }
 
     fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
@@ -812,10 +864,12 @@ impl ExecutionClient for SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_modify(&cmd, account_id);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     fn batch_modify_orders(&self, cmd: BatchModifyOrders) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
@@ -823,10 +877,12 @@ impl ExecutionClient for SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_batch_modify(&cmd, account_id);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     fn cancel_order(&self, cmd: CancelOrder) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
@@ -834,10 +890,12 @@ impl ExecutionClient for SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_cancel(&cmd, account_id);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     fn cancel_all_orders(&self, cmd: CancelAllOrders) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
@@ -845,10 +903,12 @@ impl ExecutionClient for SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_cancel_all(&cmd, account_id);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
@@ -856,10 +916,12 @@ impl ExecutionClient for SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine.process_batch_cancel(&cmd, account_id);
         }
+        inner.ensure_matching_available()?;
         Ok(())
     }
 
     fn query_account(&self, _cmd: QueryAccount) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         let balances = self.get_current_account_balances();
         let ts_event = self.clock.borrow().timestamp_ns();
         self.generate_account_state(balances, vec![], false, ts_event, None)?;
@@ -867,6 +929,7 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn query_order(&self, _cmd: QueryOrder) -> anyhow::Result<()> {
+        self.inner.borrow().ensure_matching_available()?;
         // Orders are tracked in the cache, no external query needed for sandbox
         Ok(())
     }
@@ -875,6 +938,7 @@ impl ExecutionClient for SandboxExecutionClient {
         &self,
         _cmd: &GenerateOrderStatusReport,
     ) -> anyhow::Result<Option<OrderStatusReport>> {
+        self.inner.borrow().ensure_matching_available()?;
         // Sandbox orders are tracked internally
         Ok(None)
     }
@@ -883,6 +947,7 @@ impl ExecutionClient for SandboxExecutionClient {
         &self,
         _cmd: &GenerateOrderStatusReports,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        self.inner.borrow().ensure_matching_available()?;
         // Sandbox orders are tracked internally
         Ok(Vec::new())
     }
@@ -891,6 +956,7 @@ impl ExecutionClient for SandboxExecutionClient {
         &self,
         _cmd: GenerateFillReports,
     ) -> anyhow::Result<Vec<FillReport>> {
+        self.inner.borrow().ensure_matching_available()?;
         // Sandbox fills are tracked internally
         Ok(Vec::new())
     }
@@ -899,6 +965,7 @@ impl ExecutionClient for SandboxExecutionClient {
         &self,
         _cmd: &GeneratePositionStatusReports,
     ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        self.inner.borrow().ensure_matching_available()?;
         // Sandbox positions are tracked internally
         Ok(Vec::new())
     }
@@ -929,9 +996,21 @@ struct SandboxInner {
     next_engine_raw_id: u32,
     balances: AHashMap<String, Money>,
     event_handler: Option<Rc<dyn Fn(OrderEventAny)>>,
+    initialized_publication_handler: Option<InitializedPublicationHandler>,
 }
 
 impl SandboxInner {
+    fn ensure_matching_available(&self) -> anyhow::Result<()> {
+        match self
+            .matching_engines
+            .values()
+            .find_map(OrderMatchingEngine::initialized_publication_failure)
+        {
+            Some(fault) => Err(anyhow::Error::new(fault.clone())),
+            None => Ok(()),
+        }
+    }
+
     fn ensure_matching_engine(&mut self, instrument: &InstrumentAny) {
         let instrument_id = instrument.id();
 
@@ -963,12 +1042,18 @@ impl SandboxInner {
             if let Some(handler) = &self.event_handler {
                 engine.set_event_handler(handler.clone());
             }
+            if let Some(handler) = &self.initialized_publication_handler {
+                engine.set_initialized_publication_handler(handler.clone());
+            }
 
             self.matching_engines.insert(instrument_id, engine);
         }
     }
 
     fn process_quote_tick(&mut self, quote: &QuoteTick) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         let instrument_id = quote.instrument_id;
 
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
@@ -986,6 +1071,9 @@ impl SandboxInner {
     }
 
     fn process_trade_tick(&mut self, trade: &TradeTick) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         if !self.config.trade_execution {
             return;
         }
@@ -1007,6 +1095,9 @@ impl SandboxInner {
     }
 
     fn process_bar(&mut self, bar: &Bar) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         if !self.config.bar_execution {
             return;
         }
@@ -1028,6 +1119,9 @@ impl SandboxInner {
     }
 
     fn process_order_book_deltas(&mut self, deltas: &OrderBookDeltas) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         let instrument_id = deltas.instrument_id;
 
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
@@ -1043,6 +1137,9 @@ impl SandboxInner {
     }
 
     fn process_instrument_status(&mut self, status: &InstrumentStatus) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         let instrument_id = status.instrument_id;
 
         if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
@@ -1065,6 +1162,9 @@ impl SandboxInner {
     }
 
     fn process_instrument_close(&mut self, close: &InstrumentClose) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         let instrument_id = close.instrument_id;
 
         // A delayed close belongs to an existing exposure lifecycle. Unlike an
@@ -1104,6 +1204,13 @@ impl SandboxInner {
     }
 
     fn sync_expired_cleanup(&mut self, instrument_id: InstrumentId) {
+        if self
+            .matching_engines
+            .get(&instrument_id)
+            .is_some_and(|engine| engine.initialized_publication_failure().is_some())
+        {
+            return;
+        }
         if !self.is_expired_now(instrument_id) {
             return;
         }
@@ -1136,6 +1243,9 @@ impl SandboxInner {
     // open positions because this path cannot settle them. Open orders must also remain because
     // `Cache::purge_instrument_skip_order_guard` requires callers to terminalize order state first
     fn sweep_expired_engines(&mut self) {
+        if self.ensure_matching_available().is_err() {
+            return;
+        }
         let expired_ids: Vec<InstrumentId> = self
             .matching_engines
             .keys()

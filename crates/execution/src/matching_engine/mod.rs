@@ -53,8 +53,8 @@ use nautilus_model::{
     },
     events::{
         OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny, OrderExpired,
-        OrderFilled, OrderModifyRejected, OrderRejected, OrderSubmitted, OrderTriggered,
-        OrderUpdated,
+        OrderFilled, OrderInitialized, OrderModifyRejected, OrderRejected, OrderSubmitted,
+        OrderTriggered, OrderUpdated,
     },
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId, Venue,
@@ -83,6 +83,68 @@ use crate::{
     trailing::trailing_stop_calculate,
 };
 
+/// A failed transfer of the original cached initialization to its owner channel.
+#[derive(Clone, Debug)]
+pub enum InitializedPublicationFailure {
+    ChannelClosed(Box<OrderInitialized>),
+}
+
+impl InitializedPublicationFailure {
+    /// Returns the exact initialization which the channel did not accept.
+    #[must_use]
+    pub fn event(&self) -> &OrderInitialized {
+        match self {
+            Self::ChannelClosed(event) => event,
+        }
+    }
+}
+
+/// The automatic action which had already cached an order before publication failed.
+#[derive(Clone, Debug)]
+pub enum InitializedPublicationSource {
+    OptionSettlement {
+        leg_position_id: Option<PositionId>,
+        timestamp: UnixNanos,
+        close: Option<InstrumentClose>,
+        cached_plan_initializations: std::sync::Arc<[OrderInitialized]>,
+    },
+    Expiration {
+        position_id: PositionId,
+        timestamp: UnixNanos,
+        close: Option<InstrumentClose>,
+    },
+    Liquidation {
+        position_id: PositionId,
+        timestamp: UnixNanos,
+        cancel_open_orders: bool,
+        settlement_currency: Currency,
+    },
+}
+
+/// A terminal owner failure, retained without retrying or clearing cached evidence.
+#[derive(Clone, Debug)]
+pub struct InitializedPublicationFault {
+    pub failure: InitializedPublicationFailure,
+    pub source: InitializedPublicationSource,
+}
+
+impl std::fmt::Display for InitializedPublicationFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "execution event channel closed for cached initialization {} ({})",
+            self.failure.event().client_order_id,
+            self.failure.event().event_id,
+        )
+    }
+}
+
+impl std::error::Error for InitializedPublicationFault {}
+
+/// Same-thread transfer of an already cached initialization, without financial authority.
+pub type InitializedPublicationHandler =
+    Rc<dyn Fn(OrderInitialized) -> Result<(), InitializedPublicationFailure>>;
+
 /// An order matching engine for a single market.
 pub struct OrderMatchingEngine {
     /// The venue for the matching engine.
@@ -108,6 +170,8 @@ pub struct OrderMatchingEngine {
     fill_model: FillModelHandle,
     fee_model: FeeModelHandle,
     event_handler: Option<Rc<dyn Fn(OrderEventAny)>>,
+    initialized_publication_handler: Option<InitializedPublicationHandler>,
+    initialized_publication_fault: Option<Box<InitializedPublicationFault>>,
     target_bid: Option<Price>,
     target_ask: Option<Price>,
     target_last: Option<Price>,
@@ -193,6 +257,8 @@ impl OrderMatchingEngine {
             fill_model,
             fee_model,
             event_handler: None,
+            initialized_publication_handler: None,
+            initialized_publication_fault: None,
             book_type,
             oms_type,
             account_type,
@@ -255,6 +321,24 @@ impl OrderMatchingEngine {
         self.event_handler = Some(handler);
     }
 
+    /// Sets the owner transfer for initialization publications, without applying them again.
+    pub fn set_initialized_publication_handler(&mut self, handler: InitializedPublicationHandler) {
+        self.initialized_publication_handler = Some(handler);
+    }
+
+    /// Returns the first terminal publication fault, which cannot be cleared by reset.
+    #[must_use]
+    pub fn initialized_publication_failure(&self) -> Option<&InitializedPublicationFault> {
+        self.initialized_publication_fault.as_deref()
+    }
+
+    fn ensure_matching_available(&self) -> anyhow::Result<()> {
+        match &self.initialized_publication_fault {
+            Some(fault) => Err(anyhow::Error::new(fault.as_ref().clone())),
+            None => Ok(()),
+        }
+    }
+
     fn dispatch_order_event(&self, event: OrderEventAny) {
         if let Some(handler) = &self.event_handler {
             handler(event);
@@ -268,8 +352,12 @@ impl OrderMatchingEngine {
     ///
     /// Clears the order book, execution state, cached data, and resets all
     /// internal components. This is typically used for backtesting scenarios
+    /// A retained terminal publication fault makes reset a no-op; it is not a recovery API.
     /// where the engine needs to be reset between test runs.
     pub fn reset(&mut self) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         self.book.reset();
         self.execution_bar_types.clear();
         self.execution_bar_deltas.clear();
@@ -1294,6 +1382,9 @@ impl OrderMatchingEngine {
         account_id: &AccountId,
     ) -> Result<bool, nautilus_common::clients::ExecutionAccountCaptureError> {
         use nautilus_common::clients::ExecutionAccountCaptureError::Borrowed;
+        if self.initialized_publication_fault.is_some() {
+            return Ok(true);
+        }
         let updates = self
             .pending_order_updates
             .try_borrow()
@@ -1369,6 +1460,7 @@ impl OrderMatchingEngine {
     ///
     /// Returns an error if `instrument.id()` does not match this engines instrument ID.
     pub fn update_instrument(&mut self, instrument: InstrumentAny) -> anyhow::Result<()> {
+        self.ensure_matching_available()?;
         if instrument.id() != self.instrument.id() {
             anyhow::bail!(
                 "Cannot update instrument {} with {}",
@@ -1421,7 +1513,7 @@ impl OrderMatchingEngine {
             self.drop_incompatible_core_orders();
         }
 
-        Ok(())
+        self.ensure_matching_available()
     }
 
     fn check_price_precision(&self, actual: u8, field: &str) -> anyhow::Result<()> {
@@ -1572,6 +1664,7 @@ impl OrderMatchingEngine {
     /// - If delta order size precision does not match the instrument (for Add/Update actions).
     /// - If applying the delta to the book fails.
     pub fn process_order_book_delta(&mut self, delta: &OrderBookDelta) -> anyhow::Result<()> {
+        self.ensure_matching_available()?;
         log::debug!("Processing {delta}");
 
         // Validate precision for Add and Update actions (Delete/Clear may have NULL_ORDER)
@@ -1583,7 +1676,7 @@ impl OrderMatchingEngine {
         // L1 books are driven by top-of-book data only, ignore deltas
         if self.book_type == BookType::L1_MBP {
             self.iterate(delta.ts_init, AggressorSide::NoAggressor);
-            return Ok(());
+            return self.ensure_matching_available();
         }
 
         self.book.apply_delta(delta)?;
@@ -1616,7 +1709,7 @@ impl OrderMatchingEngine {
         }
 
         self.iterate(delta.ts_init, AggressorSide::NoAggressor);
-        Ok(())
+        self.ensure_matching_available()
     }
 
     /// Process the venues market for the given order book deltas.
@@ -1627,6 +1720,7 @@ impl OrderMatchingEngine {
     /// - If any delta order size precision does not match the instrument (for Add/Update actions).
     /// - If applying the deltas to the book fails.
     pub fn process_order_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        self.ensure_matching_available()?;
         log::debug!("Processing {deltas}");
 
         // Validate precision for Add and Update actions (Delete/Clear may have NULL_ORDER)
@@ -1640,7 +1734,7 @@ impl OrderMatchingEngine {
         // L1 books are driven by top-of-book data only, ignore deltas
         if self.book_type == BookType::L1_MBP {
             self.iterate(deltas.ts_init, AggressorSide::NoAggressor);
-            return Ok(());
+            return self.ensure_matching_available();
         }
 
         self.book.apply_deltas(deltas)?;
@@ -1665,7 +1759,7 @@ impl OrderMatchingEngine {
         }
 
         self.iterate(deltas.ts_init, AggressorSide::NoAggressor);
-        Ok(())
+        self.ensure_matching_available()
     }
 
     /// Process the venues market for the given order book depth10.
@@ -1677,6 +1771,7 @@ impl OrderMatchingEngine {
     /// - If applying the depth to the book fails.
     /// - If updating the L1 order book with the top-of-book quote fails.
     pub fn process_order_book_depth10(&mut self, depth: &OrderBookDepth10) -> anyhow::Result<()> {
+        self.ensure_matching_available()?;
         log::debug!("Processing OrderBookDepth10 for {}", depth.instrument_id);
 
         // Validate precision for non-padding entries
@@ -1739,7 +1834,7 @@ impl OrderMatchingEngine {
         }
 
         self.iterate(depth.ts_init, AggressorSide::NoAggressor);
-        Ok(())
+        self.ensure_matching_available()
     }
 
     fn first_valid_depth_order(orders: &[BookOrder], side: OrderSide) -> Option<BookOrder> {
@@ -1759,6 +1854,9 @@ impl OrderMatchingEngine {
 
     /// Processes a quote tick to update the market state.
     pub fn process_quote_tick(&mut self, quote: &QuoteTick) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         log::debug!("Processing {quote}");
 
         if let Err(e) = self.check_price_precision(quote.bid_price.precision, "bid_price") {
@@ -1827,6 +1925,9 @@ impl OrderMatchingEngine {
     ///
     /// - If the bar type configuration is missing a time delta.
     pub fn process_bar(&mut self, bar: &Bar) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         log::debug!("Processing {bar}");
 
         debug_assert!(
@@ -2304,6 +2405,9 @@ impl OrderMatchingEngine {
     /// tick does not match resting limit orders or trigger stops that use other trigger
     /// types.
     pub fn process_trade_tick(&mut self, trade: &TradeTick) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         log::debug!("Processing {trade}");
 
         if let Err(e) = self.check_price_precision(trade.price.precision, "trade price") {
@@ -2533,6 +2637,9 @@ impl OrderMatchingEngine {
     /// For `ContractExpired` close types, stores the close and triggers expiration
     /// processing which cancels all open orders and closes all open positions.
     pub fn process_instrument_close(&mut self, close: InstrumentClose) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         if close.instrument_id != self.instrument.id() {
             log::warn!(
                 "Received instrument close for unknown instrument_id: {}",
@@ -2549,6 +2656,9 @@ impl OrderMatchingEngine {
 
     /// Processes instrument expiration at the given timestamp.
     pub fn process_instrument_expiration(&mut self, timestamp_ns: UnixNanos) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         self.check_instrument_expiration(timestamp_ns, false);
     }
 
@@ -2612,6 +2722,9 @@ impl OrderMatchingEngine {
     }
 
     fn check_instrument_expiration(&mut self, timestamp_ns: UnixNanos, defer_settlement: bool) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         if self.expiration_processed || self.option_settlement_failed {
             return;
         }
@@ -2746,8 +2859,20 @@ impl OrderMatchingEngine {
                     .add_order(order.clone(), Some(position_id), None, false);
             if add_result.is_err() {
                 log::debug!("Expiration order already in cache: {client_order_id}");
-            } else {
-                self.publish_order_initialized(&order);
+            } else if self
+                .publish_order_initialized(
+                    &order,
+                    InitializedPublicationSource::Expiration {
+                        position_id,
+                        timestamp: timestamp_ns,
+                        close,
+                    },
+                )
+                .is_err()
+            {
+                self.expiration_processed = false;
+                self.instrument_close = close;
+                return;
             }
 
             let venue_order_id = self.ids_generator.get_venue_order_id(&order).unwrap();
@@ -2794,6 +2919,9 @@ impl OrderMatchingEngine {
         cancel_open_orders: bool,
         settlement_currency: Currency,
     ) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         // Only liquidate positions settled in the breached currency.
         if self.instrument.settlement_currency() != settlement_currency {
             return;
@@ -2891,7 +3019,20 @@ impl OrderMatchingEngine {
                     log::debug!("Liquidation order already in cache: {e}");
                 } else {
                     drop(cache);
-                    self.publish_order_initialized(&order);
+                    if self
+                        .publish_order_initialized(
+                            &order,
+                            InitializedPublicationSource::Liquidation {
+                                position_id,
+                                timestamp: ts_now,
+                                cancel_open_orders,
+                                settlement_currency,
+                            },
+                        )
+                        .is_err()
+                    {
+                        return;
+                    }
                     self.cache
                         .borrow_mut()
                         .add_venue_order_id(&client_order_id, &venue_order_id, false)
@@ -2917,6 +3058,9 @@ impl OrderMatchingEngine {
     ///
     /// Panics if an OTO child order references a missing or non-OTO parent.
     pub fn process_order(&mut self, order: &mut OrderAny, account_id: AccountId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         // Idempotent: OTO children may be re-routed via `fill_order`
         if self.core.order_exists(order.client_order_id()) {
             return;
@@ -2926,6 +3070,9 @@ impl OrderMatchingEngine {
         // tick arrives for this instrument after expiry (e.g. after rotation).
         let ts_now = self.clock.borrow().timestamp_ns();
         self.check_instrument_expiration(ts_now, self.config.defer_option_settlement);
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
 
         // Validate inside a cache borrow scope, collecting any rejection
         // reason rather than emitting events while the borrow is held.
@@ -3252,6 +3399,9 @@ impl OrderMatchingEngine {
 
     /// Processes an order modify command to update quantity, price, or trigger price.
     pub fn process_modify(&mut self, command: &ModifyOrder, account_id: AccountId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         if !self.core.order_exists(command.client_order_id) {
             self.generate_order_modify_rejected(
                 command.trader_id,
@@ -3312,6 +3462,9 @@ impl OrderMatchingEngine {
 
     /// Processes an order cancel command.
     pub fn process_cancel(&mut self, command: &CancelOrder, account_id: AccountId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         if !self.core.order_exists(command.client_order_id) {
             self.generate_order_cancel_rejected(
                 command.trader_id,
@@ -3346,6 +3499,9 @@ impl OrderMatchingEngine {
 
     /// Processes a cancel all orders command for an instrument.
     pub fn process_cancel_all(&mut self, command: &CancelAllOrders, account_id: AccountId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         let instrument_id = command.instrument_id;
         let order_side = command.order_side;
 
@@ -3495,6 +3651,9 @@ impl OrderMatchingEngine {
 
     /// Processes a batch cancel orders command.
     pub fn process_batch_cancel(&mut self, command: &BatchCancelOrders, account_id: AccountId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         for order in &command.cancels {
             self.process_cancel(order, account_id);
         }
@@ -3502,6 +3661,9 @@ impl OrderMatchingEngine {
 
     /// Processes a batch modify orders command.
     pub fn process_batch_modify(&mut self, command: &BatchModifyOrders, account_id: AccountId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         for order in &command.modifies {
             self.process_modify(order, account_id);
         }
@@ -3957,6 +4119,9 @@ impl OrderMatchingEngine {
     /// When not `NoAggressor`, the book-based bid/ask reset is skipped to preserve
     /// transient trade price overrides.
     pub fn iterate(&mut self, timestamp_ns: UnixNanos, aggressor_side: AggressorSide) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         self.iterate_with_mode(timestamp_ns, aggressor_side, OrderMatchMode::All);
     }
 
@@ -3966,6 +4131,9 @@ impl OrderMatchingEngine {
         aggressor_side: AggressorSide,
         match_mode: OrderMatchMode,
     ) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         // TODO implement correct clock fixed time setting self.clock.set_time(ts_now);
         self.purge_closed_cached_filled_qty();
         self.purge_applied_order_updates();
@@ -4542,6 +4710,9 @@ impl OrderMatchingEngine {
     /// The order is filled as a taker against available liquidity.
     /// Reduce-only orders are canceled if no position exists.
     pub fn fill_market_order(&mut self, client_order_id: ClientOrderId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         let mut order = match self.order_snapshot(client_order_id) {
             Some(order) => order,
             None => {
@@ -4689,6 +4860,9 @@ impl OrderMatchingEngine {
     ///
     /// Panics if the order has no price (design error).
     pub fn fill_limit_order(&mut self, client_order_id: ClientOrderId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         let mut order = match self.order_snapshot(client_order_id) {
             Some(order) => order,
             None => {
@@ -6303,6 +6477,9 @@ impl OrderMatchingEngine {
 
     /// Triggers a stop order, converting it to an active market or limit order.
     pub fn trigger_stop_order(&mut self, client_order_id: ClientOrderId) {
+        if self.initialized_publication_fault.is_some() {
+            return;
+        }
         let order = match self.order_snapshot(client_order_id) {
             Some(order) => order,
             None => {
@@ -6577,12 +6754,26 @@ impl OrderMatchingEngine {
         self.dispatch_order_event(event);
     }
 
-    fn publish_order_initialized(&self, order: &OrderAny) {
-        let event = OrderEventAny::Initialized(order.init_event().clone());
-        msgbus::publish_order_event(
-            format!("events.order.{}", order.strategy_id()).into(),
-            &event,
-        );
+    fn publish_order_initialized(
+        &mut self,
+        order: &OrderAny,
+        source: InitializedPublicationSource,
+    ) -> anyhow::Result<()> {
+        self.ensure_matching_available()?;
+        let initialized = order.init_event().clone();
+        if let Some(handler) = &self.initialized_publication_handler {
+            if let Err(failure) = handler(initialized) {
+                let fault = InitializedPublicationFault { failure, source };
+                self.initialized_publication_fault = Some(Box::new(fault.clone()));
+                return Err(anyhow::Error::new(fault));
+            }
+        } else {
+            msgbus::publish_order_event(
+                format!("events.order.{}", order.strategy_id()).into(),
+                &OrderEventAny::Initialized(initialized),
+            );
+        }
+        Ok(())
     }
 
     fn create_order_accepted(

@@ -22,7 +22,8 @@
 use nautilus_model::{
     data::{Data, FundingRateUpdate, InstrumentStatus, option_chain::OptionGreeks},
     events::{
-        AccountState, OrderAcceptedBatch, OrderCanceledBatch, OrderEventAny, OrderSubmittedBatch,
+        AccountState, OrderAcceptedBatch, OrderCanceledBatch, OrderEventAny, OrderInitialized,
+        OrderSubmittedBatch,
     },
     instruments::InstrumentAny,
 };
@@ -76,6 +77,9 @@ pub enum SystemEvent {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Display)]
 pub enum ExecutionEvent {
+    /// Publishes an initialization that was already added to the canonical cache.
+    #[strum(transparent)]
+    OrderInitializedPublication(OrderInitialized),
     #[strum(transparent)]
     Order(OrderEventAny),
     #[strum(transparent)]
@@ -131,7 +135,8 @@ mod tests {
 
     #[rstest]
     fn execution_events_delegate_display_to_inner() {
-        let order = OrderEventAny::Initialized(OrderInitialized::default());
+        let initialized = OrderInitialized::default();
+        let order = OrderEventAny::Initialized(initialized.clone());
         let submitted_batch = OrderSubmittedBatch::new(Vec::new());
         let accepted_batch = OrderAcceptedBatch::new(Vec::new());
         let canceled_batch = OrderCanceledBatch::new(Vec::new());
@@ -154,6 +159,10 @@ mod tests {
             None,
         );
         let cases = [
+            (
+                ExecutionEvent::OrderInitializedPublication(initialized.clone()),
+                initialized.to_string(),
+            ),
             (ExecutionEvent::Order(order.clone()), order.to_string()),
             (
                 ExecutionEvent::OrderSubmittedBatch(submitted_batch.clone()),
