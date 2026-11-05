@@ -2510,6 +2510,7 @@ mod hosted_account_connect {
         waiting_callback: pyo3::Py<pyo3::PyAny>,
         queries: Rc<RefCell<Vec<(QueryAccount, ConnectPhase)>>>,
         stopped: Rc<Cell<usize>>,
+        completed_query_callback: Option<pyo3::Py<pyo3::PyAny>>,
     }
 
     #[async_trait::async_trait(?Send)]
@@ -2607,7 +2608,33 @@ mod hosted_account_connect {
             self.queries
                 .borrow_mut()
                 .push((cmd.clone(), self.phase.get()));
-            self.inner.query_account(cmd)
+            let before = self
+                .completed_query_callback
+                .as_ref()
+                .map(|_| self.inner.get_account().unwrap());
+            self.inner.query_account(cmd.clone())?;
+            if let Some(callback) = &self.completed_query_callback {
+                let before = before.unwrap();
+                let after = self.inner.get_account().unwrap();
+                let previous = before.last_event().unwrap();
+                let observed = after.last_event().unwrap();
+                Python::attach(|py| {
+                    callback.call1(
+                        py,
+                        (
+                            cmd.command_id.to_string(),
+                            previous.event_id.to_string(),
+                            observed.event_id.to_string(),
+                            before.events().len(),
+                            after.events().len(),
+                            observed.ts_event.as_u64(),
+                            after.balance_total(None).unwrap().to_string(),
+                        ),
+                    )
+                })
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            }
+            Ok(())
         }
         fn query_order(&self, cmd: QueryOrder) -> anyhow::Result<()> {
             self.inner.query_order(cmd)
@@ -2871,6 +2898,7 @@ def cleanup():
             }),
             queries: queries.clone(),
             stopped: stopped.clone(),
+            completed_query_callback: None,
         };
         engine
             .borrow_mut()
@@ -3061,6 +3089,816 @@ asyncio.run(exercise())
                 .collect::<Vec<_>>()
         );
         Python::attach(|py| {
+            py_node.call_method0(py, "dispose").unwrap();
+            observer.bind(py).call_method0("cleanup").unwrap();
+        });
+    }
+    #[rstest]
+    #[case::base_quantity(false)]
+    #[case::quote_quantity(true)]
+    fn test_hosted_ordinary_callbacks_preserve_accounting_and_query_fifo(
+        #[case] quote_quantity: bool,
+    ) {
+        use nautilus_model::python::orders::order_any_to_pyobject;
+        use nautilus_trading::python::strategy::PyStrategy;
+
+        fn order_identity(event: &OrderEventAny) -> (String, String, String) {
+            let (kind, event_id) = match event {
+                OrderEventAny::Initialized(event) => ("Initialized", event.event_id),
+                OrderEventAny::Submitted(event) => ("Submitted", event.event_id),
+                OrderEventAny::Updated(event) => ("Updated", event.event_id),
+                OrderEventAny::Accepted(event) => ("Accepted", event.event_id),
+                OrderEventAny::Filled(event) => ("Filled", event.event_id),
+                _ => panic!("unexpected ordinary order event"),
+            };
+            (
+                format!("Order{kind}"),
+                event_id.to_string(),
+                event.client_order_id().to_string(),
+            )
+        }
+
+        struct OrdinaryTap {
+            queries: HostedQueryTap,
+            cache: Rc<RefCell<Cache>>,
+            ingress: Rc<RefCell<Vec<(OrderEventAny, OrderStatus)>>>,
+            published: Rc<RefCell<Vec<OrderEventAny>>>,
+        }
+        impl BusTap for OrdinaryTap {
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn Any) {
+                if let Some(event) = message.downcast_ref::<OrderEventAny>()
+                    && topic.as_str() == format!("events.order.{}", event.strategy_id())
+                {
+                    self.published.borrow_mut().push(event.clone());
+                }
+            }
+            fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+                self.queries.on_send(endpoint, message);
+                if endpoint == MessagingSwitchboard::exec_engine_process()
+                    && let Some(event) = message.downcast_ref::<OrderEventAny>()
+                {
+                    let status = self
+                        .cache
+                        .borrow()
+                        .order_owned(&event.client_order_id())
+                        .unwrap()
+                        .status();
+                    self.ingress.borrow_mut().push((event.clone(), status));
+                }
+            }
+        }
+        Python::initialize();
+        let trader_id = TraderId::from("CALLBACK-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("CALLBACK");
+        let config = LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: Duration::from_secs(3),
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::ZERO,
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let node = LiveNodeBuilder::from_config(config)
+            .unwrap()
+            .with_logging(LoggerConfig {
+                bypass_logging: true,
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let clock = node.kernel().clock();
+        let now = clock.borrow().timestamp_ns();
+        let mut instrument = binary_option();
+        instrument.id = InstrumentId::from("ORDINARY.SIM");
+        instrument.activation_ns = UnixNanos::from(1);
+        instrument.expiration_ns = UnixNanos::from(now.as_u64() + 86_400_000_000_000);
+        instrument.maker_fee = Decimal::new(1, 3);
+        instrument.taker_fee = Decimal::new(1, 3);
+        let instrument = InstrumentAny::BinaryOption(instrument);
+        let quote = QuoteTick::new(
+            instrument.id(),
+            Price::from("0.400"),
+            Price::from("0.410"),
+            Quantity::from("10000.00"),
+            Quantity::from("10000.00"),
+            now,
+            now,
+        );
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        cache.borrow_mut().add_quote(quote).unwrap();
+        let queries = Rc::new(RefCell::new(Vec::new()));
+        let observer = Python::attach(|py| {
+            let module = PyModule::new(py, "hosted_ordinary_observer").unwrap();
+            module
+                .setattr("Strategy", py.get_type::<PyStrategy>())
+                .unwrap();
+            module
+                .setattr("client_id", client_id.into_py_any(py).unwrap())
+                .unwrap();
+            let enqueue = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _kwargs| -> pyo3::PyResult<()> {
+                    let cause: UUID4 = args
+                        .get_item(0)?
+                        .extract::<String>()?
+                        .parse()
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                    let ts = args.get_item(1)?.extract::<u64>()?;
+                    let mut query = QueryAccount::new(
+                        trader_id,
+                        Some(client_id),
+                        account_id,
+                        UUID4::new(),
+                        UnixNanos::from(ts),
+                        None,
+                        None,
+                    );
+                    query.causation_id = Some(cause);
+                    msgbus::send_trading_command(
+                        MessagingSwitchboard::exec_engine_queue_execute(),
+                        TradingCommand::QueryAccount(query),
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+            module.setattr("enqueue", enqueue).unwrap();
+            py.run(c_str!(r#"
+import asyncio
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "ordinary.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE observations (kind TEXT, event_id TEXT, identity TEXT, state TEXT)")
+seen = []
+aggregate = []
+accounts = []
+portfolio_snapshots = []
+query_effects = []
+errors = []
+closed = False
+
+def record(kind, event_id, identity, state):
+    with sqlite3.connect(database, timeout=0) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO observations VALUES (?, ?, ?, ?)", (kind, event_id, identity, state))
+    seen.append((kind, event_id, identity, state))
+
+def on_account(event_id, cached_event_id, balance, count, query_count):
+    record("AccountState", event_id, cached_event_id, balance)
+    accounts.append((event_id, cached_event_id, balance, count, query_count))
+
+def on_portfolio_snapshot(snapshot_id, account_event_id, count):
+    record("PortfolioSnapshot", snapshot_id, account_event_id, str(count))
+    portfolio_snapshots.append((snapshot_id, account_event_id, count))
+
+def on_query_completed(command_id, previous_id, observed_id, previous_count, observed_count, ts_event, balance):
+    record("QueryCompleted", observed_id, command_id, balance)
+    query_effects.append((command_id, previous_id, observed_id, previous_count, observed_count, ts_event, balance))
+
+class OrdinaryStrategy(Strategy):
+    def on_start(self):
+        self.submit_order(self.orders[0], client_id=client_id)
+    def on_stop(self): pass
+    def on_dispose(self): pass
+    def observe_order(self, event):
+        try:
+            cached = self.cache.order(event.client_order_id)
+            record(type(event).__name__, str(event.event_id), str(event.client_order_id), str(cached.status))
+            if type(event).__name__ == "OrderSubmitted":
+                enqueue(str(event.event_id), event.ts_init)
+        except BaseException as error:
+            errors.append(repr(error))
+            raise
+    def on_order_event(self, event):
+        aggregate.append((type(event).__name__, str(event.event_id)))
+    def on_order_submitted(self, event): self.observe_order(event)
+    def on_order_accepted(self, event): self.observe_order(event)
+    def on_order_filled(self, event): self.observe_order(event)
+    def on_order_updated(self, event): self.observe_order(event)
+    def observe_position(self, event, next_order=None):
+        global closed
+        try:
+            cached = self.cache.position(event.position_id)
+            record(type(event).__name__, str(event.event_id), str(event.position_id), str(cached.quantity))
+            enqueue(str(event.event_id), event.ts_init)
+            if next_order is not None:
+                self.submit_order(self.orders[next_order], client_id=client_id)
+            else:
+                closed = True
+        except BaseException as error:
+            errors.append(repr(error))
+            raise
+    def on_position_opened(self, event): self.observe_position(event, 1)
+    def on_position_changed(self, event): self.observe_position(event, 2)
+    def on_position_closed(self, event): self.observe_position(event)
+
+strategy = OrdinaryStrategy()
+def mark_waiting(): pass
+def on_dispatch(command_id):
+    record("QueryDispatch", command_id, command_id, "before actual client")
+def cleanup(): directory.cleanup()
+"#), Some(&module.dict()), None).unwrap();
+            module.unbind()
+        });
+        let strategy = Python::attach(|py| observer.bind(py).getattr("strategy").unwrap().unbind());
+        let strategy_id = node
+            .kernel()
+            .trader()
+            .borrow_mut()
+            .add_python_strategy_instance(&strategy)
+            .unwrap();
+        let orders: Vec<_> = [
+            ("ORDINARY-OPEN", OrderSide::Buy, "100.00", "0.410"),
+            ("ORDINARY-ADD", OrderSide::Buy, "100.00", "0.410"),
+            ("ORDINARY-CLOSE", OrderSide::Sell, "200.00", "0.400"),
+        ]
+        .into_iter()
+        .map(|(id, side, quantity, price)| {
+            OrderTestBuilder::new(OrderType::Limit)
+                .trader_id(trader_id)
+                .strategy_id(strategy_id)
+                .instrument_id(instrument.id())
+                .client_order_id(id.into())
+                .side(side)
+                .quantity(if quote_quantity {
+                    let mut notional =
+                        Quantity::from(quantity).as_decimal() * Price::from(price).as_decimal();
+                    notional.rescale(2);
+                    Quantity::from_decimal(notional).unwrap()
+                } else {
+                    Quantity::from(quantity)
+                })
+                .quote_quantity(quote_quantity)
+                .price(Price::from(price))
+                .build()
+        })
+        .collect();
+        Python::attach(|py| {
+            let py_orders: Vec<_> = orders
+                .iter()
+                .map(|order| order_any_to_pyobject(py, order.clone()).unwrap())
+                .collect();
+            strategy.bind(py).setattr("orders", py_orders).unwrap();
+        });
+        let client_config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            account_type: AccountType::Cash,
+            oms_type: OmsType::Netting,
+            base_currency: Some(Currency::USDC()),
+            starting_balances: vec![Money::from("100000 USDC")],
+            ..Default::default()
+        };
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            client_config.venue,
+            client_config.oms_type,
+            account_id,
+            client_config.account_type,
+            client_config.base_currency,
+            cache.clone(),
+        );
+        let inner = SandboxExecutionClient::new(core, client_config, clock, cache.clone());
+        let capture = inner.account_capture_probe().unwrap();
+        let stopped = Rc::new(Cell::new(0));
+        let (finish_tx, finish_rx) = oneshot::channel();
+        finish_tx.send(()).unwrap();
+        let client = HeldSandboxConnect {
+            inner,
+            finish: Some(finish_rx),
+            phase: Rc::new(Cell::new(ConnectPhase::Before)),
+            waiting_callback: Python::attach(|py| {
+                observer.bind(py).getattr("mark_waiting").unwrap().unbind()
+            }),
+            queries: queries.clone(),
+            stopped: stopped.clone(),
+            completed_query_callback: Some(Python::attach(|py| {
+                observer
+                    .bind(py)
+                    .getattr("on_query_completed")
+                    .unwrap()
+                    .unbind()
+            })),
+        };
+        engine
+            .borrow_mut()
+            .register_client(Box::new(client))
+            .unwrap();
+        let queued = Rc::new(RefCell::new(Vec::new()));
+        let dispatched = Rc::new(RefCell::new(Vec::new()));
+        let ingress = Rc::new(RefCell::new(Vec::new()));
+        let published = Rc::new(RefCell::new(Vec::new()));
+        msgbus::set_bus_tap(Rc::new(OrdinaryTap {
+            queries: HostedQueryTap {
+                engine,
+                queued: queued.clone(),
+                dispatched: dispatched.clone(),
+                callback: Python::attach(|py| {
+                    observer.bind(py).getattr("on_dispatch").unwrap().unbind()
+                }),
+            },
+            cache: cache.clone(),
+            ingress: ingress.clone(),
+            published: published.clone(),
+        }));
+        let account_records = Rc::new(RefCell::new(Vec::new()));
+        let records = account_records.clone();
+        let callback_cache = cache.clone();
+        let query_records = queries.clone();
+        let callback =
+            Python::attach(|py| observer.bind(py).getattr("on_account").unwrap().unbind());
+        let account_handler = TypedHandler::from(move |event: &AccountState| {
+            let account = callback_cache
+                .borrow()
+                .account_owned(&event.account_id)
+                .unwrap();
+            let last = account.last_event().unwrap();
+            let balance = account.balance_total(None).unwrap();
+            let count = account.events().len();
+            let query_count = query_records.borrow().len();
+            records
+                .borrow_mut()
+                .push((event.clone(), last.event_id, count, query_count));
+            Python::attach(|py| {
+                callback
+                    .call1(
+                        py,
+                        (
+                            event.event_id.to_string(),
+                            last.event_id.to_string(),
+                            balance.to_string(),
+                            count,
+                            query_count,
+                        ),
+                    )
+                    .unwrap()
+            });
+        });
+        msgbus::subscribe_account_state("events.account.*".into(), account_handler.clone(), None);
+        let snapshot_cache = cache.clone();
+        let snapshot_queries = queries.clone();
+        let snapshot_callback = Python::attach(|py| {
+            observer
+                .bind(py)
+                .getattr("on_portfolio_snapshot")
+                .unwrap()
+                .unbind()
+        });
+        let snapshot_handler = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
+            let account = snapshot_cache
+                .borrow()
+                .account_owned(&snapshot.account_id)
+                .unwrap();
+            Python::attach(|py| {
+                snapshot_callback
+                    .call1(
+                        py,
+                        (
+                            snapshot.event_id.to_string(),
+                            account.last_event().unwrap().event_id.to_string(),
+                            snapshot_queries.borrow().len(),
+                        ),
+                    )
+                    .unwrap()
+            });
+        });
+        msgbus::subscribe_portfolio_snapshot(
+            "events.portfolio.*".into(),
+            snapshot_handler.clone(),
+            None,
+        );
+        let (py_node, exercise_result) = Python::attach(|py| {
+            let py_node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &py_node).unwrap();
+            globals.set_item("observer", observer.bind(py)).unwrap();
+            let exercise_result = py.run(
+                c_str!(
+                    r#"
+import asyncio
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    async def wait_for_effects():
+        while not (observer.closed and len(observer.query_effects) == 6):
+            if task.done():
+                await task
+                raise AssertionError("hosted node stopped before callbacks completed")
+            if observer.errors:
+                raise AssertionError(observer.errors)
+            await asyncio.sleep(0)
+    try:
+        await asyncio.wait_for(wait_for_effects(), timeout=3)
+    except BaseException:
+        print("ordinary callbacks:", observer.seen, "accounts:", observer.accounts, "snapshots:", observer.portfolio_snapshots, "query effects:", observer.query_effects, "errors:", observer.errors, flush=True)
+        raise
+    finally:
+        node.handle().stop()
+        await asyncio.wait_for(task, timeout=3)
+asyncio.run(exercise())
+"#
+                ),
+                Some(&globals),
+                None,
+            );
+            if exercise_result.is_err() {
+                for order in &orders {
+                    eprintln!(
+                        "ordinary cached order {} events={:?}",
+                        order.client_order_id(),
+                        cache
+                            .borrow()
+                            .order_owned(&order.client_order_id())
+                            .unwrap()
+                            .events()
+                    );
+                }
+                eprintln!("ordinary actual queries={:?}", queries.borrow());
+                eprintln!("ordinary actual ingress={:?}", ingress.borrow());
+                eprintln!("ordinary actual published={:?}", published.borrow());
+                eprintln!(
+                    "ordinary Python aggregate={:?}",
+                    observer.bind(py).getattr("aggregate").unwrap()
+                );
+            }
+            (py_node, exercise_result)
+        });
+        assert!(stopped.get() >= 1);
+        assert_eq!(
+            capture.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        Python::attach(|py| {
+            assert_eq!(
+                py_node
+                    .call_method0(py, "handle")
+                    .unwrap()
+                    .getattr(py, "state")
+                    .unwrap()
+                    .extract::<NodeState>(py)
+                    .unwrap(),
+                NodeState::Stopped
+            );
+        });
+        msgbus::unsubscribe_portfolio_snapshot("events.portfolio.*".into(), &snapshot_handler);
+        msgbus::unsubscribe_account_state("events.account.*".into(), &account_handler);
+        msgbus::clear_bus_tap();
+        for order in &orders {
+            let kind = |event: &OrderEventAny| match event {
+                OrderEventAny::Initialized(_) => "Initialized",
+                OrderEventAny::Submitted(_) => "Submitted",
+                OrderEventAny::Updated(_) => "Updated",
+                OrderEventAny::Accepted(_) => "Accepted",
+                OrderEventAny::Filled(_) => "Filled",
+                _ => "Unexpected",
+            };
+            let raw: Vec<_> = ingress
+                .borrow()
+                .iter()
+                .filter(|(event, _)| event.client_order_id() == order.client_order_id())
+                .map(|(event, _)| kind(event))
+                .collect();
+            assert_eq!(
+                raw,
+                if quote_quantity {
+                    vec!["Submitted", "Updated", "Accepted", "Filled"]
+                } else {
+                    vec!["Submitted", "Accepted", "Filled"]
+                },
+                "owner ingress must retain the actual event FIFO"
+            );
+            let outward: Vec<_> = published
+                .borrow()
+                .iter()
+                .filter(|event| event.client_order_id() == order.client_order_id())
+                .map(kind)
+                .collect();
+            assert_eq!(
+                outward,
+                if quote_quantity {
+                    vec!["Initialized", "Submitted", "Updated", "Accepted", "Filled"]
+                } else {
+                    vec!["Initialized", "Submitted", "Accepted", "Filled"]
+                },
+                "normal owner apply must publish Submitted/Accepted before Filled; ingress and canonical cache are logged above"
+            );
+            let canonical: Vec<_> = cache
+                .borrow()
+                .order_owned(&order.client_order_id())
+                .unwrap()
+                .events()
+                .iter()
+                .map(|event| kind(event))
+                .collect();
+            assert_eq!(
+                canonical,
+                if quote_quantity {
+                    vec!["Initialized", "Submitted", "Updated", "Accepted", "Filled"]
+                } else {
+                    vec!["Initialized", "Submitted", "Accepted", "Filled"]
+                },
+                "matching metadata must not replace the owner event prefix"
+            );
+            let raw_ids: Vec<_> = ingress
+                .borrow()
+                .iter()
+                .filter(|(event, _)| event.client_order_id() == order.client_order_id())
+                .map(|(event, _)| order_identity(event))
+                .collect();
+            let initial = OrderEventAny::Initialized(order.init_event().clone());
+            let original_ids: Vec<_> = std::iter::once(order_identity(&initial))
+                .chain(raw_ids)
+                .collect();
+            let published_ids: Vec<_> = published
+                .borrow()
+                .iter()
+                .filter(|event| event.client_order_id() == order.client_order_id())
+                .map(order_identity)
+                .collect();
+            let canonical_ids: Vec<_> = cache
+                .borrow()
+                .order_owned(&order.client_order_id())
+                .unwrap()
+                .events()
+                .iter()
+                .map(|event| order_identity(event))
+                .collect();
+            assert_eq!(
+                published_ids, original_ids,
+                "owner publication must preserve each original kind, UUID and CUID"
+            );
+            assert_eq!(
+                canonical_ids, original_ids,
+                "canonical history must preserve each original kind, UUID and CUID"
+            );
+        }
+        exercise_result.unwrap();
+        let seen: Vec<(String, String, String, String)> = Python::attach(|py| {
+            assert!(
+                observer
+                    .bind(py)
+                    .getattr("errors")
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap()
+                    .is_empty()
+            );
+            observer
+                .bind(py)
+                .getattr("seen")
+                .unwrap()
+                .extract()
+                .unwrap()
+        });
+        let aggregate: Vec<(String, String)> = Python::attach(|py| {
+            observer
+                .bind(py)
+                .getattr("aggregate")
+                .unwrap()
+                .extract()
+                .unwrap()
+        });
+        let expected_aggregate: Vec<_> = published
+            .borrow()
+            .iter()
+            .filter(|event| !matches!(event, OrderEventAny::Initialized(_)))
+            .map(|event| {
+                let (kind, id, _) = order_identity(event);
+                (kind, id)
+            })
+            .collect();
+        assert_eq!(
+            aggregate
+                .into_iter()
+                .filter(|(kind, _)| kind != "OrderInitialized")
+                .collect::<Vec<_>>(),
+            expected_aggregate,
+            "Python aggregate callbacks must preserve published non-Initial type/UUID order"
+        );
+        for order in &orders {
+            let expected_specific: Vec<_> = published
+                .borrow()
+                .iter()
+                .filter(|event| {
+                    event.client_order_id() == order.client_order_id()
+                        && !matches!(event, OrderEventAny::Initialized(_))
+                })
+                .map(order_identity)
+                .collect();
+            let specific: Vec<_> = seen
+                .iter()
+                .filter(|(kind, _, id, _)| {
+                    id == order.client_order_id().as_str() && kind.starts_with("Order")
+                })
+                .map(|(kind, event_id, id, _)| (kind.clone(), event_id.clone(), id.clone()))
+                .collect();
+            assert_eq!(
+                specific, expected_specific,
+                "Python specific callbacks must preserve each original kind, UUID and CUID"
+            );
+            let sequence: Vec<_> = seen
+                .iter()
+                .filter(|(kind, _, id, _)| {
+                    id == order.client_order_id().as_str() && kind.starts_with("Order")
+                })
+                .map(|(kind, _, _, state)| (kind.as_str(), state.as_str()))
+                .collect();
+            assert_eq!(
+                sequence,
+                if quote_quantity {
+                    vec![
+                        ("OrderSubmitted", "SUBMITTED"),
+                        ("OrderUpdated", "SUBMITTED"),
+                        ("OrderAccepted", "ACCEPTED"),
+                        ("OrderFilled", "FILLED"),
+                    ]
+                } else {
+                    vec![
+                        ("OrderSubmitted", "SUBMITTED"),
+                        ("OrderAccepted", "ACCEPTED"),
+                        ("OrderFilled", "FILLED"),
+                    ]
+                }
+            );
+            let cached = cache
+                .borrow()
+                .order_owned(&order.client_order_id())
+                .unwrap();
+            assert_eq!(cached.status(), OrderStatus::Filled);
+            let expected_quantity = if order.order_side() == OrderSide::Sell {
+                Quantity::from("200.00")
+            } else {
+                Quantity::from("100.00")
+            };
+            assert_eq!(cached.quantity(), expected_quantity);
+            assert_eq!(cached.filled_qty(), expected_quantity);
+            assert!(!cached.is_quote_quantity());
+            assert_eq!(cached.events().len(), if quote_quantity { 5 } else { 4 });
+            let history = cached.events();
+            let accepted = history
+                .iter()
+                .find_map(|event| match event {
+                    OrderEventAny::Accepted(event) => Some(event.venue_order_id),
+                    _ => None,
+                })
+                .unwrap();
+            let fill = history
+                .iter()
+                .find_map(|event| match event {
+                    OrderEventAny::Filled(event) => Some(event),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(cached.venue_order_id(), Some(accepted));
+            assert_eq!(fill.venue_order_id, accepted);
+            assert_eq!(fill.last_qty, expected_quantity);
+            assert_eq!(
+                fill.commission,
+                Some(if order.order_side() == OrderSide::Sell {
+                    Money::from("0.08 USDC")
+                } else {
+                    Money::from("0.041 USDC")
+                })
+            );
+        }
+        let position_callbacks: Vec<_> = seen
+            .iter()
+            .filter(|(kind, _, _, _)| kind.starts_with("Position"))
+            .map(|(kind, _, _, quantity)| (kind.as_str(), quantity.as_str()))
+            .collect();
+        assert_eq!(
+            position_callbacks,
+            [
+                ("PositionOpened", "100.00"),
+                ("PositionChanged", "200.00"),
+                ("PositionClosed", "0.00")
+            ]
+        );
+        let position_ids: std::collections::HashSet<_> = seen
+            .iter()
+            .filter(|(kind, _, _, _)| kind.starts_with("Position"))
+            .map(|(_, _, id, _)| id)
+            .collect();
+        assert_eq!(position_ids.len(), 1);
+        let position = cache
+            .borrow()
+            .position_owned(&PositionId::from(
+                position_ids.into_iter().next().unwrap().as_str(),
+            ))
+            .unwrap();
+        assert!(position.is_closed());
+        assert_eq!(position.quantity, Quantity::zero(2));
+        assert_eq!(position.realized_pnl, Some(Money::from("-2.162 USDC")));
+        let account = cache.borrow().account_owned(&account_id).unwrap();
+        assert_eq!(
+            account.balance_total(None),
+            Some(Money::from("99997.838 USDC"))
+        );
+        let fees: Decimal = orders
+            .iter()
+            .map(|order| {
+                cache
+                    .borrow()
+                    .order_owned(&order.client_order_id())
+                    .unwrap()
+                    .events()
+                    .into_iter()
+                    .filter_map(|event| match event {
+                        OrderEventAny::Filled(fill) => Some(fill.commission.unwrap().as_decimal()),
+                        _ => None,
+                    })
+                    .sum::<Decimal>()
+            })
+            .sum();
+        assert_eq!(fees, Decimal::new(162, 3));
+        assert_eq!(queued.borrow().len(), 6);
+        assert_eq!(*queued.borrow(), *dispatched.borrow());
+        assert_eq!(queries.borrow().len(), 6);
+        let causes: Vec<_> = seen
+            .iter()
+            .filter(|(kind, _, _, _)| kind == "OrderSubmitted" || kind.starts_with("Position"))
+            .map(|(_, id, _, _)| id.parse::<UUID4>().unwrap())
+            .collect();
+        for (index, (query, phase)) in queries.borrow().iter().enumerate() {
+            assert_eq!(*query, queued.borrow()[index]);
+            assert_eq!(*phase, ConnectPhase::Returned);
+            assert_eq!(query.causation_id, Some(causes[index]));
+            assert!(query.ts_init >= now);
+        }
+        let events = account.events();
+        let event_ids: std::collections::HashSet<_> =
+            events.iter().map(|event| event.event_id).collect();
+        assert_eq!(
+            event_ids.len(),
+            events.len(),
+            "a mirror must not apply an original event twice"
+        );
+        for (event, last_id, _, _) in account_records.borrow().iter() {
+            assert_eq!(
+                event.event_id, *last_id,
+                "account topic must mirror the current actual account event"
+            );
+            assert!(event_ids.contains(&event.event_id));
+        }
+        let effects: Vec<(String, String, String, usize, usize, u64, String)> =
+            Python::attach(|py| {
+                observer
+                    .bind(py)
+                    .getattr("query_effects")
+                    .unwrap()
+                    .extract()
+                    .unwrap()
+            });
+        assert_eq!(effects.len(), 6);
+        let mut query_event_ids = std::collections::HashSet::new();
+        for (index, (command, previous, observed, before_count, after_count, ts_event, _)) in
+            effects.iter().enumerate()
+        {
+            assert_eq!(*command, queries.borrow()[index].0.command_id.to_string());
+            assert_ne!(
+                observed, previous,
+                "a legal new query must create a fresh account observation"
+            );
+            assert_eq!(*after_count, before_count + 1);
+            let event_id = observed.parse::<UUID4>().unwrap();
+            assert!(event_ids.contains(&event_id));
+            assert!(query_event_ids.insert(event_id));
+            assert!(*ts_event >= queries.borrow()[index].0.ts_init.as_u64());
+        }
+        assert_eq!(query_event_ids.len(), 6);
+        Python::attach(|py| {
+            let rows: usize = observer
+                .bind(py)
+                .getattr("sqlite3")
+                .unwrap()
+                .call_method1("connect", (observer.bind(py).getattr("database").unwrap(),))
+                .unwrap()
+                .call_method1("execute", ("SELECT COUNT(*) FROM observations",))
+                .unwrap()
+                .call_method0("fetchone")
+                .unwrap()
+                .get_item(0)
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(rows, seen.len());
             py_node.call_method0(py, "dispose").unwrap();
             observer.bind(py).call_method0("cleanup").unwrap();
         });

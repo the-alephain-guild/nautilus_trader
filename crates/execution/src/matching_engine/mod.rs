@@ -3365,7 +3365,7 @@ impl OrderMatchingEngine {
             .calculate_base_quantity(order.quantity(), reference_price);
 
         let ts_now = self.clock.borrow().timestamp_ns();
-        let event = OrderEventAny::Updated(OrderUpdated::new(
+        let event = OrderUpdated::new(
             order.trader_id(),
             order.strategy_id(),
             order.instrument_id(),
@@ -3381,19 +3381,24 @@ impl OrderMatchingEngine {
             None,
             None,
             false,
-        ));
+        );
 
         // Apply the update to the local order so subsequent dispatch uses the base
         // quantity immediately (the event is also dispatched to the execution engine
         // for cache reconciliation).
-        if let Err(e) = order.apply(event.clone()) {
+        if let Err(e) = order.apply(OrderEventAny::Updated(event)) {
             log::error!(
                 "Failed to apply quote-to-base update for {}: {e}",
                 order.client_order_id(),
             );
             return false;
         }
-        self.dispatch_order_event(event);
+        self.pending_order_updates
+            .borrow_mut()
+            .entry(order.client_order_id())
+            .or_default()
+            .push(event);
+        self.dispatch_order_event(OrderEventAny::Updated(event));
         true
     }
 
@@ -3591,18 +3596,36 @@ impl OrderMatchingEngine {
     }
 
     fn order_snapshot(&self, client_order_id: ClientOrderId) -> Option<OrderAny> {
-        let mut order = self.cache.borrow().order(&client_order_id)?.clone();
+        self.order_snapshot_with_working(client_order_id, None)
+    }
+
+    fn order_snapshot_with_working(
+        &self,
+        client_order_id: ClientOrderId,
+        working: Option<OrderAny>,
+    ) -> Option<OrderAny> {
+        let cache = self.cache.borrow();
+        let canonical = cache.order(&client_order_id)?;
         let mut pending = self.pending_order_updates.borrow_mut();
 
-        if order.is_closed() {
+        if canonical.is_closed() {
             pending.swap_remove(&client_order_id);
-            return Some(order);
+            return Some(canonical.clone());
         }
 
+        // Only the execution owner's history acknowledges an update. A working
+        // copy may already contain it without the owner having consumed it yet.
         if let Some(updates) = pending.get_mut(&client_order_id) {
-            Self::retain_unapplied_order_updates(&order, updates);
-
+            Self::retain_unapplied_order_updates(&canonical, updates);
+        }
+        let mut order = working.unwrap_or_else(|| canonical.clone());
+        if let Some(updates) = pending.get_mut(&client_order_id) {
             for update in updates.iter() {
+                if order.events().iter().any(|event| {
+                    matches!(event, OrderEventAny::Updated(applied) if applied.event_id == update.event_id)
+                }) {
+                    continue;
+                }
                 if let Err(e) = order.apply(OrderEventAny::Updated(*update)) {
                     log::error!("Cannot apply pending update for {client_order_id}: {e}");
                     return None;
@@ -3756,16 +3779,19 @@ impl OrderMatchingEngine {
             // Filling as liquidity taker
             order.set_liquidity_side(LiquiditySide::Taker);
 
-            if self
+            let add_result = self
                 .cache
                 .borrow_mut()
-                .add_order(order.clone(), None, None, false)
-                .is_err()
-                && let Err(e) = self.cache.borrow_mut().replace_order(order)
+                .add_order(order.clone(), None, None, false);
+            if add_result.is_err()
+                && let Some(mut cached) =
+                    self.cache.borrow_mut().order_mut(&order.client_order_id())
             {
-                log::debug!("Failed to update order in cache: {e}");
+                // Matching needs the taker side immediately, but the execution owner must
+                // apply the queued Submitted/Accepted events to its original order history.
+                cached.set_liquidity_side(LiquiditySide::Taker);
             }
-            self.fill_limit_order(order.client_order_id());
+            self.fill_limit_order_with_working(order.client_order_id(), Some(order.clone()));
 
             // If fill didn't execute (e.g. all liquidity consumed), revert to
             // maker so the fill model check applies on subsequent iterations
@@ -4860,10 +4886,18 @@ impl OrderMatchingEngine {
     ///
     /// Panics if the order has no price (design error).
     pub fn fill_limit_order(&mut self, client_order_id: ClientOrderId) {
+        self.fill_limit_order_with_working(client_order_id, None);
+    }
+
+    fn fill_limit_order_with_working(
+        &mut self,
+        client_order_id: ClientOrderId,
+        working: Option<OrderAny>,
+    ) {
         if self.initialized_publication_fault.is_some() {
             return;
         }
-        let mut order = match self.order_snapshot(client_order_id) {
+        let mut order = match self.order_snapshot_with_working(client_order_id, working) {
             Some(order) => order,
             None => {
                 log::error!("Cannot fill limit order: order {client_order_id} not found in cache");
@@ -9508,6 +9542,586 @@ mod tests {
             unreachable!()
         };
         (order, fill)
+    }
+
+    #[rstest]
+    #[case::base_full(false, "full")]
+    #[case::quote_full(true, "full")]
+    #[case::base_partial(false, "partial")]
+    #[case::quote_partial(true, "partial")]
+    #[case::base_passive(false, "passive")]
+    #[case::quote_passive(true, "passive")]
+    fn test_limit_matching_preserves_queued_owner_prefix(
+        #[case] quote_quantity: bool,
+        #[case] execution: &str,
+    ) {
+        // This is a matching/cache FIFO probe. Actual hosted Python callbacks are
+        // exercised separately through PyLiveNode.run_async in Sandbox integration.
+        use nautilus_model::{
+            accounts::{AccountAny, MarginAccount},
+            events::account::stubs::margin_account_state,
+        };
+
+        let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let state = margin_account_state();
+        let account_id = state.account_id;
+        cache
+            .borrow_mut()
+            .add_account(AccountAny::Margin(MarginAccount::new(state, true)))
+            .unwrap();
+        let mut engine = OrderMatchingEngine::new(
+            instrument.clone(),
+            1,
+            FillModelHandle::default(),
+            FeeModelAny::default().into(),
+            BookType::L2_MBP,
+            OmsType::Netting,
+            AccountType::Margin,
+            Rc::new(RefCell::new(TestClock::new())),
+            cache.clone(),
+            Default::default(),
+        );
+        let ask_size = if execution == "partial" {
+            "0.500"
+        } else {
+            "2.000"
+        };
+        engine
+            .process_order_book_delta(&OrderBookDelta::new(
+                instrument.id(),
+                BookAction::Add,
+                BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from("1500.00"),
+                    Quantity::from(ask_size),
+                    1,
+                ),
+                0,
+                1,
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+            ))
+            .unwrap();
+        let price = if execution == "passive" {
+            "1400.00"
+        } else {
+            "1500.00"
+        };
+        let quantity = if quote_quantity {
+            Quantity::from_decimal_dp(Price::from(price).as_decimal(), 3).unwrap()
+        } else {
+            Quantity::from("1.000")
+        };
+        let mut order = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .side(OrderSide::Buy)
+            .quantity(quantity)
+            .quote_quantity(quote_quantity)
+            .price(Price::from(price))
+            .submit(true)
+            .build();
+        let id = order.client_order_id();
+        let prefix: Vec<_> = order.events().into_iter().cloned().collect();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let emitted = Rc::new(RefCell::new(Vec::new()));
+        let saved = emitted.clone();
+        engine.set_event_handler(Rc::new(move |event| {
+            saved.borrow_mut().push(event.clone());
+            sender.send(event).unwrap();
+        }));
+        engine.process_order(&mut order, account_id);
+        let before_owner = cache.borrow().order_owned(&id).unwrap();
+        assert_eq!(
+            before_owner
+                .events()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            prefix
+        );
+        assert_eq!(before_owner.status(), OrderStatus::Submitted);
+        assert_eq!(before_owner.quantity(), quantity);
+        assert_eq!(before_owner.is_quote_quantity(), quote_quantity);
+        if quote_quantity && execution == "full" {
+            // Re-enter the real public fill path before the owner consumes the
+            // original conversion. Its snapshot must use the pending update,
+            // not create a second conversion or fill from the old quote amount.
+            engine.fill_limit_order(id);
+        }
+        assert_eq!(
+            emitted
+                .borrow()
+                .iter()
+                .filter(|event| matches!(event, OrderEventAny::Updated(_)))
+                .count(),
+            usize::from(quote_quantity),
+            "real public re-entry must not emit another quote conversion"
+        );
+        if quote_quantity {
+            let snapshot = engine.order_snapshot(id).unwrap();
+            assert_eq!(snapshot.quantity(), Quantity::from("1.000"));
+            assert!(!snapshot.is_quote_quantity());
+        }
+        if execution == "partial" {
+            let working_view = engine
+                .order_snapshot_with_working(id, Some(order.clone()))
+                .unwrap();
+            assert_eq!(working_view.quantity(), Quantity::from("1.000"));
+            assert_eq!(working_view.filled_qty(), Quantity::from("0.500"));
+            assert_eq!(working_view.leaves_qty(), Quantity::from("0.500"));
+        }
+        let apply_owner_fifo = || {
+            while let Ok(event) = receiver.try_recv() {
+                cache.borrow_mut().update_order(&event).unwrap();
+            }
+        };
+        apply_owner_fifo();
+        let after_owner = cache.borrow().order_owned(&id).unwrap();
+        assert_eq!(after_owner.quantity(), Quantity::from("1.000"));
+        assert!(!after_owner.is_quote_quantity());
+        match execution {
+            "full" => assert_eq!(after_owner.status(), OrderStatus::Filled),
+            "partial" => {
+                assert_eq!(after_owner.status(), OrderStatus::PartiallyFilled);
+                assert_eq!(after_owner.filled_qty(), Quantity::from("0.500"));
+                assert_eq!(after_owner.leaves_qty(), Quantity::from("0.500"));
+            }
+            "passive" => {
+                assert_eq!(after_owner.status(), OrderStatus::Accepted);
+                assert_eq!(after_owner.liquidity_side(), Some(LiquiditySide::Maker));
+                // The original update is already present on the owner, even if no
+                // later market-data tick has pruned its pending bookkeeping entry.
+                assert!(
+                    !engine
+                        .account_capture_has_pending_work(&account_id)
+                        .unwrap()
+                );
+            }
+            _ => unreachable!(),
+        }
+        if execution != "full" {
+            let next_price = if execution == "passive" {
+                "1300.00"
+            } else {
+                "1500.00"
+            };
+            let next_size = if execution == "partial" {
+                "0.500"
+            } else {
+                "2.000"
+            };
+            engine
+                .process_order_book_delta(&OrderBookDelta::new(
+                    instrument.id(),
+                    BookAction::Update,
+                    BookOrder::new(
+                        OrderSide::Sell,
+                        Price::from(next_price),
+                        Quantity::from(next_size),
+                        1,
+                    ),
+                    0,
+                    2,
+                    UnixNanos::from(2),
+                    UnixNanos::from(2),
+                ))
+                .unwrap();
+            apply_owner_fifo();
+        }
+        let cached = cache.borrow().order_owned(&id).unwrap();
+        assert_eq!(cached.status(), OrderStatus::Filled);
+        assert_eq!(cached.filled_qty(), Quantity::from("1.000"));
+        assert_eq!(cached.leaves_qty(), Quantity::zero(3));
+        let events = emitted.borrow();
+        let expected_history: Vec<_> = prefix.into_iter().chain(events.iter().cloned()).collect();
+        assert_eq!(
+            cached.events().into_iter().cloned().collect::<Vec<_>>(),
+            expected_history,
+            "the original queued event IDs and owner prefix must remain intact"
+        );
+        let updates: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                OrderEventAny::Updated(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), usize::from(quote_quantity));
+        for update in updates {
+            assert_eq!(update.quantity, Quantity::from("1.000"));
+            assert!(!update.is_quote_quantity);
+        }
+        let venue_id = events
+            .iter()
+            .find_map(|event| match event {
+                OrderEventAny::Accepted(event) => Some(event.venue_order_id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(cached.venue_order_id(), Some(venue_id));
+        let fills: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                OrderEventAny::Filled(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills.len(), if execution == "partial" { 2 } else { 1 });
+        let mut filled = Decimal::ZERO;
+        for fill in &fills {
+            assert_eq!(fill.venue_order_id, venue_id);
+            let rate = match fill.liquidity_side {
+                LiquiditySide::Maker => instrument.maker_fee(),
+                LiquiditySide::Taker => instrument.taker_fee(),
+                _ => panic!("actual fill requires a maker or taker side"),
+            };
+            assert_eq!(
+                fill.commission.unwrap().as_decimal(),
+                fill.last_qty.as_decimal() * fill.last_px.as_decimal() * rate
+            );
+            filled += fill.last_qty.as_decimal();
+        }
+        assert_eq!(filled, Decimal::ONE);
+        assert_eq!(
+            fills[0].liquidity_side,
+            if execution == "passive" {
+                LiquiditySide::Maker
+            } else {
+                LiquiditySide::Taker
+            }
+        );
+    }
+
+    #[rstest]
+    #[case::ioc_exhausted(TimeInForce::Ioc, "1.000")]
+    #[case::fok_exhausted(TimeInForce::Fok, "1.000")]
+    #[case::ioc_partial(TimeInForce::Ioc, "0.500")]
+    #[case::fok_partial(TimeInForce::Fok, "0.500")]
+    #[case::ioc_full_control(TimeInForce::Ioc, "0.000")]
+    #[case::fok_full_control(TimeInForce::Fok, "0.000")]
+    fn test_deferred_initialized_limit_retains_immediate_cancel(
+        #[case] time_in_force: TimeInForce,
+        #[case] consumed: &str,
+        #[values(false, true)] quote_quantity: bool,
+    ) {
+        let partial = consumed == "0.500";
+        let full_control = consumed == "0.000";
+        let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let account_id = AccountId::from("BINANCE-001");
+        let mut engine = OrderMatchingEngine::new(
+            instrument.clone(),
+            1,
+            FillModelHandle::default(),
+            FeeModelAny::default().into(),
+            BookType::L2_MBP,
+            OmsType::Netting,
+            AccountType::Margin,
+            Rc::new(RefCell::new(TestClock::new())),
+            cache.clone(),
+            OrderMatchingEngineConfig {
+                liquidity_consumption: true,
+                ..Default::default()
+            },
+        );
+        engine
+            .process_order_book_delta(&OrderBookDelta::new(
+                instrument.id(),
+                BookAction::Add,
+                BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from("1500.00"),
+                    Quantity::from("1.000"),
+                    1,
+                ),
+                0,
+                1,
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+            ))
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let emitted = Rc::new(RefCell::new(Vec::new()));
+        let saved = emitted.clone();
+        let event_sender = sender.clone();
+        engine.set_event_handler(Rc::new(move |event| {
+            saved.borrow_mut().push(event.clone());
+            event_sender.send(event).unwrap();
+        }));
+        // Consume the actual book depth through a different real order first.
+        if !full_control {
+            let mut previous = OrderTestBuilder::new(OrderType::Limit)
+                .instrument_id(instrument.id())
+                .client_order_id("PREVIOUS-DEPTH".into())
+                .side(OrderSide::Buy)
+                .price(Price::from("1500.00"))
+                .quantity(Quantity::from(consumed))
+                .submit(true)
+                .build();
+            cache
+                .borrow_mut()
+                .add_order(previous.clone(), None, None, false)
+                .unwrap();
+            engine.process_order(&mut previous, account_id);
+            while let Ok(event) = receiver.try_recv() {
+                cache.borrow_mut().update_order(&event).unwrap();
+            }
+            assert_eq!(
+                cache
+                    .borrow()
+                    .order_owned(&previous.client_order_id())
+                    .unwrap()
+                    .status(),
+                OrderStatus::Filled
+            );
+        }
+        emitted.borrow_mut().clear();
+        let mut order = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .client_order_id("DEFERRED-CANCEL".into())
+            .side(OrderSide::Buy)
+            .price(Price::from("1500.00"))
+            .quantity(Quantity::from(if quote_quantity {
+                "1500.000"
+            } else {
+                "1.000"
+            }))
+            .quote_quantity(quote_quantity)
+            .time_in_force(time_in_force)
+            .build();
+        let id = order.client_order_id();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+        let submitted = OrderEventAny::Submitted(nautilus_model::events::OrderSubmitted::new(
+            order.trader_id(),
+            order.strategy_id(),
+            order.instrument_id(),
+            id,
+            account_id,
+            UUID4::new(),
+            UnixNanos::from(0),
+            UnixNanos::from(0),
+        ));
+        emitted.borrow_mut().push(submitted.clone());
+        sender.send(submitted).unwrap();
+        // The actual Submitted event is queued, not applied to the cache ahead of matching.
+        engine.process_order(&mut order, account_id);
+        assert_eq!(
+            cache.borrow().order_owned(&id).unwrap().status(),
+            OrderStatus::Initialized
+        );
+        while let Ok(event) = receiver.try_recv() {
+            cache.borrow_mut().update_order(&event).unwrap();
+        }
+        let events = emitted.borrow();
+        let canceled = events
+            .iter()
+            .any(|event| matches!(event, OrderEventAny::Canceled(_)));
+        assert_eq!(
+            canceled, !full_control,
+            "IOC/FOK must retain an actual cancellation of an unfilled remainder while owner ingress is deferred: {events:?}"
+        );
+        let cached = cache.borrow().order_owned(&id).unwrap();
+        assert_eq!(cached.quantity(), Quantity::from("1.000"));
+        assert_eq!(
+            cached.status(),
+            if full_control {
+                OrderStatus::Filled
+            } else {
+                OrderStatus::Canceled
+            }
+        );
+        let fills: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                OrderEventAny::Filled(fill) => Some(fill),
+                _ => None,
+            })
+            .collect();
+        if full_control {
+            assert_eq!(fills.len(), 1);
+            assert_eq!(fills[0].last_qty, Quantity::from("1.000"));
+            assert_eq!(cached.filled_qty(), Quantity::from("1.000"));
+            assert_eq!(cached.leaves_qty(), Quantity::zero(3));
+        } else if partial && time_in_force == TimeInForce::Ioc {
+            assert_eq!(fills.len(), 1);
+            assert_eq!(fills[0].last_qty, Quantity::from("0.500"));
+            assert_eq!(cached.filled_qty(), Quantity::from("0.500"));
+            assert_eq!(cached.leaves_qty(), Quantity::from("0.500"));
+        } else {
+            assert!(
+                fills.is_empty(),
+                "FOK and exhausted liquidity cannot partly execute"
+            );
+            assert_eq!(cached.filled_qty(), Quantity::zero(3));
+        }
+        assert!(!engine.order_exists(id));
+        let accepted = events
+            .iter()
+            .find_map(|event| match event {
+                OrderEventAny::Accepted(event) => Some(event.venue_order_id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(cached.venue_order_id(), Some(accepted));
+        for fill in fills {
+            assert_eq!(fill.venue_order_id, accepted);
+            assert_eq!(
+                fill.commission.unwrap().as_decimal(),
+                fill.last_qty.as_decimal() * fill.last_px.as_decimal() * instrument.taker_fee()
+            );
+        }
+        let history: Vec<_> = cached.events().into_iter().cloned().collect();
+        assert_eq!(
+            &history[1..],
+            events.as_slice(),
+            "every original queued event must apply once in FIFO"
+        );
+        let event_ids: HashSet<_> = events
+            .iter()
+            .map(|event| match event {
+                OrderEventAny::Submitted(event) => event.event_id,
+                OrderEventAny::Accepted(event) => event.event_id,
+                OrderEventAny::Updated(event) => event.event_id,
+                OrderEventAny::Filled(event) => event.event_id,
+                OrderEventAny::Canceled(event) => event.event_id,
+                _ => panic!("unexpected immediate-limit event"),
+            })
+            .collect();
+        assert_eq!(event_ids.len(), events.len());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, OrderEventAny::Updated(_)))
+                .count(),
+            usize::from(quote_quantity)
+        );
+        assert!(!cached.is_quote_quantity());
+    }
+
+    #[rstest]
+    fn test_working_snapshot_keeps_owner_acknowledgement_and_pending_overlay() {
+        use nautilus_model::{
+            accounts::{AccountAny, MarginAccount},
+            events::account::stubs::margin_account_state,
+        };
+
+        let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let mut state = margin_account_state();
+        state.account_id = AccountId::from("BINANCE-001");
+        let account_id = state.account_id;
+        cache
+            .borrow_mut()
+            .add_account(AccountAny::Margin(MarginAccount::new(state, true)))
+            .unwrap();
+        let mut engine = OrderMatchingEngine::new(
+            instrument.clone(),
+            1,
+            FillModelHandle::default(),
+            FeeModelAny::default().into(),
+            BookType::L2_MBP,
+            OmsType::Netting,
+            AccountType::Margin,
+            Rc::new(RefCell::new(TestClock::new())),
+            cache.clone(),
+            Default::default(),
+        );
+        let mut working = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .side(OrderSide::Buy)
+            .price(Price::from("1500.00"))
+            .quantity(Quantity::from("1500.000"))
+            .quote_quantity(true)
+            .submit(true)
+            .build();
+        let id = working.client_order_id();
+        cache
+            .borrow_mut()
+            .add_order(working.clone(), None, None, false)
+            .unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let recorded = events.clone();
+        engine.set_event_handler(Rc::new(move |event| recorded.borrow_mut().push(event)));
+        assert!(engine.convert_quote_to_base_quantity(&mut working));
+        let local = engine
+            .order_snapshot_with_working(id, Some(working.clone()))
+            .unwrap();
+        assert_eq!(
+            local.events(),
+            working.events(),
+            "the same original Updated must not apply twice to working history"
+        );
+        assert_eq!(local.quantity(), Quantity::from("1.000"));
+        assert!(
+            engine
+                .account_capture_has_pending_work(&account_id)
+                .unwrap(),
+            "a local copy is not an acknowledgement from the actual cache owner"
+        );
+        engine.generate_order_updated(&working, Quantity::from("2.000"), None, None, None);
+        let overlay = engine
+            .order_snapshot_with_working(id, Some(working.clone()))
+            .unwrap();
+        assert_eq!(overlay.quantity(), Quantity::from("2.000"));
+        assert_eq!(overlay.events().len(), working.events().len() + 1);
+        assert_eq!(events.borrow().len(), 2);
+        assert_eq!(
+            cache.borrow().order_owned(&id).unwrap().quantity(),
+            Quantity::from("1500.000")
+        );
+        assert!(
+            engine
+                .account_capture_has_pending_work(&account_id)
+                .unwrap()
+        );
+        for event in events.borrow().iter() {
+            cache.borrow_mut().update_order(event).unwrap();
+        }
+        // No market-data prune occurs between the real owner apply and this probe.
+        assert!(
+            !engine
+                .account_capture_has_pending_work(&account_id)
+                .unwrap()
+        );
+        let canonical = engine.order_snapshot(id).unwrap();
+        assert_eq!(canonical.quantity(), Quantity::from("2.000"));
+        assert_eq!(canonical.events().len(), 4);
+        engine.cancel_order(&canonical, None);
+        let canceled = events.borrow().last().unwrap().clone();
+        assert!(matches!(canceled, OrderEventAny::Canceled(_)));
+        cache.borrow_mut().update_order(&canceled).unwrap();
+        let final_canonical = cache.borrow().order_owned(&id).unwrap();
+        assert_eq!(final_canonical.status(), OrderStatus::Canceled);
+        let closed = engine
+            .order_snapshot_with_working(id, Some(working))
+            .unwrap();
+        assert_eq!(closed.events(), final_canonical.events());
+        assert_eq!(closed.quantity(), Quantity::from("2.000"));
+        assert_eq!(
+            closed.status(),
+            OrderStatus::Canceled,
+            "a stale local working copy cannot resurrect a canonical terminal order"
+        );
     }
 
     #[rstest]
