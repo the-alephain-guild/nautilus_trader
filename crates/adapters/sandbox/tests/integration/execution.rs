@@ -5727,3 +5727,525 @@ async fn test_account_capture_keeps_resting_orders_from_every_actual_matching_en
     assert!(!pending.in_matching_engine);
     context.client.stop().unwrap();
 }
+
+#[cfg(feature = "python")]
+#[rstest]
+#[case::normal_lifecycle(false)]
+#[case::invalid_connect_inside_writer(true)]
+#[tokio::test]
+async fn test_kernel_connect_snapshot_callbacks_keep_account_updates_and_queue_queries(
+    #[case] connect_inside_writer: bool,
+) {
+    use std::{
+        any::Any,
+        cell::Cell,
+        collections::VecDeque,
+        sync::{Arc, Mutex, mpsc},
+    };
+
+    use nautilus_common::{
+        clients::ExecutionAccountCaptureError,
+        enums::Environment,
+        live::runner::replace_exec_event_sender,
+        logging::logger::LoggerConfig,
+        messages::execution::QueryAccount,
+        msgbus::{
+            BusMessage, BusPayloadType, BusTap, MessageBusConfig, MessageBusExternalEgress,
+            mstr::{Endpoint, MStr, Topic},
+        },
+        runner::{
+            SyncTradingCommandSender, drain_trading_cmd_queue, replace_exec_cmd_sender,
+            trading_cmd_queue_is_empty,
+        },
+    };
+    use nautilus_live::{node::LiveNode, runner::AsyncRunner};
+    use nautilus_model::{accounts::Account, events::PortfolioSnapshot};
+    use pyo3::types::{PyCFunction, PyModule, PyModuleMethods, PyTuple};
+
+    struct LifecycleEgress {
+        sender: mpsc::Sender<BusMessage>,
+        closed: Cell<bool>,
+    }
+
+    impl MessageBusExternalEgress for LifecycleEgress {
+        fn is_closed(&self) -> bool {
+            self.closed.get()
+        }
+
+        fn publish(&self, message: BusMessage) {
+            self.sender.send(message).unwrap();
+        }
+
+        fn close(&mut self) {
+            self.closed.set(true);
+        }
+    }
+
+    struct LifecycleTap {
+        engine: Rc<RefCell<ExecutionEngine>>,
+        commands: Rc<RefCell<Vec<(String, QueryAccount)>>>,
+        accounts: Rc<RefCell<Vec<AccountState>>>,
+        query_callback: pyo3::Py<pyo3::PyAny>,
+    }
+
+    impl BusTap for LifecycleTap {
+        fn on_publish(&self, _topic: MStr<Topic>, _message: &dyn Any) {}
+
+        fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+            if let Some(event) = message.downcast_ref::<AccountState>() {
+                self.accounts.borrow_mut().push(event.clone());
+            }
+            if let Some(TradingCommand::QueryAccount(command)) =
+                message.downcast_ref::<TradingCommand>()
+            {
+                self.commands
+                    .borrow_mut()
+                    .push((endpoint.to_string(), command.clone()));
+                if endpoint == MessagingSwitchboard::exec_engine_execute() {
+                    assert!(self.engine.try_borrow_mut().is_ok());
+                    Python::attach(|py| {
+                        self.query_callback
+                            .call1(py, (command.command_id.to_string(),))
+                            .unwrap();
+                    });
+                }
+            }
+        }
+    }
+
+    Python::initialize();
+    let trader_id = TraderId::from("LIFECYCLE-001");
+    let account_id = AccountId::from("SIM-001");
+    let client_id = ClientId::from("LIFECYCLE");
+    let test_clock = Rc::new(RefCell::new(TestClock::new()));
+    test_clock.borrow_mut().set_time(UnixNanos::from(100));
+    let clock: Rc<RefCell<dyn Clock>> = test_clock.clone();
+    let factory_clock = clock.clone();
+    let mut node = LiveNode::builder(trader_id, Environment::Sandbox)
+        .unwrap()
+        .with_clock_factory(move || factory_clock.clone())
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .with_reconciliation(false)
+        .build()
+        .unwrap();
+    let cache = node.kernel().cache();
+    let engine = node.kernel().exec_engine().clone();
+    let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    replace_exec_event_sender(event_sender);
+    replace_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+    let config = SandboxExecutionClientConfig {
+        account_id,
+        venue: Venue::from("SIM"),
+        account_type: AccountType::Cash,
+        base_currency: Some(Currency::USDC()),
+        starting_balances: vec![Money::from("100000 USDC")],
+        ..Default::default()
+    };
+    let core = ExecutionClientCore::new(
+        trader_id,
+        client_id,
+        config.venue,
+        config.oms_type,
+        account_id,
+        config.account_type,
+        config.base_currency,
+        cache.clone(),
+    );
+    let client = SandboxExecutionClient::new(core, config, clock, cache.clone());
+    let probe = client.account_capture_probe().unwrap();
+    assert_eq!(
+        probe.capture().unwrap_err(),
+        ExecutionAccountCaptureError::AccountUnavailable
+    );
+    engine
+        .borrow_mut()
+        .register_client(Box::new(client))
+        .unwrap();
+    engine.borrow_mut().start();
+
+    let query_ids = [UUID4::new(), UUID4::new()];
+    let queries = Mutex::new(VecDeque::from([
+        QueryAccount::new(
+            trader_id,
+            Some(client_id),
+            account_id,
+            query_ids[0],
+            UnixNanos::from(100),
+            None,
+            None,
+        ),
+        QueryAccount::new(
+            trader_id,
+            Some(client_id),
+            account_id,
+            query_ids[1],
+            UnixNanos::from(300),
+            None,
+            None,
+        ),
+    ]));
+    let module = Python::attach(|py| {
+        let module = PyModule::new(py, "lifecycle_portfolio_observer").unwrap();
+        let enqueue = PyCFunction::new_closure(
+            py,
+            None,
+            None,
+            move |args: &pyo3::Bound<'_, PyTuple>, _kwargs| -> pyo3::PyResult<()> {
+                let cause = args.get_item(0)?.extract::<String>()?;
+                let mut query =
+                    queries.lock().unwrap().pop_front().ok_or_else(|| {
+                        pyo3::exceptions::PyRuntimeError::new_err("no query remains")
+                    })?;
+                query.causation_id = Some(
+                    cause
+                        .parse()
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?,
+                );
+                msgbus::send_trading_command(
+                    MessagingSwitchboard::exec_engine_queue_execute(),
+                    TradingCommand::QueryAccount(query),
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+        module.setattr("enqueue_query", enqueue).unwrap();
+        py.run(
+            c_str!(
+                r#"
+import sqlite3
+import tempfile
+import threading
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "lifecycle.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE observations (kind TEXT, identity TEXT)")
+writer = None
+observed = []
+failures = []
+worker_trace = []
+executed_queries = []
+
+def begin_outer_writer():
+    global writer
+    writer = sqlite3.connect(database, timeout=0)
+    writer.execute("BEGIN IMMEDIATE")
+
+def close_outer_writer():
+    global writer
+    if writer is not None:
+        writer.rollback()
+        writer.close()
+        writer = None
+
+def observe(snapshot_id, account_event_id, balance, timestamp, engine_borrowed):
+    connection = sqlite3.connect(database, timeout=0)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as error:
+            failures.append((error.sqlite_errorcode, str(error)))
+            return
+        connection.execute("INSERT INTO observations VALUES (?, ?)", ("snapshot", snapshot_id))
+        observed.append((snapshot_id, account_event_id, balance, timestamp, engine_borrowed))
+        if timestamp == 100:
+            checked = threading.Barrier(2)
+            released = threading.Barrier(2)
+
+            def competing_writer():
+                other = sqlite3.connect(database, timeout=0)
+                try:
+                    try:
+                        other.execute("BEGIN IMMEDIATE")
+                        worker_trace.append("unexpected_writer")
+                    except sqlite3.OperationalError as error:
+                        worker_trace.append(("locked", error.sqlite_errorcode))
+                finally:
+                    other.close()
+                checked.wait(timeout=5)
+                released.wait(timeout=5)
+                with sqlite3.connect(database, timeout=0) as other:
+                    other.execute("BEGIN IMMEDIATE")
+                    other.execute("INSERT INTO observations VALUES ('worker', 'after_callback_writer')")
+                worker_trace.append("released")
+
+            worker = threading.Thread(target=competing_writer)
+            worker.start()
+            checked.wait(timeout=5)
+            enqueue_query(snapshot_id)
+            connection.commit()
+            connection.close()
+            released.wait(timeout=5)
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+        else:
+            connection.commit()
+    finally:
+        connection.close()
+
+def on_query_execute(command_id):
+    with sqlite3.connect(database, timeout=0) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO observations VALUES (?, ?)", ("query", command_id))
+    executed_queries.append(command_id)
+
+def cleanup():
+    close_outer_writer()
+    directory.cleanup()
+"#
+            ),
+            Some(&module.dict()),
+            None,
+        )
+        .unwrap();
+        if connect_inside_writer {
+            module.call_method0("begin_outer_writer").unwrap();
+        }
+        module.unbind()
+    });
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let accounts = Rc::new(RefCell::new(Vec::new()));
+    msgbus::set_bus_tap(Rc::new(LifecycleTap {
+        engine: engine.clone(),
+        commands: commands.clone(),
+        accounts: accounts.clone(),
+        query_callback: Python::attach(|py| {
+            module
+                .bind(py)
+                .getattr("on_query_execute")
+                .unwrap()
+                .unbind()
+        }),
+    }));
+    let (egress_sender, egress_receiver) = mpsc::channel();
+    msgbus::get_message_bus()
+        .borrow_mut()
+        .set_external_egress_config(
+            Box::new(LifecycleEgress {
+                sender: egress_sender,
+                closed: Cell::new(false),
+            }),
+            &MessageBusConfig {
+                external_streams: Some(vec!["engineering.lifecycle".to_owned()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let snapshots = Rc::new(RefCell::new(Vec::new()));
+    let snapshot_records = snapshots.clone();
+    let callback_errors = Rc::new(RefCell::new(Vec::new()));
+    let errors = callback_errors.clone();
+    let callback_cache = cache.clone();
+    let callback_engine = engine.clone();
+    let callback = Python::attach(|py| module.bind(py).getattr("observe").unwrap().unbind());
+    let handler = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
+        let account = callback_cache
+            .borrow()
+            .account_owned(&snapshot.account_id)
+            .unwrap();
+        let state = account.last_event().unwrap();
+        let balance = account.balance_total(Some(Currency::USDC())).unwrap();
+        assert_eq!(snapshot.total_equity, vec![balance]);
+        snapshot_records.borrow_mut().push((
+            snapshot.clone(),
+            state.clone(),
+            account.events().len(),
+            callback_engine.try_borrow_mut().is_err(),
+        ));
+        Python::attach(|py| {
+            if let Err(e) = callback.call1(
+                py,
+                (
+                    snapshot.event_id.to_string(),
+                    state.event_id.to_string(),
+                    balance.to_string(),
+                    snapshot.ts_event.as_u64(),
+                    callback_engine.try_borrow_mut().is_err(),
+                ),
+            ) {
+                errors.borrow_mut().push(e.to_string());
+            }
+        });
+    });
+    msgbus::subscribe_portfolio_snapshot("events.portfolio.*".into(), handler.clone(), None);
+    assert!(cache.borrow().account(&account_id).is_none());
+
+    node.kernel_mut().connect_exec_clients().await;
+
+    assert!(engine.borrow().client_connection_status()[0].1);
+    assert_eq!(engine.borrow().command_count(), 0);
+    assert!(
+        callback_errors.borrow().is_empty(),
+        "{:?}",
+        callback_errors.borrow()
+    );
+    assert_eq!(snapshots.borrow().len(), 1);
+    assert_eq!(snapshots.borrow()[0].2, 1);
+    assert!(snapshots.borrow()[0].3);
+    let initial = cache.borrow().account_owned(&account_id).unwrap();
+    let initial_state = initial.last_event().unwrap();
+    assert_eq!(initial.events().len(), 1);
+    assert_eq!(initial_state.ts_event, UnixNanos::from(100));
+    assert_eq!(
+        initial.balance_total(None),
+        Some(Money::from("100000 USDC"))
+    );
+    assert_eq!(snapshots.borrow()[0].1.event_id, initial_state.event_id);
+    assert_eq!(accounts.borrow().len(), 1);
+    assert_eq!(accounts.borrow()[0].event_id, initial_state.event_id);
+    assert_eq!(node.kernel().portfolio().snapshots(&account_id).len(), 1);
+    let captured = probe.capture().unwrap();
+    assert_eq!(captured.balances.len(), 1);
+    assert!(captured.positions.is_empty());
+    assert!(captured.orders.is_empty());
+    let source_snapshot = snapshots.borrow()[0].0.clone();
+    let first_egress: Vec<_> = egress_receiver.try_iter().collect();
+    assert_eq!(first_egress.len(), 1);
+    assert_eq!(
+        first_egress[0].payload_type,
+        BusPayloadType::PortfolioSnapshot
+    );
+    let decoded: PortfolioSnapshot = serde_json::from_slice(&first_egress[0].payload).unwrap();
+    assert_eq!(decoded.event_id, source_snapshot.event_id);
+    assert_eq!(decoded.total_equity, source_snapshot.total_equity);
+    assert_eq!(decoded.ts_event, UnixNanos::from(100));
+
+    Python::attach(|py| {
+        let module = module.bind(py);
+        let failures = module
+            .getattr("failures")
+            .unwrap()
+            .extract::<Vec<(i32, String)>>()
+            .unwrap();
+        if connect_inside_writer {
+            assert_eq!(failures, vec![(5, "database is locked".to_owned())]);
+            eprintln!("Invalid lifecycle assembly callback: {failures:?}");
+            assert!(trading_cmd_queue_is_empty());
+        } else {
+            assert!(failures.is_empty());
+            assert!(!trading_cmd_queue_is_empty());
+            assert_eq!(commands.borrow().len(), 1);
+            assert_eq!(commands.borrow()[0].1.command_id, query_ids[0]);
+            assert_eq!(
+                commands.borrow()[0].1.causation_id,
+                Some(source_snapshot.event_id)
+            );
+            assert_eq!(
+                module
+                    .getattr("executed_queries")
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap(),
+                Vec::<String>::new()
+            );
+            let trace = module.getattr("worker_trace").unwrap();
+            assert_eq!(trace.len().unwrap(), 2);
+            assert_eq!(
+                trace
+                    .get_item(0)
+                    .unwrap()
+                    .extract::<(String, i32)>()
+                    .unwrap(),
+                ("locked".to_owned(), 5)
+            );
+            assert_eq!(
+                trace.get_item(1).unwrap().extract::<String>().unwrap(),
+                "released"
+            );
+        }
+        module.call_method0("close_outer_writer").unwrap();
+    });
+
+    // A repeated delivery of the current account event does not reapply it or register twice
+    AsyncRunner::handle_exec_event(ExecutionEvent::Account(initial_state.clone()));
+    assert_eq!(
+        cache
+            .borrow()
+            .account_owned(&account_id)
+            .unwrap()
+            .events()
+            .len(),
+        1
+    );
+    assert_eq!(snapshots.borrow().len(), 1);
+    assert!(egress_receiver.try_recv().is_err());
+
+    if !connect_inside_writer {
+        test_clock.borrow_mut().set_time(UnixNanos::from(200));
+        drain_trading_cmd_queue();
+        let first_query = cache.borrow().account_owned(&account_id).unwrap();
+        assert_eq!(first_query.events().len(), 2);
+        assert_ne!(
+            first_query.last_event().unwrap().event_id,
+            initial_state.event_id
+        );
+        assert_eq!(
+            first_query.last_event().unwrap().ts_event,
+            UnixNanos::from(200)
+        );
+        test_clock.borrow_mut().set_time(UnixNanos::from(300));
+        Python::attach(|py| {
+            module
+                .bind(py)
+                .call_method1("enqueue_query", (source_snapshot.event_id.to_string(),))
+                .unwrap();
+        });
+        drain_trading_cmd_queue();
+        let second_query = cache.borrow().account_owned(&account_id).unwrap();
+        assert_eq!(second_query.events().len(), 3);
+        assert_ne!(
+            second_query.last_event().unwrap().event_id,
+            first_query.last_event().unwrap().event_id
+        );
+        assert_eq!(
+            second_query.last_event().unwrap().ts_event,
+            UnixNanos::from(300)
+        );
+        assert_eq!(engine.borrow().command_count(), 2);
+        assert_eq!(accounts.borrow().len(), 4);
+        assert_eq!(accounts.borrow()[0].event_id, accounts.borrow()[1].event_id);
+        assert_ne!(accounts.borrow()[1].event_id, accounts.borrow()[2].event_id);
+        assert_ne!(accounts.borrow()[2].event_id, accounts.borrow()[3].event_id);
+        assert_eq!(commands.borrow().len(), 4);
+        assert_eq!(commands.borrow()[1].1.command_id, query_ids[0]);
+        assert_eq!(commands.borrow()[2].1.command_id, query_ids[1]);
+        assert_eq!(commands.borrow()[3].1.command_id, query_ids[1]);
+        assert_eq!(snapshots.borrow().len(), 1);
+        assert_eq!(node.kernel().portfolio().snapshots(&account_id).len(), 1);
+        assert!(egress_receiver.try_recv().is_err());
+        assert!(trading_cmd_queue_is_empty());
+    }
+    test_clock.borrow_mut().set_time(UnixNanos::from(400));
+    node.kernel_mut().finalize_stop().await.unwrap();
+    assert_eq!(
+        probe.capture().unwrap_err(),
+        ExecutionAccountCaptureError::Retired
+    );
+    assert_eq!(snapshots.borrow().len(), 2);
+    assert_ne!(snapshots.borrow()[1].0.event_id, source_snapshot.event_id);
+    assert_eq!(snapshots.borrow()[1].0.ts_event, UnixNanos::from(400));
+    assert!(!snapshots.borrow()[1].3);
+    let shutdown_egress: Vec<_> = egress_receiver.try_iter().collect();
+    assert_eq!(shutdown_egress.len(), 1);
+    let decoded: PortfolioSnapshot = serde_json::from_slice(&shutdown_egress[0].payload).unwrap();
+    assert_eq!(decoded.event_id, snapshots.borrow()[1].0.event_id);
+    node.kernel_mut().finalize_stop().await.unwrap();
+    assert_eq!(snapshots.borrow().len(), 2);
+    assert!(
+        callback_errors.borrow().is_empty(),
+        "{:?}",
+        callback_errors.borrow()
+    );
+    assert!(events.try_recv().is_err());
+    msgbus::unsubscribe_portfolio_snapshot("events.portfolio.*".into(), &handler);
+    msgbus::clear_bus_tap();
+    Python::attach(|py| {
+        module.bind(py).call_method0("cleanup").unwrap();
+    });
+    node.dispose();
+}
