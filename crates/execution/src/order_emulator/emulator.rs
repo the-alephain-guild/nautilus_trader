@@ -3706,6 +3706,185 @@ mod tests {
     }
 
     #[rstest]
+    fn test_original_deferred_cancel_event_drains_once_and_cancels_oco_sibling(
+        instrument: CryptoPerpetual,
+    ) {
+        let (_clock, cache, emulator) = create_emulator();
+        add_instrument_to_cache(&cache, &instrument);
+        let risk_events = register_risk_event_handler("original-oco-risk-events");
+        let portfolio_events = register_portfolio_event_handler("original-oco-portfolio-events");
+        let _data_commands = register_data_command_handler("original-oco-data-commands");
+        let (handler, execution_commands) = get_typed_into_message_saving_handler::<TradingCommand>(
+            Some(Ustr::from("original-oco-execution-commands")),
+        );
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_queue_execute(),
+            handler,
+        );
+        let strategy_id = StrategyId::from("STRATEGY-001");
+        let client_order_id_a = ClientOrderId::from("O-ORIGINAL-OCO-A");
+        let client_order_id_b = ClientOrderId::from("O-ORIGINAL-OCO-B");
+        let orders = [
+            (client_order_id_a, client_order_id_b, "4900.00"),
+            (client_order_id_b, client_order_id_a, "4950.00"),
+        ]
+        .map(|(id, sibling, trigger)| {
+            OrderTestBuilder::new(OrderType::StopMarket)
+                .instrument_id(instrument.id())
+                .strategy_id(strategy_id)
+                .client_order_id(id)
+                .side(OrderSide::Sell)
+                .trigger_price(Price::from(trigger))
+                .quantity(Quantity::from(1))
+                .emulation_trigger(TriggerType::BidAsk)
+                .contingency_type(ContingencyType::Oco)
+                .linked_order_ids(vec![sibling])
+                .build()
+        });
+        let (publication_handler, publications) = subscribe_order_topic(strategy_id);
+        let mut initial_histories = Vec::new();
+        for order in &orders {
+            cache
+                .borrow_mut()
+                .add_order(order.clone(), None, None, false)
+                .unwrap();
+            let command = create_submit_order(&instrument, order);
+            msgbus::send_trading_command(
+                MessagingSwitchboard::order_emulator_execute(),
+                TradingCommand::SubmitOrder(command.clone()),
+            );
+            let actual = cache
+                .borrow()
+                .order_owned(&order.client_order_id())
+                .unwrap();
+            assert_eq!(actual.status(), OrderStatus::Emulated);
+            assert_eq!(
+                emulator
+                    .borrow()
+                    .get_submit_order_commands()
+                    .get(&order.client_order_id()),
+                Some(&command)
+            );
+            initial_histories.push(actual.events().into_iter().cloned().collect::<Vec<_>>());
+        }
+        assert_eq!(risk_events.get_messages().len(), 2);
+        assert!(emulator.borrow().pending_messages.borrow().is_empty());
+        let emulated_a = cache.borrow().order_owned(&client_order_id_a).unwrap();
+        let original_cancel = {
+            let mut active = emulator.borrow_mut();
+            active.cancel_order(&emulated_a);
+            let emitted: Vec<_> = publications
+                .borrow()
+                .iter()
+                .filter(|event| matches!(event, OrderEventAny::Canceled(_)))
+                .cloned()
+                .collect();
+            assert_eq!(emitted.len(), 1);
+            let original = emitted[0].clone();
+            assert_eq!(original.client_order_id(), client_order_id_a);
+            let pending = active.pending_messages.borrow();
+            assert_eq!(pending.len(), 1);
+            match pending.front().unwrap() {
+                PendingMessage::Event(event) => assert_eq!(event.as_ref(), &original),
+                PendingMessage::Command(command) => {
+                    panic!("expected the original native cancel event, received {command:?}");
+                }
+            }
+            let cached_a = cache.borrow().order_owned(&client_order_id_a).unwrap();
+            assert_eq!(cached_a.status(), OrderStatus::Canceled);
+            assert_eq!(cached_a.last_event(), &original);
+            assert_eq!(
+                cache
+                    .borrow()
+                    .order_owned(&client_order_id_b)
+                    .unwrap()
+                    .status(),
+                OrderStatus::Emulated,
+                "OCO must wait for the real pending event to be consumed"
+            );
+            original
+        };
+        assert_eq!(publications.borrow().len(), 3);
+
+        // A legitimate duplicate cancel reaches the registered entrypoint and its normal drain
+        let repeat = CancelOrder::new(
+            orders[0].trader_id(),
+            None,
+            strategy_id,
+            instrument.id(),
+            client_order_id_a,
+            None,
+            UUID4::new(),
+            0.into(),
+            None,
+            None,
+        );
+        msgbus::send_trading_command(
+            MessagingSwitchboard::order_emulator_execute(),
+            TradingCommand::CancelOrder(repeat),
+        );
+        assert!(emulator.borrow().pending_messages.borrow().is_empty());
+        assert!(emulator.borrow().get_submit_order_commands().is_empty());
+        assert!(
+            emulator
+                .borrow()
+                .get_matching_core(&instrument.id())
+                .unwrap()
+                .get_orders()
+                .is_empty()
+        );
+        assert!(execution_commands.get_messages().is_empty());
+        let canceled: Vec<_> = publications
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, OrderEventAny::Canceled(_)))
+            .cloned()
+            .collect();
+        assert_eq!(canceled.len(), 2);
+        assert_eq!(canceled[0], original_cancel);
+        assert_eq!(canceled[1].client_order_id(), client_order_id_b);
+        assert_ne!(canceled[0], canceled[1]);
+        match (&canceled[0], &canceled[1]) {
+            (OrderEventAny::Canceled(a), OrderEventAny::Canceled(b)) => {
+                assert_ne!(a.event_id, b.event_id);
+            }
+            _ => panic!("both real native publications must be cancel events"),
+        }
+        assert_eq!(portfolio_events.get_messages(), canceled);
+        assert_eq!(publications.borrow().len(), 4);
+        for (index, order) in orders.iter().enumerate() {
+            let actual = cache
+                .borrow()
+                .order_owned(&order.client_order_id())
+                .unwrap();
+            assert_eq!(actual.status(), OrderStatus::Canceled);
+            assert_eq!(actual.quantity(), order.quantity());
+            assert_eq!(actual.filled_qty(), Quantity::zero(0));
+            assert!(actual.venue_order_id().is_none());
+            let history = actual.events();
+            assert_eq!(history.len(), initial_histories[index].len() + 1);
+            assert_eq!(
+                history[..initial_histories[index].len()],
+                initial_histories[index].iter().collect::<Vec<_>>()
+            );
+            assert_eq!(actual.last_event(), &canceled[index]);
+            assert!(
+                history.iter().all(|event| matches!(
+                    event,
+                    OrderEventAny::Initialized(_)
+                        | OrderEventAny::Emulated(_)
+                        | OrderEventAny::Canceled(_)
+                )),
+                "this local OCO lifecycle must not submit or fill a venue order"
+            );
+        }
+        msgbus::unsubscribe_order_events(
+            format!("events.order.{strategy_id}").into(),
+            &publication_handler,
+        );
+    }
+
+    #[rstest]
     fn test_reentrant_command_from_event_handler_does_not_panic(instrument: CryptoPerpetual) {
         let (_clock, cache, emulator) = create_emulator();
         add_instrument_to_cache(&cache, &instrument);
