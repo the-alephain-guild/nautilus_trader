@@ -434,6 +434,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_initialized(&self, event: OrderInitialized) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_initialized",
+                    OrderEventAny::Initialized(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_initialized", (event.into_py_any(py)?,))
             })?;
@@ -443,7 +450,7 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_event(&self, event: OrderEventAny) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
-            if nautilus_common::owner_delivery::is_controlled_phase() {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
                 return super::owner_delivery::dispatch_order_callback(
                     py_self,
                     "on_order_event",
@@ -460,6 +467,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_denied(&self, event: OrderDenied) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_denied",
+                    OrderEventAny::Denied(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_denied", (event.into_py_any(py)?,))
             })?;
@@ -469,6 +483,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_emulated(&self, event: OrderEmulated) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_emulated",
+                    OrderEventAny::Emulated(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_emulated", (event.into_py_any(py)?,))
             })?;
@@ -478,6 +499,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_released(&self, event: OrderReleased) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_released",
+                    OrderEventAny::Released(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_released", (event.into_py_any(py)?,))
             })?;
@@ -487,6 +515,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_submitted(&self, event: OrderSubmitted) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_submitted",
+                    OrderEventAny::Submitted(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_submitted", (event.into_py_any(py)?,))
             })?;
@@ -496,6 +531,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_rejected(&self, event: OrderRejected) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_rejected",
+                    OrderEventAny::Rejected(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_rejected", (event.into_py_any(py)?,))
             })?;
@@ -505,6 +547,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_accepted(&self, event: OrderAccepted) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_accepted",
+                    OrderEventAny::Accepted(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_accepted", (event.into_py_any(py)?,))
             })?;
@@ -514,6 +563,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_expired(&self, event: OrderExpired) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_expired",
+                    OrderEventAny::Expired(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_expired", (event.into_py_any(py)?,))
             })?;
@@ -523,6 +579,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_triggered(&self, event: OrderTriggered) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_triggered",
+                    OrderEventAny::Triggered(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_triggered", (event.into_py_any(py)?,))
             })?;
@@ -532,6 +595,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_pending_update(&self, event: OrderPendingUpdate) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_pending_update",
+                    OrderEventAny::PendingUpdate(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_pending_update", (event.into_py_any(py)?,))
             })?;
@@ -541,6 +611,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_pending_cancel(&self, event: OrderPendingCancel) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_pending_cancel",
+                    OrderEventAny::PendingCancel(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_pending_cancel", (event.into_py_any(py)?,))
             })?;
@@ -550,6 +627,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_modify_rejected(&self, event: OrderModifyRejected) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_modify_rejected",
+                    OrderEventAny::ModifyRejected(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_modify_rejected", (event.into_py_any(py)?,))
             })?;
@@ -559,6 +643,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_cancel_rejected(&self, event: OrderCancelRejected) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_cancel_rejected",
+                    OrderEventAny::CancelRejected(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_cancel_rejected", (event.into_py_any(py)?,))
             })?;
@@ -568,6 +659,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_updated(&self, event: &OrderUpdated) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_updated",
+                    OrderEventAny::Updated(*event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_updated", ((*event).into_py_any(py)?,))
             })?;
@@ -577,7 +675,7 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_canceled(&self, event: OrderCanceled) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
-            if nautilus_common::owner_delivery::is_controlled_phase() {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
                 return super::owner_delivery::dispatch_order_callback(
                     py_self,
                     "on_order_canceled",
@@ -593,6 +691,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_filled(&self, event: &OrderFilled) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_filled",
+                    OrderEventAny::Filled(event.clone()),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_filled", (event.clone().into_py_any(py)?,))
             })?;
@@ -602,6 +707,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_fill_voided(&self, event: &OrderFillVoided) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_fill_voided",
+                    OrderEventAny::FillVoided(event.clone()),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(
                     py,
@@ -615,6 +727,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_position_opened(&self, event: PositionOpened) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_position_callback(
+                    py_self,
+                    "on_position_opened",
+                    PositionEvent::PositionOpened(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_position_opened", (event.into_py_any(py)?,))
             })?;
@@ -624,6 +743,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_position_event(&self, event: PositionEvent) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_position_callback(
+                    py_self,
+                    "on_position_event",
+                    event,
+                );
+            }
             Python::attach(|py| {
                 let py_event = match event {
                     PositionEvent::PositionOpened(event) => event.into_py_any(py)?,
@@ -639,6 +765,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_position_changed(&self, event: PositionChanged) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_position_callback(
+                    py_self,
+                    "on_position_changed",
+                    PositionEvent::PositionChanged(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_position_changed", (event.into_py_any(py)?,))
             })?;
@@ -648,6 +781,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_position_closed(&self, event: PositionClosed) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::has_delivery_phase() {
+                return super::owner_delivery::dispatch_position_callback(
+                    py_self,
+                    "on_position_closed",
+                    PositionEvent::PositionClosed(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_position_closed", (event.into_py_any(py)?,))
             })?;

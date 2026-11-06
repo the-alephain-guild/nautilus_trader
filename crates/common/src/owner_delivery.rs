@@ -27,7 +27,7 @@ use std::{
 };
 
 use nautilus_core::UUID4;
-use nautilus_model::events::OrderEventAny;
+use nautilus_model::events::{OrderEventAny, OrderInitialized, PositionEvent};
 
 use crate::{messages::execution::TradingCommand, runner::TradingCommandMessage};
 
@@ -87,11 +87,85 @@ pub struct OwnerCause {
     pub incarnation: UUID4,
 }
 
+/// An observed event is not a command or a control permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerIncomingCause {
+    pub event_id: UUID4,
+    pub sequence: u64,
+    pub incarnation: UUID4,
+}
+
+/// Original typed output retained without inventing an order for a position.
+#[derive(Clone, Debug)]
+pub enum OwnerExternalEvent {
+    Order(OrderEventAny),
+    Position(PositionEvent),
+}
+
+/// An original normal-ingress order, or an already-cached publication.
+#[derive(Clone, Debug)]
+pub enum OwnerIncomingOrder {
+    Process(OrderEventAny),
+    PublishInitialized(OrderInitialized),
+}
+
+impl OwnerIncomingOrder {
+    fn event_id(&self) -> UUID4 {
+        match self {
+            Self::Process(event) => event.clone().into_boxed().id(),
+            Self::PublishInitialized(event) => event.event_id,
+        }
+    }
+
+    fn dispatch(self) {
+        match self {
+            Self::Process(event) => crate::msgbus::send_order_event(
+                crate::msgbus::MessagingSwitchboard::exec_engine_process(),
+                event,
+            ),
+            Self::PublishInitialized(event) => {
+                let topic = crate::msgbus::switchboard::get_event_order_topic(event.strategy_id);
+                crate::msgbus::publish_order_event(topic, &OrderEventAny::Initialized(event));
+            }
+        }
+    }
+}
+
+/// Dispatch progress does not assert that the execution engine accepted an event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerIncomingStage {
+    NotDispatched,
+    DispatchEntered,
+    DispatchReturned,
+}
+
+#[derive(Clone, Debug)]
+pub struct RetainedIncomingOrder {
+    pub cause: Option<OwnerIncomingCause>,
+    pub event: OwnerIncomingOrder,
+    pub stage: OwnerIncomingStage,
+    pub error: OwnerDeliveryError,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerDeliveryCause {
+    Control(OwnerCause),
+    Incoming(OwnerIncomingCause),
+}
+
+#[derive(Clone, Debug)]
+pub struct RetainedOwnerTypedDelivery {
+    pub cause: OwnerDeliveryCause,
+    pub event_id: UUID4,
+    pub event: OwnerExternalEvent,
+    pub error: Option<OwnerDeliveryError>,
+}
+
 pub type OwnerAction = Box<dyn FnOnce() -> Result<(), OwnerDeliveryError>>;
 
 /// Retains the original external payload, including an actual callback failure.
 pub trait OwnerExternalAction {
-    fn original_event(&self) -> &OrderEventAny;
+    fn original_event(&self) -> OwnerExternalEvent;
     /// # Errors
     ///
     /// Reports delivery failure without consuming the owned original payload.
@@ -102,6 +176,34 @@ pub trait OwnerExternalAction {
 struct Binding {
     context: Rc<dyn OwnerControlContext>,
     cause: OwnerCause,
+}
+
+#[derive(Clone)]
+enum PhaseBinding {
+    Control(Binding),
+    Incoming(OwnerIncomingCause),
+}
+
+impl PhaseBinding {
+    fn control(&self) -> Option<&Binding> {
+        match self {
+            Self::Control(binding) => Some(binding),
+            Self::Incoming(_) => None,
+        }
+    }
+
+    fn incarnation(&self) -> UUID4 {
+        match self {
+            Self::Control(binding) => binding.cause.incarnation,
+            Self::Incoming(cause) => cause.incarnation,
+        }
+    }
+}
+
+impl From<Binding> for PhaseBinding {
+    fn from(binding: Binding) -> Self {
+        Self::Control(binding)
+    }
 }
 
 /// Original owner/context retained by a private native continuation.
@@ -138,10 +240,11 @@ impl OwnerContinuation {
                 let phase = phase.as_mut().ok_or(OwnerDeliveryError::Unbound)?;
                 let overflow = phase.continuations.len() >= CAPACITY;
                 phase.continuations.push(Work {
-                    binding: self.0,
+                    binding: self.0.into(),
                     requires_control,
                     action,
                     ingress: None,
+                    incoming: None,
                 });
                 if overflow {
                     record_failure(OwnerDeliveryError::Capacity);
@@ -152,10 +255,11 @@ impl OwnerContinuation {
         }
         current_owner()?.enqueue(
             Work {
-                binding: self.0,
+                binding: self.0.into(),
                 requires_control,
                 action,
                 ingress: None,
+                incoming: None,
             },
             false,
         )
@@ -165,23 +269,26 @@ impl OwnerContinuation {
     pub fn matches_current(&self) -> bool {
         PHASE.with(|phase| {
             phase.borrow().as_ref().is_some_and(|phase| {
-                phase.binding.cause.incarnation == self.0.cause.incarnation
-                    && phase.binding.cause.command_id == self.0.cause.command_id
-                    && Rc::ptr_eq(&phase.binding.context, &self.0.context)
+                phase.binding.control().is_some_and(|binding| {
+                    binding.cause.incarnation == self.0.cause.incarnation
+                        && binding.cause.command_id == self.0.cause.command_id
+                        && Rc::ptr_eq(&binding.context, &self.0.context)
+                })
             })
         })
     }
 }
 
 struct Work {
-    binding: Binding,
+    binding: PhaseBinding,
     requires_control: bool,
     action: OwnerAction,
     ingress: Option<TradingCommandMessage>,
+    incoming: Option<OwnerIncomingOrder>,
 }
 
 struct External {
-    binding: Binding,
+    binding: PhaseBinding,
     event_id: UUID4,
     action: Box<dyn OwnerExternalAction>,
     error: Option<OwnerDeliveryError>,
@@ -206,15 +313,23 @@ pub struct RetainedOwnerCommand {
 }
 
 struct Phase {
-    binding: Binding,
+    binding: PhaseBinding,
     external: VecDeque<External>,
     continuations: Vec<Work>,
     ingress: Option<TradingCommandMessage>,
+    incoming: Option<OwnerIncomingOrder>,
+}
+
+struct Delivery {
+    binding: PhaseBinding,
+    event_id: UUID4,
+    preceding_children: usize,
+    continuations: Vec<Work>,
 }
 
 struct RetainedCommand {
     origin: Option<Binding>,
-    _context: Rc<dyn OwnerControlContext>,
+    _context: Option<Rc<dyn OwnerControlContext>>,
     message: TradingCommandMessage,
     error: OwnerDeliveryError,
 }
@@ -228,6 +343,7 @@ struct State {
     retained_external: VecDeque<External>,
     retained_commands: VecDeque<RetainedCommand>,
     retained_work: VecDeque<Work>,
+    retained_incoming_orders: Vec<RetainedIncomingOrder>,
     failure: Option<OwnerDeliveryError>,
     draining: bool,
     retired: bool,
@@ -237,7 +353,7 @@ thread_local! {
     static OWNER: RefCell<Option<OwnerDelivery>> = const { RefCell::new(None) };
     static PHASE: RefCell<Option<Phase>> = const { RefCell::new(None) };
     static SUBMISSION: RefCell<Option<Rc<dyn OwnerControlContext>>> = const { RefCell::new(None) };
-    static DELIVERY: RefCell<Option<Binding>> = const { RefCell::new(None) };
+    static DELIVERY: RefCell<Option<Delivery>> = const { RefCell::new(None) };
 }
 
 /// The actual node strongly owns pending work until completion or explicit fault.
@@ -296,13 +412,82 @@ impl OwnerObserver {
                 .borrow()
                 .retained_external
                 .iter()
-                .map(|item| RetainedOwnerDelivery {
-                    cause: item.binding.cause,
+                .filter_map(|item| {
+                    let binding = item.binding.control()?;
+                    let OwnerExternalEvent::Order(event) = item.action.original_event() else {
+                        return None;
+                    };
+                    Some(RetainedOwnerDelivery {
+                        cause: binding.cause,
+                        event_id: item.event_id,
+                        event,
+                        error: item.error,
+                    })
+                })
+                .collect()
+        }))
+    }
+
+    /// Reads every typed output and its original control or incoming cause.
+    ///
+    /// # Errors
+    ///
+    /// Refuses another process or owner thread.
+    pub fn retained_typed_deliveries(
+        &self,
+    ) -> Result<Vec<RetainedOwnerTypedDelivery>, OwnerDeliveryError> {
+        if self.thread != thread::current().id() || self.pid != std::process::id() {
+            return Err(OwnerDeliveryError::WrongOwner);
+        }
+        Ok(self.owner.upgrade().map_or_else(Vec::new, |owner| {
+            owner
+                .borrow()
+                .retained_external
+                .iter()
+                .map(|item| RetainedOwnerTypedDelivery {
+                    cause: match &item.binding {
+                        PhaseBinding::Control(binding) => {
+                            OwnerDeliveryCause::Control(binding.cause)
+                        }
+                        PhaseBinding::Incoming(cause) => OwnerDeliveryCause::Incoming(*cause),
+                    },
                     event_id: item.event_id,
-                    event: item.action.original_event().clone(),
+                    event: item.action.original_event(),
                     error: item.error,
                 })
                 .collect()
+        }))
+    }
+
+    /// Reads dispatched failures and original incoming items that have not been dispatched.
+    ///
+    /// # Errors
+    ///
+    /// Refuses another process or owner thread.
+    pub fn retained_incoming_orders(
+        &self,
+    ) -> Result<Vec<RetainedIncomingOrder>, OwnerDeliveryError> {
+        if self.thread != thread::current().id() || self.pid != std::process::id() {
+            return Err(OwnerDeliveryError::WrongOwner);
+        }
+        Ok(self.owner.upgrade().map_or_else(Vec::new, |owner| {
+            let state = owner.borrow();
+            let mut result = state.retained_incoming_orders.clone();
+            for work in state.queue.iter().chain(&state.retained_work) {
+                if let PhaseBinding::Incoming(cause) = &work.binding
+                    && let Some(event) = &work.incoming
+                {
+                    result.push(RetainedIncomingOrder {
+                        cause: Some(*cause),
+                        event: event.clone(),
+                        stage: OwnerIncomingStage::NotDispatched,
+                        error: state
+                            .failure
+                            .unwrap_or(OwnerDeliveryError::PendingAtRetirement),
+                    });
+                }
+            }
+            result
         }))
     }
     /// # Errors
@@ -320,7 +505,8 @@ impl OwnerObserver {
                 state.queue.len()
                     + state.retained_external.len()
                     + state.retained_commands.len()
-                    + state.retained_work.len(),
+                    + state.retained_work.len()
+                    + state.retained_incoming_orders.len(),
                 state.failure,
             )
         }))
@@ -371,6 +557,7 @@ impl OwnerDelivery {
             retained_external: VecDeque::new(),
             retained_commands: VecDeque::new(),
             retained_work: VecDeque::new(),
+            retained_incoming_orders: Vec::new(),
             failure: None,
             draining: false,
             retired: false,
@@ -407,9 +594,14 @@ impl OwnerDelivery {
     }
 
     fn enqueue(&self, work: Work, front: bool) -> Result<(), OwnerDeliveryError> {
-        self.check()?;
+        if let Err(error) = self.check() {
+            let mut state = self.0.borrow_mut();
+            state.failure.get_or_insert(error);
+            state.retained_work.push_back(work);
+            return Err(error);
+        }
         let mut state = self.0.borrow_mut();
-        if work.binding.cause.incarnation != state.incarnation {
+        if work.binding.incarnation() != state.incarnation {
             state.retained_work.push_back(work);
             state.failure.get_or_insert(OwnerDeliveryError::WrongOwner);
             return Err(OwnerDeliveryError::WrongOwner);
@@ -419,6 +611,7 @@ impl OwnerDelivery {
                 + state.retained_external.len()
                 + state.retained_commands.len()
                 + state.retained_work.len()
+                + state.retained_incoming_orders.len()
                 >= CAPACITY)
                 .then_some(OwnerDeliveryError::Capacity)
         });
@@ -446,7 +639,7 @@ impl OwnerDelivery {
         state.failure.get_or_insert(error);
         state.retained_commands.push_back(RetainedCommand {
             origin,
-            _context: context,
+            _context: Some(context),
             message,
             error,
         });
@@ -458,13 +651,14 @@ impl OwnerDelivery {
         let error = state.failure.or_else(|| {
             if work
                 .iter()
-                .any(|item| item.binding.cause.incarnation != state.incarnation)
+                .any(|item| item.binding.incarnation() != state.incarnation)
             {
                 Some(OwnerDeliveryError::WrongOwner)
             } else if state.queue.len()
                 + state.retained_external.len()
                 + state.retained_commands.len()
                 + state.retained_work.len()
+                + state.retained_incoming_orders.len()
                 + work.len()
                 > CAPACITY
             {
@@ -491,13 +685,83 @@ impl OwnerDelivery {
             .next_sequence
             .checked_add(1)
             .ok_or(OwnerDeliveryError::SequenceExhausted)?;
-        let parent_event_id = active_binding().and_then(|binding| binding.cause.parent_event_id);
+        let parent_event_id = active_parent_event_id();
         Ok(OwnerCause {
             command_id,
             parent_event_id,
             sequence: state.next_sequence,
             incarnation: state.incarnation,
         })
+    }
+
+    fn enqueue_incoming(&self, event: OwnerIncomingOrder) -> Result<(), OwnerDeliveryError> {
+        if let Err(error) = self.check() {
+            let mut state = self.0.borrow_mut();
+            state.failure.get_or_insert(error);
+            state.retained_incoming_orders.push(RetainedIncomingOrder {
+                cause: None,
+                event,
+                stage: OwnerIncomingStage::NotDispatched,
+                error,
+            });
+            return Err(error);
+        }
+        let cause = {
+            let mut state = self.0.borrow_mut();
+            let Some(sequence) = state.next_sequence.checked_add(1) else {
+                state
+                    .failure
+                    .get_or_insert(OwnerDeliveryError::SequenceExhausted);
+                state.retained_incoming_orders.push(RetainedIncomingOrder {
+                    cause: None,
+                    event,
+                    stage: OwnerIncomingStage::NotDispatched,
+                    error: OwnerDeliveryError::SequenceExhausted,
+                });
+                return Err(OwnerDeliveryError::SequenceExhausted);
+            };
+            state.next_sequence = sequence;
+            OwnerIncomingCause {
+                event_id: event.event_id(),
+                sequence,
+                incarnation: state.incarnation,
+            }
+        };
+        let original = event.clone();
+        self.enqueue(
+            Work {
+                binding: PhaseBinding::Incoming(cause),
+                requires_control: false,
+                action: Box::new(move || {
+                    event.dispatch();
+                    Ok(())
+                }),
+                ingress: None,
+                incoming: Some(original),
+            },
+            false,
+        )
+    }
+
+    fn retain_incoming_phase(
+        &self,
+        phase: &mut Phase,
+        stage: OwnerIncomingStage,
+        error: OwnerDeliveryError,
+    ) {
+        if let PhaseBinding::Incoming(cause) = &phase.binding
+            && let Some(event) = phase.incoming.take()
+        {
+            self.0
+                .borrow_mut()
+                .retained_incoming_orders
+                .push(RetainedIncomingOrder {
+                    cause: Some(*cause),
+                    event,
+                    stage,
+                    error,
+                });
+        }
     }
 
     /// Finishes one phase before calling external code or taking another phase.
@@ -521,7 +785,7 @@ impl OwnerDelivery {
         let mut state = self.0.borrow_mut();
         state.draining = false;
         if let Err(error) = result {
-            state.failure = Some(error);
+            state.failure.get_or_insert(error);
         }
         result
     }
@@ -534,11 +798,16 @@ impl OwnerDelivery {
             let Some(mut work) = self.0.borrow_mut().queue.pop_front() else {
                 return Ok(());
             };
-            if work.binding.cause.incarnation != self.0.borrow().incarnation {
+            if work.binding.incarnation() != self.0.borrow().incarnation {
+                self.0.borrow_mut().queue.push_front(work);
                 return Err(OwnerDeliveryError::WrongOwner);
             }
             let mut entered = if work.requires_control {
-                match work.binding.context.enter() {
+                let Some(binding) = work.binding.control() else {
+                    self.0.borrow_mut().queue.push_front(work);
+                    return Err(OwnerDeliveryError::UnsupportedEffect);
+                };
+                match binding.context.enter() {
                     Ok(entered) => Some(entered),
                     Err(error) => {
                         self.0.borrow_mut().queue.push_front(work);
@@ -558,6 +827,7 @@ impl OwnerDelivery {
                     external: VecDeque::new(),
                     continuations: Vec::new(),
                     ingress: work.ingress.take(),
+                    incoming: work.incoming.take(),
                 });
                 true
             });
@@ -570,6 +840,11 @@ impl OwnerDelivery {
             }
             let native = catch_unwind(AssertUnwindSafe(work.action))
                 .unwrap_or(Err(OwnerDeliveryError::NativePanicked));
+            let incoming_stage = if native.is_ok() {
+                OwnerIncomingStage::DispatchReturned
+            } else {
+                OwnerIncomingStage::DispatchEntered
+            };
             let mut phase =
                 PHASE.with(|phase| phase.borrow_mut().take().expect("active owner phase"));
             let exit = entered.as_mut().map_or(Ok(()), |scope| {
@@ -581,6 +856,7 @@ impl OwnerDelivery {
                     .filter(|error| *error == OwnerDeliveryError::Capacity)
             });
             if let Some(error) = phase_failure {
+                self.retain_incoming_phase(&mut phase, incoming_stage, error);
                 self.0
                     .borrow_mut()
                     .retained_external
@@ -592,14 +868,33 @@ impl OwnerDelivery {
                 return Err(error);
             }
             let mut delivery_error = None;
+            let mut callback_children = Vec::new();
             while let Some(mut external) = phase.external.pop_front() {
                 let mut binding = external.binding.clone();
-                binding.cause.parent_event_id = Some(external.event_id);
+                if let PhaseBinding::Control(binding) = &mut binding {
+                    binding.cause.parent_event_id = Some(external.event_id);
+                }
                 external.binding = binding.clone();
-                DELIVERY.with(|delivery| *delivery.borrow_mut() = Some(binding));
+                DELIVERY.with(|delivery| {
+                    *delivery.borrow_mut() = Some(Delivery {
+                        binding,
+                        event_id: external.event_id,
+                        preceding_children: phase
+                            .continuations
+                            .len()
+                            .saturating_add(callback_children.len()),
+                        continuations: Vec::new(),
+                    });
+                });
                 let delivered = catch_unwind(AssertUnwindSafe(|| external.action.deliver()))
                     .unwrap_or(Err(OwnerDeliveryError::ExternalCallback));
-                DELIVERY.with(|delivery| delivery.borrow_mut().take());
+                let delivery = DELIVERY.with(|delivery| {
+                    delivery
+                        .borrow_mut()
+                        .take()
+                        .expect("active external delivery")
+                });
+                callback_children.extend(delivery.continuations);
                 if let Err(error) = delivered {
                     // A failed specific callback must not erase itself or suppress its aggregate.
                     external.error = Some(error);
@@ -609,14 +904,28 @@ impl OwnerDelivery {
             }
             // Pending native work precedes newly emitted callback children, as in the original drain
             if let Some(error) = delivery_error {
+                self.retain_incoming_phase(&mut phase, incoming_stage, error);
                 self.0
                     .borrow_mut()
                     .retained_work
                     .extend(phase.continuations);
+                self.0.borrow_mut().retained_work.extend(callback_children);
                 return Err(error);
             }
-            self.queue_continuations(phase.continuations)?;
-            native?;
+            if let Err(error) = native {
+                self.retain_incoming_phase(&mut phase, incoming_stage, error);
+                self.0
+                    .borrow_mut()
+                    .retained_work
+                    .extend(phase.continuations);
+                self.0.borrow_mut().retained_work.extend(callback_children);
+                return Err(error);
+            }
+            phase.continuations.extend(callback_children);
+            if let Err(error) = self.queue_continuations(std::mem::take(&mut phase.continuations)) {
+                self.retain_incoming_phase(&mut phase, incoming_stage, error);
+                return Err(error);
+            }
         }
     }
 
@@ -627,6 +936,7 @@ impl OwnerDelivery {
             + state.retained_external.len()
             + state.retained_commands.len()
             + state.retained_work.len()
+            + state.retained_incoming_orders.len()
     }
 
     #[must_use]
@@ -647,6 +957,7 @@ impl OwnerDelivery {
             || !state.retained_external.is_empty()
             || !state.retained_commands.is_empty()
             || !state.retained_work.is_empty()
+            || !state.retained_incoming_orders.is_empty()
         {
             return Err(OwnerDeliveryError::PendingAtRetirement);
         }
@@ -695,6 +1006,17 @@ fn current_owner() -> Result<OwnerDelivery, OwnerDeliveryError> {
 
 #[must_use]
 pub fn is_controlled_phase() -> bool {
+    PHASE.with(|phase| {
+        phase
+            .borrow()
+            .as_ref()
+            .is_some_and(|phase| phase.binding.control().is_some())
+    })
+}
+
+/// An output phase may have an incoming identity without any control context.
+#[must_use]
+pub fn has_delivery_phase() -> bool {
     PHASE.with(|phase| phase.borrow().is_some())
 }
 
@@ -704,8 +1026,69 @@ pub fn current_continuation() -> Option<OwnerContinuation> {
         phase
             .borrow()
             .as_ref()
-            .map(|phase| OwnerContinuation(phase.binding.clone()))
+            .and_then(|phase| phase.binding.control().cloned().map(OwnerContinuation))
     })
+}
+
+/// Dispatches each original order under one canonical output phase.
+///
+/// All remaining members belong to this owner before the first is dispatched.
+/// A failure retains them, while admitted callback children precede the next member.
+///
+/// # Errors
+///
+/// Reports an owner, admission, dispatch or delivery failure with original items retained.
+pub fn dispatch_incoming_orders(events: Vec<OwnerIncomingOrder>) -> Result<(), OwnerDeliveryError> {
+    if is_controlled_phase() {
+        // This native work already belongs to an actual scope; only that scope's exit can release it.
+        for event in events {
+            event.dispatch();
+        }
+        return Ok(());
+    }
+    let Some(owner) = OWNER.with(|slot| slot.borrow().clone()) else {
+        for event in events {
+            event.dispatch();
+        }
+        return Ok(());
+    };
+    let mut rejected = None;
+    for event in events {
+        if let Err(error) = owner.enqueue_incoming(event) {
+            rejected.get_or_insert(error);
+        }
+    }
+    if let Some(error) = rejected {
+        record_failure(error);
+        return Err(error);
+    }
+    drain_current()
+}
+
+/// Keeps an original command instead of executing it after this owner has failed.
+///
+/// No context or sequence is invented for a command received outside a control phase.
+#[must_use]
+pub fn retain_undispatched_command(
+    message: TradingCommandMessage,
+) -> Option<TradingCommandMessage> {
+    let Some(owner) = OWNER.with(|slot| slot.borrow().clone()) else {
+        return Some(message);
+    };
+    let Some(error) = owner.check().err().or_else(|| owner.failure()) else {
+        return Some(message);
+    };
+    let origin = active_binding();
+    let context = origin.as_ref().map(|binding| binding.context.clone());
+    let mut state = owner.0.borrow_mut();
+    state.failure.get_or_insert(error);
+    state.retained_commands.push_back(RetainedCommand {
+        origin,
+        _context: context,
+        message,
+        error,
+    });
+    None
 }
 
 /// Captures only classified external Python callbacks during a real phase.
@@ -776,11 +1159,13 @@ pub fn capture_control_command(
     };
     let binding = Binding { context, cause };
     let ingress = TradingCommandMessage::new(message.endpoint(), message.command().clone());
-    owner.enqueue(
+    queue_callback_child(
+        &owner,
         Work {
-            binding,
+            binding: binding.into(),
             requires_control: true,
             ingress: Some(ingress),
+            incoming: None,
             action: Box::new(move || {
                 let children = message.dispatch();
                 if !children.is_empty() {
@@ -789,7 +1174,6 @@ pub fn capture_control_command(
                 Ok(())
             }),
         },
-        false,
     )?;
     Ok(None)
 }
@@ -856,9 +1240,11 @@ pub fn capture_registered_control_command(
             binding: Binding {
                 context: binding.context,
                 cause,
-            },
+            }
+            .into(),
             requires_control: true,
             ingress: Some(ingress),
+            incoming: None,
             action: Box::new(move || {
                 let children = message.dispatch();
                 if !children.is_empty() {
@@ -884,8 +1270,79 @@ pub const fn is_control_command(command: &TradingCommand) -> bool {
 
 fn active_binding() -> Option<Binding> {
     PHASE
-        .with(|phase| phase.borrow().as_ref().map(|phase| phase.binding.clone()))
-        .or_else(|| DELIVERY.with(|delivery| delivery.borrow().clone()))
+        .with(|phase| {
+            phase
+                .borrow()
+                .as_ref()
+                .and_then(|phase| phase.binding.control().cloned())
+        })
+        .or_else(|| {
+            DELIVERY.with(|delivery| {
+                delivery
+                    .borrow()
+                    .as_ref()
+                    .and_then(|delivery| delivery.binding.control().cloned())
+            })
+        })
+}
+
+fn active_parent_event_id() -> Option<UUID4> {
+    DELIVERY
+        .with(|delivery| delivery.borrow().as_ref().map(|delivery| delivery.event_id))
+        .or_else(|| {
+            PHASE.with(|phase| {
+                phase
+                    .borrow()
+                    .as_ref()
+                    .and_then(|phase| match &phase.binding {
+                        PhaseBinding::Control(binding) => binding.cause.parent_event_id,
+                        PhaseBinding::Incoming(cause) => Some(cause.event_id),
+                    })
+            })
+        })
+}
+
+fn queue_callback_child(owner: &OwnerDelivery, work: Work) -> Result<(), OwnerDeliveryError> {
+    let mut original = Some(work);
+    let handled = DELIVERY.with(|delivery| {
+        let mut delivery = delivery.borrow_mut();
+        let delivery = delivery
+            .as_mut()
+            .filter(|delivery| matches!(delivery.binding, PhaseBinding::Incoming(_)))?;
+        let work = original.take().expect("owned command before admission");
+        let invalid_owner = owner.check().err();
+        let mut state = owner.0.borrow_mut();
+        let error = state.failure.or(invalid_owner).or_else(|| {
+            if work.binding.incarnation() == state.incarnation {
+                let pending = state.queue.len()
+                    + state.retained_external.len()
+                    + state.retained_commands.len()
+                    + state.retained_work.len()
+                    + state.retained_incoming_orders.len();
+                (pending
+                    .saturating_add(delivery.preceding_children)
+                    .saturating_add(delivery.continuations.len())
+                    >= CAPACITY)
+                    .then_some(OwnerDeliveryError::Capacity)
+            } else {
+                Some(OwnerDeliveryError::WrongOwner)
+            }
+        });
+        // These are concrete factory-bound command children, not permission inherited from ingress.
+        // An already-requested rejected child remains owned alongside the accepted prefix.
+        delivery.continuations.push(work);
+        Some(match error {
+            Some(error) => {
+                state.failure.get_or_insert(error);
+                Err(error)
+            }
+            None => Ok(()),
+        })
+    });
+    match handled {
+        Some(result) => result,
+        None => owner.enqueue(original.expect("unclaimed original command"), false),
+    }
 }
 
 /// Runs only at an owner safe point after engine/actor borrows have ended.
@@ -1002,8 +1459,14 @@ mod tests {
                 last.ingress.as_ref().unwrap().command(),
                 last_query.as_ref().unwrap()
             );
-            assert_eq!(last.binding.cause.sequence, (CAPACITY + 1) as u64);
-            assert_eq!(last.binding.cause.incarnation, state.incarnation);
+            assert_eq!(
+                last.binding.control().unwrap().cause.sequence,
+                (CAPACITY + 1) as u64
+            );
+            assert_eq!(
+                last.binding.control().unwrap().cause.incarnation,
+                state.incarnation
+            );
         }
         assert_eq!(owner.drain(), Err(OwnerDeliveryError::Capacity));
         assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
@@ -1015,8 +1478,8 @@ mod tests {
     }
 
     impl OwnerExternalAction for QueryChildDelivery {
-        fn original_event(&self) -> &OrderEventAny {
-            &self.event
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Order(self.event.clone())
         }
         fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
             let immediate = capture_control_command(TradingCommandMessage::new(
@@ -1040,6 +1503,452 @@ mod tests {
             None,
             None,
         ))
+    }
+
+    type ChildAdmission = (
+        UUID4,
+        Result<bool, OwnerDeliveryError>,
+        Option<OwnerDeliveryError>,
+    );
+
+    struct IncomingChildDelivery {
+        event: OrderEventAny,
+        endpoint: crate::msgbus::MStr<crate::msgbus::Endpoint>,
+        commands: Rc<[TradingCommand]>,
+        range: std::ops::Range<usize>,
+        context: Rc<dyn OwnerControlContext>,
+        admissions: Rc<RefCell<Vec<ChildAdmission>>>,
+        outlets: Rc<RefCell<Vec<&'static str>>>,
+        outlet: &'static str,
+    }
+
+    impl OwnerExternalAction for IncomingChildDelivery {
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Order(self.event.clone())
+        }
+
+        fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+            self.outlets.borrow_mut().push(self.outlet);
+            let _submission = SubmissionBinding::new(self.context.clone())?;
+            for index in self.range.clone() {
+                let command = self.commands[index].clone();
+                let TradingCommand::QueryAccount(query) = &command else {
+                    return Err(OwnerDeliveryError::UnsupportedEffect);
+                };
+                let command_id = query.command_id;
+                let accepted =
+                    capture_control_command(TradingCommandMessage::new(self.endpoint, command))
+                        .map(|immediate| immediate.is_none());
+                let failure = current_status().unwrap().1;
+                self.admissions
+                    .borrow_mut()
+                    .push((command_id, accepted, failure));
+            }
+            // A caller that handles a refusal still cannot clear the concrete owner fault.
+            Ok(())
+        }
+    }
+
+    #[rstest::rstest]
+    fn test_incoming_callback_children_enforce_shared_capacity_before_next_leg() {
+        use crate::msgbus::{self, Endpoint, MStr, TypedIntoHandler};
+
+        let owner = OwnerDelivery::new();
+        let _binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let native = Rc::new(RefCell::new(Vec::new()));
+        let native_children = Rc::new(Cell::new(0));
+        let admissions = Rc::new(RefCell::new(Vec::new()));
+        let outlets = Rc::new(RefCell::new(Vec::new()));
+        let context: Rc<dyn OwnerControlContext> = Rc::new(NeutralQueryContext);
+        let commands: Rc<[TradingCommand]> = (0..=CAPACITY)
+            .map(|_| neutral_query(UUID4::new()))
+            .collect::<Vec<_>>()
+            .into();
+        let child_endpoint: MStr<Endpoint> = "OwnerDelivery.incomingCapacityChild".into();
+        let child_calls = native_children.clone();
+        msgbus::register_trading_command_endpoint(
+            child_endpoint,
+            TypedIntoHandler::from(move |_command: TradingCommand| {
+                child_calls.set(child_calls.get() + 1);
+            }),
+        );
+        let first = nautilus_model::events::OrderSubmitted {
+            event_id: UUID4::new(),
+            client_order_id: "INCOMING-CAPACITY-A".into(),
+            ..Default::default()
+        };
+        let second = nautilus_model::events::OrderSubmitted {
+            event_id: UUID4::new(),
+            client_order_id: "INCOMING-CAPACITY-B".into(),
+            ..first
+        };
+        let event = OrderEventAny::Submitted(first);
+        let expected_first = event.clone();
+        let expected_second = OrderEventAny::Submitted(second);
+        let expected_event_id = first.event_id;
+        let native_for_handler = native.clone();
+        let admissions_for_handler = admissions.clone();
+        let outlets_for_handler = outlets.clone();
+        let commands_for_handler = commands.clone();
+        let context_for_handler = context.clone();
+        msgbus::register_order_event_endpoint(
+            crate::msgbus::MessagingSwitchboard::exec_engine_process(),
+            TypedIntoHandler::from(move |received: OrderEventAny| {
+                native_for_handler.borrow_mut().push(received.clone());
+                if received == expected_first {
+                    for (outlet, range) in [
+                        ("specific", 0..CAPACITY / 2),
+                        ("aggregate", CAPACITY / 2..CAPACITY + 1),
+                    ] {
+                        assert!(
+                            capture_external(
+                                expected_event_id,
+                                Box::new(IncomingChildDelivery {
+                                    event: received.clone(),
+                                    endpoint: child_endpoint,
+                                    commands: commands_for_handler.clone(),
+                                    range,
+                                    context: context_for_handler.clone(),
+                                    admissions: admissions_for_handler.clone(),
+                                    outlets: outlets_for_handler.clone(),
+                                    outlet,
+                                })
+                            )
+                            .unwrap()
+                            .is_none()
+                        );
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            dispatch_incoming_orders(vec![
+                OwnerIncomingOrder::Process(event.clone()),
+                OwnerIncomingOrder::Process(expected_second.clone()),
+            ]),
+            Err(OwnerDeliveryError::Capacity)
+        );
+        assert_eq!(&*outlets.borrow(), &["specific", "aggregate"]);
+        assert_eq!(&*native.borrow(), &[event]);
+        assert_eq!(native_children.get(), 0);
+        let admissions = admissions.borrow();
+        assert_eq!(admissions.len(), CAPACITY + 1);
+        let first_refused = admissions.iter().position(|(_, result, _)| result.is_err());
+        assert_eq!(
+            first_refused,
+            Some(CAPACITY - 1),
+            "the queued second leg and children from both outlets share the admission budget"
+        );
+        for (index, (_, result, failure)) in admissions.iter().enumerate() {
+            if index < CAPACITY - 1 {
+                assert_eq!(*result, Ok(true));
+                assert_eq!(*failure, None);
+            } else {
+                assert_eq!(*result, Err(OwnerDeliveryError::Capacity));
+                assert_eq!(*failure, Some(OwnerDeliveryError::Capacity));
+            }
+        }
+        let state = owner.0.borrow();
+        assert_eq!(state.queue.len(), 1);
+        assert_eq!(state.retained_work.len(), CAPACITY + 1);
+        assert_eq!(
+            state.queue.front().unwrap().incoming.as_ref().map(|input| {
+                match input {
+                    OwnerIncomingOrder::Process(event) => event.clone(),
+                    OwnerIncomingOrder::PublishInitialized(_) => panic!("not a publication"),
+                }
+            }),
+            Some(expected_second)
+        );
+        for (index, work) in state.retained_work.iter().enumerate() {
+            let binding = work.binding.control().unwrap();
+            let TradingCommand::QueryAccount(original) = &commands[index] else {
+                unreachable!("prepared neutral query");
+            };
+            assert_eq!(binding.cause.command_id, original.command_id);
+            assert_eq!(binding.cause.parent_event_id, Some(expected_event_id));
+            assert_eq!(binding.cause.sequence, index as u64 + 3);
+            assert_eq!(binding.cause.incarnation, state.incarnation);
+            assert!(Rc::ptr_eq(&binding.context, &context));
+            let ingress = work.ingress.as_ref().unwrap();
+            assert_eq!(ingress.endpoint(), child_endpoint);
+            assert_eq!(ingress.command(), &commands[index]);
+        }
+        drop(state);
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::Capacity));
+        assert_eq!(observer.retained_incoming_orders().unwrap().len(), 2);
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        assert_eq!(native_children.get(), 0);
+    }
+
+    struct PositionDelivery {
+        event: PositionEvent,
+        target: Rc<RefCell<Vec<&'static str>>>,
+        method: &'static str,
+        fail: bool,
+    }
+
+    #[rstest::rstest]
+    fn test_incoming_neutral_query_child_precedes_next_leg_with_original_context() {
+        use crate::msgbus::{self, Endpoint, MStr, TypedIntoHandler};
+
+        let owner = OwnerDelivery::new();
+        let _binding = owner.bind().unwrap();
+        let timeline = Rc::new(RefCell::new(Vec::new()));
+        let admissions = Rc::new(RefCell::new(Vec::new()));
+        let context: Rc<dyn OwnerControlContext> = Rc::new(RecordedQueryContext {
+            lifecycle: timeline.clone(),
+            fail_exit: false,
+        });
+        let first = nautilus_model::events::OrderSubmitted {
+            event_id: UUID4::new(),
+            client_order_id: "INCOMING-CHILD-A".into(),
+            ..Default::default()
+        };
+        let second = nautilus_model::events::OrderSubmitted {
+            event_id: UUID4::new(),
+            client_order_id: "INCOMING-CHILD-B".into(),
+            ..first
+        };
+        let command_id = UUID4::new();
+        let mut command = neutral_query(command_id);
+        if let TradingCommand::QueryAccount(query) = &mut command {
+            query.causation_id = Some(first.event_id);
+        }
+        let commands: Rc<[TradingCommand]> = vec![command.clone()].into();
+        let child_endpoint: MStr<Endpoint> = "OwnerDelivery.incomingOrderedChild".into();
+        let original_context = context.clone();
+        let expected_command = command;
+        let child_timeline = timeline.clone();
+        msgbus::register_trading_command_endpoint(
+            child_endpoint,
+            TypedIntoHandler::from(move |received: TradingCommand| {
+                assert_eq!(received, expected_command);
+                let continuation = current_continuation().unwrap();
+                assert!(continuation.matches_current());
+                assert_eq!(continuation.0.cause.command_id, command_id);
+                assert_eq!(continuation.0.cause.parent_event_id, Some(first.event_id));
+                assert_eq!(continuation.0.cause.sequence, 3);
+                assert!(Rc::ptr_eq(&continuation.0.context, &original_context));
+                child_timeline.borrow_mut().push("child");
+            }),
+        );
+        let handler_timeline = timeline.clone();
+        let handler_admissions = admissions.clone();
+        let handler_context = context.clone();
+        msgbus::register_order_event_endpoint(
+            crate::msgbus::MessagingSwitchboard::exec_engine_process(),
+            TypedIntoHandler::from(move |event: OrderEventAny| {
+                assert!(has_delivery_phase());
+                assert!(!is_controlled_phase());
+                assert!(current_continuation().is_none());
+                let is_first = event.client_order_id() == first.client_order_id;
+                handler_timeline
+                    .borrow_mut()
+                    .push(if is_first { "native-A" } else { "native-B" });
+                for (outlet, range) in if is_first {
+                    [("specific-A", 0..1), ("aggregate-A", 1..1)]
+                } else {
+                    [("specific-B", 1..1), ("aggregate-B", 1..1)]
+                } {
+                    assert!(
+                        capture_external(
+                            event.clone().into_boxed().id(),
+                            Box::new(IncomingChildDelivery {
+                                event: event.clone(),
+                                endpoint: child_endpoint,
+                                commands: commands.clone(),
+                                range,
+                                context: handler_context.clone(),
+                                admissions: handler_admissions.clone(),
+                                outlets: handler_timeline.clone(),
+                                outlet,
+                            })
+                        )
+                        .unwrap()
+                        .is_none()
+                    );
+                }
+            }),
+        );
+        assert_eq!(
+            dispatch_incoming_orders(vec![
+                OwnerIncomingOrder::Process(OrderEventAny::Submitted(first)),
+                OwnerIncomingOrder::Process(OrderEventAny::Submitted(second)),
+            ]),
+            Ok(())
+        );
+        assert_eq!(
+            &*timeline.borrow(),
+            &[
+                "native-A",
+                "specific-A",
+                "aggregate-A",
+                "enter",
+                "child",
+                "finish-ok",
+                "drop",
+                "native-B",
+                "specific-B",
+                "aggregate-B",
+            ]
+        );
+        assert_eq!(&*admissions.borrow(), &[(command_id, Ok(true), None)]);
+        assert_eq!(owner.failure(), None);
+        assert_eq!(owner.pending(), 0);
+        assert_eq!(owner.retire(), Ok(()));
+    }
+
+    impl OwnerExternalAction for PositionDelivery {
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Position(self.event.clone())
+        }
+
+        fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+            self.target.borrow_mut().push(self.method);
+            if self.fail {
+                Err(OwnerDeliveryError::ExternalCallback)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[rstest::rstest]
+    fn test_control_position_failure_retains_typed_event_cause_and_target() {
+        use nautilus_model::{
+            enums::{OrderSide, PositionSide},
+            events::PositionOpened,
+            identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId},
+            types::{Currency, Money, Price, Quantity},
+        };
+
+        use crate::msgbus::{self, Endpoint, MStr, TypedIntoHandler};
+
+        let owner = OwnerDelivery::new();
+        let _binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let target = Rc::new(RefCell::new(Vec::new()));
+        let event_id = UUID4::new();
+        let event = PositionEvent::PositionOpened(PositionOpened {
+            trader_id: TraderId::from("QUERY-001"),
+            strategy_id: StrategyId::from("POSITION-001"),
+            instrument_id: InstrumentId::from("EURUSD.SIM"),
+            position_id: PositionId::from("POSITION-OBSERVATION-001"),
+            account_id: AccountId::from("SIM-001"),
+            opening_order_id: ClientOrderId::from("POSITION-OPEN-001"),
+            entry: OrderSide::Buy,
+            side: PositionSide::Long,
+            signed_qty: 100.0,
+            quantity: Quantity::from("100"),
+            last_qty: Quantity::from("100"),
+            last_px: Price::from("1.0500"),
+            currency: Currency::USD(),
+            avg_px_open: 1.0500,
+            realized_pnl: Some(Money::from("-2.00 USD")),
+            event_id,
+            ts_event: 1_000_000_000.into(),
+            ts_init: 1_000_000_001.into(),
+        });
+        let original = serde_json::to_value(&event).unwrap();
+        let endpoint: MStr<Endpoint> = "OwnerDelivery.positionFailure".into();
+        let target_for_handler = target.clone();
+        msgbus::register_trading_command_endpoint(
+            endpoint,
+            TypedIntoHandler::from(move |_command: TradingCommand| {
+                for (method, fail) in [("specific", true), ("aggregate", false)] {
+                    assert!(
+                        capture_external(
+                            event_id,
+                            Box::new(PositionDelivery {
+                                event: event.clone(),
+                                target: target_for_handler.clone(),
+                                method,
+                                fail,
+                            }),
+                        )
+                        .unwrap()
+                        .is_none()
+                    );
+                }
+            }),
+        );
+        let original_target_refs = Rc::strong_count(&target);
+        let command_id = UUID4::new();
+        let _submission = SubmissionBinding::new(Rc::new(NeutralQueryContext)).unwrap();
+        assert!(
+            capture_control_command(TradingCommandMessage::new(
+                endpoint,
+                neutral_query(command_id),
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(owner.drain(), Err(OwnerDeliveryError::ExternalCallback));
+        assert_eq!(&*target.borrow(), &["specific", "aggregate"]);
+        let retained = observer.retained_typed_deliveries().unwrap();
+        assert_eq!(retained.len(), 1);
+        let OwnerDeliveryCause::Control(cause) = retained[0].cause else {
+            panic!("a control output cannot be relabelled as incoming");
+        };
+        assert_eq!(cause.command_id, command_id);
+        assert_eq!(cause.parent_event_id, Some(event_id));
+        assert_eq!(cause.sequence, 1);
+        assert_eq!(cause.incarnation, owner.0.borrow().incarnation);
+        let OwnerExternalEvent::Position(position) = &retained[0].event else {
+            panic!("a position cannot be relabelled as an order");
+        };
+        assert_eq!(serde_json::to_value(position).unwrap(), original);
+        assert_eq!(retained[0].event_id, event_id);
+        assert_eq!(
+            retained[0].error,
+            Some(OwnerDeliveryError::ExternalCallback)
+        );
+        assert!(observer.retained_deliveries().unwrap().is_empty());
+        assert!(observer.retained_incoming_orders().unwrap().is_empty());
+        assert_eq!(owner.pending(), 1);
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::ExternalCallback));
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        assert_eq!(Rc::strong_count(&target), original_target_refs + 1);
+    }
+
+    #[rstest::rstest]
+    fn test_faulted_commands_preserve_original_without_inventing_control() {
+        let endpoint = "OwnerDelivery.faultedCommand".into();
+        let command = neutral_query(UUID4::new());
+        let make_message = || TradingCommandMessage::new(endpoint, command.clone());
+        let unbound = retain_undispatched_command(make_message()).unwrap();
+        assert_eq!(unbound.endpoint(), endpoint);
+        assert_eq!(unbound.command(), &command);
+        let owner = OwnerDelivery::new();
+        let _binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let healthy = retain_undispatched_command(make_message()).unwrap();
+        assert_eq!(healthy.endpoint(), endpoint);
+        assert_eq!(healthy.command(), &command);
+        assert!(observer.retained_commands().unwrap().is_empty());
+        record_failure(OwnerDeliveryError::ExternalCallback);
+        assert!(retain_undispatched_command(make_message()).is_none());
+        let retained = observer.retained_commands().unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].endpoint, endpoint);
+        assert_eq!(retained[0].command, command);
+        assert_eq!(retained[0].cause, None);
+        assert_eq!(retained[0].error, OwnerDeliveryError::ExternalCallback);
+        assert_eq!(owner.pending(), 1);
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        owner.0.borrow_mut().retired = true;
+        assert!(retain_undispatched_command(make_message()).is_none());
+        let retained = observer.retained_commands().unwrap();
+        assert_eq!(retained.len(), 2);
+        assert_eq!(retained[1].endpoint, endpoint);
+        assert_eq!(retained[1].command, command);
+        assert_eq!(retained[1].cause, None);
+        assert_eq!(retained[1].error, OwnerDeliveryError::WrongOwner);
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::ExternalCallback));
+        assert_eq!(owner.pending(), 2);
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::WrongOwner));
     }
 
     #[derive(Debug)]
@@ -1118,7 +2027,9 @@ mod tests {
                     binding: Binding {
                         context: context.clone(),
                         cause,
-                    },
+                    }
+                    .into(),
+                    incoming: None,
                     requires_control: true,
                     ingress: Some(TradingCommandMessage::new(endpoint, query.clone())),
                     action: Box::new(move || {
@@ -1141,7 +2052,9 @@ mod tests {
                     binding: Binding {
                         context: existing_context.clone(),
                         cause: existing_cause,
-                    },
+                    }
+                    .into(),
+                    incoming: None,
                     external: VecDeque::new(),
                     continuations: Vec::new(),
                     ingress: Some(TradingCommandMessage::new(endpoint, existing_query.clone())),
@@ -1160,8 +2073,11 @@ mod tests {
                 let state = owner.0.borrow();
                 assert!(!state.draining);
                 let work = state.queue.front().unwrap();
-                assert_eq!(work.binding.cause, cause);
-                assert!(Rc::ptr_eq(&work.binding.context, &context));
+                assert_eq!(work.binding.control().unwrap().cause, cause);
+                assert!(Rc::ptr_eq(
+                    &work.binding.control().unwrap().context,
+                    &context
+                ));
                 let ingress = work.ingress.as_ref().unwrap();
                 assert_eq!(ingress.endpoint(), endpoint);
                 assert_eq!(ingress.command(), &query);
@@ -1169,8 +2085,11 @@ mod tests {
             PHASE.with(|phase| {
                 let phase = phase.borrow();
                 let phase = phase.as_ref().unwrap();
-                assert_eq!(phase.binding.cause, existing_cause);
-                assert!(Rc::ptr_eq(&phase.binding.context, &existing_context));
+                assert_eq!(phase.binding.control().unwrap().cause, existing_cause);
+                assert!(Rc::ptr_eq(
+                    &phase.binding.control().unwrap().context,
+                    &existing_context
+                ));
                 assert_eq!(phase.ingress.as_ref().unwrap().command(), &existing_query);
                 assert!(phase.external.is_empty());
                 assert!(phase.continuations.is_empty());
@@ -1265,9 +2184,15 @@ mod tests {
         assert_eq!(state.queue.len(), CAPACITY);
         assert_eq!(state.retained_work.len(), 2);
         for (work, parent_id) in state.retained_work.iter().zip(parent_ids) {
-            assert_eq!(work.binding.cause.command_id, root_command_id);
-            assert_eq!(work.binding.cause.parent_event_id, Some(parent_id));
-            assert_eq!(work.binding.cause.sequence, 1);
+            assert_eq!(
+                work.binding.control().unwrap().cause.command_id,
+                root_command_id
+            );
+            assert_eq!(
+                work.binding.control().unwrap().cause.parent_event_id,
+                Some(parent_id)
+            );
+            assert_eq!(work.binding.control().unwrap().cause.sequence, 1);
         }
     }
 
@@ -1320,7 +2245,12 @@ mod tests {
         assert_eq!(Rc::strong_count(&effect), 2);
         assert!(second.0.borrow().queue.is_empty());
         assert_eq!(
-            second.0.borrow().retained_work[0].binding.cause.command_id,
+            second.0.borrow().retained_work[0]
+                .binding
+                .control()
+                .unwrap()
+                .cause
+                .command_id,
             command_id
         );
         assert_eq!(

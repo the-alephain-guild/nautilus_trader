@@ -2120,6 +2120,11 @@ impl LiveNode {
         let _capture_dispatch = account_capture::dispatch_guard(account_capture::EXEC_COMMANDS);
         let mut messages = vec![message];
         while let Some(message) = messages.pop() {
+            let Some(message) =
+                nautilus_common::owner_delivery::retain_undispatched_command(message)
+            else {
+                continue;
+            };
             if message.endpoint() == MessagingSwitchboard::exec_engine_execute() {
                 self.observe_exec_command_before_dispatch(message.command());
             }
@@ -4001,15 +4006,21 @@ impl PendingEvents {
             AsyncRunner::handle_exec_event(ExecutionEvent::Report(report));
         }
 
-        for evt in self.order_evts.drain(..) {
-            let event = match evt {
-                PendingOrderDispatch::Process(event) => ExecutionEvent::Order(event),
-                PendingOrderDispatch::PublishInitialized(initialized) => {
-                    ExecutionEvent::OrderInitializedPublication(initialized)
+        let orders = self
+            .order_evts
+            .drain(..)
+            .map(|evt| match evt {
+                PendingOrderDispatch::Process(event) => {
+                    nautilus_common::owner_delivery::OwnerIncomingOrder::Process(event)
                 }
-            };
-            AsyncRunner::handle_exec_event(event);
-        }
+                PendingOrderDispatch::PublishInitialized(initialized) => {
+                    nautilus_common::owner_delivery::OwnerIncomingOrder::PublishInitialized(
+                        initialized,
+                    )
+                }
+            })
+            .collect();
+        AsyncRunner::handle_incoming_orders(orders);
 
         for cmd in self.exec_cmds.drain(..) {
             AsyncRunner::handle_trading_command(cmd);
@@ -4900,6 +4911,334 @@ mod tests {
 
         assert!(is_recent_fill(&node, &fill));
         assert_eq!(node.observe_exec_event_before_dispatch(&report_event), None);
+    }
+
+    #[rstest]
+    fn test_direct_fill_dedup_distinguishes_applied_callback_fault_and_queued_original() {
+        use std::cell::Cell;
+
+        use nautilus_common::{
+            msgbus::{BusTap, Endpoint, MStr, Topic},
+            owner_delivery::{
+                self, OwnerDeliveryCause, OwnerDeliveryError, OwnerExternalAction,
+                OwnerExternalEvent, OwnerIncomingOrder, OwnerIncomingStage,
+            },
+        };
+        use nautilus_model::accounts::Account;
+
+        struct FillPublicationTap(Rc<RefCell<Vec<(String, OrderEventAny)>>>);
+        impl BusTap for FillPublicationTap {
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn std::any::Any) {
+                if let Some(event) = message.downcast_ref::<OrderEventAny>() {
+                    self.0.borrow_mut().push((topic.to_string(), event.clone()));
+                }
+            }
+            fn on_send(&self, _endpoint: MStr<Endpoint>, _message: &dyn std::any::Any) {}
+        }
+
+        fn accounting_snapshot(node: &LiveNode, account_id: AccountId) -> serde_json::Value {
+            let cache = node.kernel.cache.borrow();
+            let account = cache.account_owned(&account_id).unwrap();
+            let positions: Vec<_> = cache
+                .positions_refs(None, None, None, None, None)
+                .into_iter()
+                .map(|position| position.cloned())
+                .collect();
+            serde_json::json!({"account": account, "positions": positions})
+        }
+
+        struct FailedFillCallback {
+            event: OrderEventAny,
+            engine: Rc<RefCell<ExecutionEngine>>,
+            calls: Rc<Cell<usize>>,
+        }
+
+        impl OwnerExternalAction for FailedFillCallback {
+            fn original_event(&self) -> OwnerExternalEvent {
+                OwnerExternalEvent::Order(self.event.clone())
+            }
+
+            fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+                if self.engine.try_borrow_mut().is_err() {
+                    return Err(OwnerDeliveryError::UnsupportedEffect);
+                }
+                self.calls.set(self.calls.get() + 1);
+                Err(OwnerDeliveryError::ExternalCallback)
+            }
+        }
+
+        let (mut node, _, instrument) = recent_fill_test_fixture("FaultedDirectFillNode");
+        let account_id = AccountId::from("TEST-001");
+        let account = AccountAny::Margin(MarginAccount::new(
+            AccountState::new(
+                account_id,
+                AccountType::Margin,
+                vec![AccountBalance::new(
+                    Money::from("1000000 USDT"),
+                    Money::from("0 USDT"),
+                    Money::from("1000000 USDT"),
+                )],
+                Vec::new(),
+                true,
+                UUID4::new(),
+                UnixNanos::default(),
+                UnixNanos::default(),
+                Some(Currency::USDT()),
+            ),
+            true,
+        ));
+        node.kernel.cache.borrow_mut().add_account(account).unwrap();
+        let first_order = node
+            .kernel
+            .cache
+            .borrow()
+            .order_owned(&ClientOrderId::from("O-RECENT-FILL"))
+            .unwrap();
+        let first_event = TestOrderEventStubs::filled(
+            &first_order,
+            &instrument,
+            Some(TradeId::from("T-RECENT-FILL")),
+            None,
+            Some(Price::from("100.0")),
+            Some(Quantity::from("1.0")),
+            Some(LiquiditySide::Taker),
+            Some(Money::from("2.00 USDT")),
+            None,
+            Some(account_id),
+        );
+        let OrderEventAny::Filled(first_fill) = &first_event else {
+            unreachable!()
+        };
+        let first_fill = first_fill.clone();
+        let second_id = ClientOrderId::from("O-QUEUED-FILL");
+        let second_venue = VenueOrderId::from("V-QUEUED-FILL");
+        insert_accepted_limit_order_in_node(
+            &node,
+            first_fill.account_id,
+            ClientId::from("TEST-RECENT-FILL"),
+            instrument.id(),
+            second_id,
+            second_venue,
+        );
+        let before_second = node.kernel.cache.borrow().order_owned(&second_id).unwrap();
+        let second_event = TestOrderEventStubs::filled(
+            &before_second,
+            &instrument,
+            Some(TradeId::from("T-QUEUED-FILL")),
+            None,
+            Some(Price::from("100.0")),
+            Some(Quantity::from("1.0")),
+            Some(LiquiditySide::Taker),
+            Some(Money::from("2.00 USDT")),
+            None,
+            Some(account_id),
+        );
+        let OrderEventAny::Filled(second_fill) = &second_event else {
+            unreachable!()
+        };
+        let owner = node.owner_delivery.clone();
+        let binding = owner.bind().unwrap();
+        let observer = owner_delivery::current_observer().unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let observed_calls = calls.clone();
+        let captured = Rc::new(Cell::new(0));
+        let observed_captured = captured.clone();
+        let engine = node.kernel.exec_engine.clone();
+        let handler = TypedHandler::from(move |event: &OrderEventAny| {
+            let OrderEventAny::Filled(fill) = event else {
+                return;
+            };
+            observed_captured.set(observed_captured.get() + 1);
+            assert!(
+                owner_delivery::capture_external(
+                    fill.event_id,
+                    Box::new(FailedFillCallback {
+                        event: event.clone(),
+                        engine: engine.clone(),
+                        calls: observed_calls.clone(),
+                    })
+                )
+                .unwrap()
+                .is_none()
+            );
+        });
+        msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+        let publications = Rc::new(RefCell::new(Vec::new()));
+        msgbus::set_bus_tap(Rc::new(FillPublicationTap(publications.clone())));
+
+        assert!(!is_recent_fill(&node, &first_fill));
+        assert_eq!(
+            node.kernel
+                .cache
+                .borrow()
+                .account_owned(&account_id)
+                .unwrap()
+                .balance_total(None),
+            Some(Money::from("1000000 USDT"))
+        );
+        assert!(
+            node.kernel
+                .cache
+                .borrow()
+                .positions_refs(None, None, None, None, None)
+                .is_empty()
+        );
+        node.process_exec_event(ExecutionEvent::Order(first_event.clone()));
+        eprintln!(
+            "fill publication diagnostic: captured={}, delivered={}, owner={:?}, publications={:?}",
+            captured.get(),
+            calls.get(),
+            observer.status(),
+            publications.borrow()
+        );
+        let applied = node
+            .kernel
+            .cache
+            .borrow()
+            .order_owned(&first_fill.client_order_id)
+            .unwrap();
+        assert_eq!(applied.filled_qty(), first_fill.last_qty);
+        let canonical_fills: Vec<_> = applied.events().into_iter()
+            .filter(|event| matches!(event, OrderEventAny::Filled(fill) if fill.event_id == first_fill.event_id))
+            .cloned().collect();
+        assert_eq!(canonical_fills.len(), 1);
+        let canonical_event = &canonical_fills[0];
+        let OrderEventAny::Filled(canonical_fill) = canonical_event else {
+            unreachable!()
+        };
+        // The real engine supplies the canonical position identity before storing/publishing.
+        // This preserves the untouched incoming value while checking every enriched output field.
+        let mut expected_canonical = first_fill.clone();
+        expected_canonical.position_id = node
+            .kernel
+            .cache
+            .borrow()
+            .position_id(&first_fill.client_order_id)
+            .copied();
+        assert!(expected_canonical.position_id.is_some());
+        assert_eq!(canonical_event, &OrderEventAny::Filled(expected_canonical));
+        assert_eq!(
+            publications
+                .borrow()
+                .iter()
+                .filter(|(topic, _)| topic == &format!("events.order.{}", first_fill.strategy_id))
+                .map(|(_, event)| event.clone())
+                .collect::<Vec<_>>(),
+            canonical_fills
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            applied.commissions().get(&Currency::USDT()),
+            Some(&Money::from("2.00 USDT"))
+        );
+        assert_eq!(
+            node.kernel
+                .cache
+                .borrow()
+                .account_owned(&account_id)
+                .unwrap()
+                .balance_total(None),
+            Some(Money::from("999998 USDT"))
+        );
+        let positions: Vec<_> = node
+            .kernel
+            .cache
+            .borrow()
+            .positions_refs(None, None, None, None, None)
+            .into_iter()
+            .map(|position| position.cloned())
+            .collect();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].quantity, Quantity::from("1.0"));
+        assert_eq!(positions[0].events, vec![canonical_fill.clone()]);
+        assert_eq!(positions[0].commissions(), vec![Money::from("2.00 USDT")]);
+        let accounting_after_apply = accounting_snapshot(&node, account_id);
+        assert!(is_recent_fill(&node, &first_fill));
+        assert_eq!(
+            node.observe_exec_event_before_dispatch(&fill_report_event(&first_fill)),
+            None
+        );
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::ExternalCallback));
+
+        // A canonical fill stays committed even when its external callback failed.
+        // A repeated direct input stays owned under the fault without another apply.
+        // The reconciliation report is separately skipped by the recent-fill precheck.
+        node.process_exec_event(ExecutionEvent::Order(first_event.clone()));
+        let after_duplicate = node
+            .kernel
+            .cache
+            .borrow()
+            .order_owned(&first_fill.client_order_id)
+            .unwrap();
+        assert_eq!(after_duplicate.events(), applied.events());
+        assert_eq!(after_duplicate.filled_qty(), applied.filled_qty());
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            accounting_snapshot(&node, account_id),
+            accounting_after_apply
+        );
+
+        assert!(!is_recent_fill(&node, second_fill));
+        node.process_exec_event(ExecutionEvent::Order(second_event.clone()));
+        let after_second = node.kernel.cache.borrow().order_owned(&second_id).unwrap();
+        assert_eq!(after_second.events(), before_second.events());
+        assert_eq!(after_second.status(), OrderStatus::Accepted);
+        assert_eq!(after_second.filled_qty(), before_second.filled_qty());
+        assert!(!is_recent_fill(&node, second_fill));
+        assert!(
+            node.observe_exec_event_before_dispatch(&fill_report_event(second_fill))
+                .is_some()
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            accounting_snapshot(&node, account_id),
+            accounting_after_apply
+        );
+        let retained = observer.retained_incoming_orders().unwrap();
+        assert_eq!(retained.len(), 3);
+        for (index, original) in [&first_event, &first_event, &second_event]
+            .into_iter()
+            .enumerate()
+        {
+            let OwnerIncomingOrder::Process(event) = &retained[index].event else {
+                unreachable!()
+            };
+            assert_eq!(event, original);
+            let cause = retained[index].cause.unwrap();
+            let OrderEventAny::Filled(fill) = original else {
+                unreachable!()
+            };
+            assert_eq!(cause.event_id, fill.event_id);
+            assert_eq!(retained[index].error, OwnerDeliveryError::ExternalCallback);
+            assert_eq!(
+                retained[index].stage,
+                if index == 0 {
+                    OwnerIncomingStage::DispatchReturned
+                } else {
+                    OwnerIncomingStage::NotDispatched
+                }
+            );
+        }
+        let first_cause = retained[0].cause.unwrap();
+        for pair in retained.windows(2) {
+            let previous = pair[0].cause.unwrap();
+            let next = pair[1].cause.unwrap();
+            assert_eq!(previous.incarnation, next.incarnation);
+            assert!(previous.sequence < next.sequence);
+        }
+        let output = observer.retained_typed_deliveries().unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].cause, OwnerDeliveryCause::Incoming(first_cause));
+        let OwnerExternalEvent::Order(original) = &output[0].event else {
+            unreachable!()
+        };
+        assert_eq!(original, canonical_event);
+        assert_eq!(output[0].error, Some(OwnerDeliveryError::ExternalCallback));
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+        msgbus::clear_bus_tap();
+        drop(binding);
+        node.dispose();
     }
 
     #[rstest]

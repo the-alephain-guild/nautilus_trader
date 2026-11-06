@@ -3121,6 +3121,22 @@ asyncio.run(exercise())
             observer.bind(py).call_method0("cleanup").unwrap();
         });
     }
+    #[pyo3::pyclass(unsendable)]
+    struct OrdinaryCallbackBorrowProbe {
+        engine: Rc<RefCell<ExecutionEngine>>,
+    }
+
+    #[pyo3::pymethods]
+    impl OrdinaryCallbackBorrowProbe {
+        fn __call__(&self) -> bool {
+            let borrowed = self.engine.try_borrow_mut();
+            let available = borrowed.is_ok();
+            // The observation must not itself hold the engine through Python or SQLite work.
+            drop(borrowed);
+            available
+        }
+    }
+
     #[rstest]
     #[case::base_quantity(false)]
     #[case::quote_quantity(true)]
@@ -3234,6 +3250,18 @@ asyncio.run(exercise())
             module
                 .setattr("client_id", client_id.into_py_any(py).unwrap())
                 .unwrap();
+            module
+                .setattr(
+                    "native_borrow_available",
+                    pyo3::Py::new(
+                        py,
+                        OrdinaryCallbackBorrowProbe {
+                            engine: engine.clone(),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
             let enqueue = PyCFunction::new_closure(
                 py,
                 None,
@@ -3274,8 +3302,10 @@ directory = tempfile.TemporaryDirectory()
 database = Path(directory.name) / "ordinary.sqlite3"
 with sqlite3.connect(database) as connection:
     connection.execute("CREATE TABLE observations (kind TEXT, event_id TEXT, identity TEXT, state TEXT)")
+    connection.execute("CREATE TABLE callback_delivery (kind TEXT, event_id TEXT, identity TEXT, outlet TEXT, state TEXT, native_borrow_free INTEGER)")
 seen = []
 aggregate = []
+callback_delivery = []
 accounts = []
 portfolio_snapshots = []
 query_effects = []
@@ -3287,6 +3317,20 @@ def record(kind, event_id, identity, state):
         connection.execute("BEGIN IMMEDIATE")
         connection.execute("INSERT INTO observations VALUES (?, ?, ?, ?)", (kind, event_id, identity, state))
     seen.append((kind, event_id, identity, state))
+
+def record_callback(outlet, event, identity, state):
+    native_free = native_borrow_available()
+    row = (type(event).__name__, str(event.event_id), identity, outlet, state, native_free)
+    with sqlite3.connect(database, timeout=0) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO callback_delivery VALUES (?, ?, ?, ?, ?, ?)", row)
+    callback_delivery.append(row)
+
+def persisted_callback_delivery():
+    with sqlite3.connect(database, timeout=0) as connection:
+        rows = connection.execute("SELECT kind, event_id, identity, outlet, state, native_borrow_free FROM callback_delivery ORDER BY rowid").fetchall()
+    return [(kind, event_id, identity, outlet, state, bool(native_free))
+            for kind, event_id, identity, outlet, state, native_free in rows]
 
 def on_account(event_id, cached_event_id, balance, count, query_count):
     record("AccountState", event_id, cached_event_id, balance)
@@ -3309,6 +3353,7 @@ class OrdinaryStrategy(Strategy):
         try:
             cached = self.cache.order(event.client_order_id)
             record(type(event).__name__, str(event.event_id), str(event.client_order_id), str(cached.status))
+            record_callback("specific", event, str(event.client_order_id), str(cached.status))
             if type(event).__name__ == "OrderSubmitted":
                 enqueue(str(event.event_id), event.ts_init)
         except BaseException as error:
@@ -3316,6 +3361,13 @@ class OrdinaryStrategy(Strategy):
             raise
     def on_order_event(self, event):
         aggregate.append((type(event).__name__, str(event.event_id)))
+        if type(event).__name__ in {"OrderSubmitted", "OrderUpdated", "OrderAccepted", "OrderFilled"}:
+            try:
+                cached = self.cache.order(event.client_order_id)
+                record_callback("aggregate", event, str(event.client_order_id), str(cached.status))
+            except BaseException as error:
+                errors.append(repr(error))
+                raise
     def on_order_submitted(self, event): self.observe_order(event)
     def on_order_accepted(self, event): self.observe_order(event)
     def on_order_filled(self, event): self.observe_order(event)
@@ -3325,6 +3377,7 @@ class OrdinaryStrategy(Strategy):
         try:
             cached = self.cache.position(event.position_id)
             record(type(event).__name__, str(event.event_id), str(event.position_id), str(cached.quantity))
+            record_callback("specific", event, str(event.position_id), str(cached.quantity))
             enqueue(str(event.event_id), event.ts_init)
             if next_order is not None:
                 self.submit_order(self.orders[next_order], client_id=client_id)
@@ -3336,6 +3389,13 @@ class OrdinaryStrategy(Strategy):
     def on_position_opened(self, event): self.observe_position(event, 1)
     def on_position_changed(self, event): self.observe_position(event, 2)
     def on_position_closed(self, event): self.observe_position(event)
+    def on_position_event(self, event):
+        try:
+            cached = self.cache.position(event.position_id)
+            record_callback("aggregate", event, str(event.position_id), str(cached.quantity))
+        except BaseException as error:
+            errors.append(repr(error))
+            raise
 
 strategy = OrdinaryStrategy()
 def mark_waiting(): pass
@@ -3927,9 +3987,1787 @@ asyncio.run(exercise())
                 .extract()
                 .unwrap();
             assert_eq!(rows, seen.len());
+            let delivered: Vec<(String, String, String, String, String, bool)> = observer
+                .bind(py)
+                .getattr("callback_delivery")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let persisted: Vec<(String, String, String, String, String, bool)> = observer
+                .bind(py)
+                .call_method0("persisted_callback_delivery")
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(
+                persisted, delivered,
+                "each original callback must commit its own SQLite observation"
+            );
+            let identities: Vec<_> = delivered
+                .iter()
+                .map(|(kind, id, identity, outlet, state, _)| {
+                    (
+                        kind.clone(),
+                        id.clone(),
+                        identity.clone(),
+                        outlet.clone(),
+                        state.clone(),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = seen
+                .iter()
+                .filter(|(kind, _, _, _)| kind.starts_with("Order") || kind.starts_with("Position"))
+                .flat_map(|(kind, id, identity, state)| {
+                    ["specific", "aggregate"].map(|outlet| {
+                        (
+                            kind.clone(),
+                            id.clone(),
+                            identity.clone(),
+                            outlet.to_owned(),
+                            state.clone(),
+                        )
+                    })
+                })
+                .collect();
+            assert!(!expected.is_empty());
+            assert_eq!(
+                identities, expected,
+                "specific and aggregate must observe the original UUID, identity and canonical stage in pairs"
+            );
+            let held_borrows: Vec<_> = delivered
+                .iter()
+                .filter(|(_, _, _, _, _, available)| !available)
+                .collect();
             py_node.call_method0(py, "dispose").unwrap();
             observer.bind(py).call_method0("cleanup").unwrap();
+            assert!(
+                held_borrows.is_empty(),
+                "ordinary external callbacks must run after the actual execution-engine borrow ends: {held_borrows:?}"
+            );
         });
+    }
+
+    #[rstest]
+    #[case::post_only_rejected(false)]
+    #[case::quote_driven_gtd_expired(true)]
+    fn test_hosted_terminal_callbacks_preserve_stage_and_native_exit(#[case] expired: bool) {
+        exercise_hosted_terminal_callbacks(expired, false);
+    }
+
+    #[rstest]
+    #[case::rejected_specific(false)]
+    #[case::expired_specific(true)]
+    fn test_hosted_incoming_callback_failure_retains_actual_owner_and_originals(
+        #[case] expired: bool,
+    ) {
+        exercise_hosted_terminal_callbacks(expired, true);
+    }
+
+    #[rstest]
+    #[case::submitted_running("submitted", "running")]
+    #[case::accepted_running("accepted", "running")]
+    #[case::canceled_running("canceled", "running")]
+    #[case::submitted_pending("submitted", "pending")]
+    #[case::accepted_pending("accepted", "pending")]
+    #[case::canceled_pending("canceled", "pending")]
+    #[case::submitted_shutdown("submitted", "shutdown")]
+    #[case::accepted_shutdown("accepted", "shutdown")]
+    #[case::canceled_shutdown("canceled", "shutdown")]
+    #[case::submitted_failure("submitted", "failure")]
+    #[case::accepted_failure("accepted", "failure")]
+    #[case::canceled_failure("canceled", "failure")]
+    fn test_hosted_typed_batches_preserve_leg_stages_and_lifecycle(
+        #[case] kind: &str,
+        #[case] lifecycle: &str,
+    ) {
+        exercise_hosted_typed_batches(kind, lifecycle, None);
+    }
+
+    #[rstest]
+    #[case::current_signed_factory("positive")]
+    #[case::queued_new_desired_generation("generation")]
+    #[case::queued_old_generation_paused("paused")]
+    #[case::queued_old_generation_stopped("stopped")]
+    #[case::queued_old_spec("spec")]
+    #[ignore = "requires explicit CUSTOS_SOURCE_ROOT and compatible Custos PYO3_PYTHON"]
+    fn test_cross_repo_incoming_child_uses_original_signed_control_factory(#[case] scenario: &str) {
+        exercise_hosted_typed_batches("accepted", "running", Some(scenario));
+    }
+
+    fn exercise_hosted_typed_batches(kind: &str, lifecycle: &str, signed_scenario: Option<&str>) {
+        use nautilus_common::{
+            live::get_exec_event_sender,
+            owner_delivery::{self, OwnerDeliveryError, OwnerIncomingOrder, OwnerIncomingStage},
+        };
+        use nautilus_model::events::{
+            OrderAccepted, OrderAcceptedBatch, OrderCanceled, OrderCanceledBatch, OrderSubmitted,
+            OrderSubmittedBatch,
+        };
+        use nautilus_trading::python::strategy::PyStrategy;
+
+        type BatchRow = (String, String, String, String, String, String, String, bool);
+        type QueryCompletion = (String, String, String, usize, usize, u64, String);
+
+        struct BatchTap {
+            queries: HostedQueryTap,
+            raw: Rc<RefCell<Vec<OrderEventAny>>>,
+            published: Rc<RefCell<Vec<OrderEventAny>>>,
+            owner: Rc<RefCell<Option<owner_delivery::OwnerObserver>>>,
+        }
+        impl BusTap for BatchTap {
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn Any) {
+                if let Some(event) = message.downcast_ref::<OrderEventAny>()
+                    && topic.as_str() == format!("events.order.{}", event.strategy_id())
+                {
+                    self.published.borrow_mut().push(event.clone());
+                }
+            }
+            fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+                self.queries.on_send(endpoint, message);
+                if endpoint == MessagingSwitchboard::exec_engine_process()
+                    && let Some(event) = message.downcast_ref::<OrderEventAny>()
+                {
+                    self.raw.borrow_mut().push(event.clone());
+                    self.owner
+                        .borrow_mut()
+                        .get_or_insert_with(|| owner_delivery::current_observer().unwrap());
+                }
+            }
+        }
+
+        Python::initialize();
+        let signed_fixture =
+            signed_scenario.map(|_| super::hosted_control_cancel::CustosControlFixture::new(true));
+        let trader_id = TraderId::from("BATCH-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("BATCH");
+        let node = LiveNodeBuilder::from_config(LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: Duration::from_secs(3),
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::from_millis(100),
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap()
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let clock = node.kernel().clock();
+        let now = clock.borrow().timestamp_ns();
+        let mut instrument = binary_option();
+        instrument.id = InstrumentId::from("BATCH.SIM");
+        instrument.activation_ns = 1.into();
+        instrument.expiration_ns = (now.as_u64() + 86_400_000_000_000).into();
+        let instrument = InstrumentAny::BinaryOption(instrument);
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        cache
+            .borrow_mut()
+            .add_quote(QuoteTick::new(
+                instrument.id(),
+                Price::from("0.400"),
+                Price::from("0.410"),
+                Quantity::from("10000.00"),
+                Quantity::from("10000.00"),
+                now,
+                now,
+            ))
+            .unwrap();
+        let order_ids = ["P-A", "P-B", "R-A", "R-B", "L-C", "L-D"].map(ClientOrderId::from);
+        let (finish, receive) = oneshot::channel();
+        let release = Mutex::new(Some(finish));
+        let observer = Python::attach(|py| {
+            let module = PyModule::new(py, "hosted_batch_observer").unwrap();
+            module
+                .setattr("Strategy", py.get_type::<PyStrategy>())
+                .unwrap();
+            module.setattr("kind", kind).unwrap();
+            module.setattr("lifecycle", lifecycle).unwrap();
+            module.setattr("signed_scenario", signed_scenario).unwrap();
+            if let Some(fixture) = &signed_fixture {
+                module
+                    .setattr("signed_fixture", fixture.module.bind(py))
+                    .unwrap();
+            } else {
+                module.setattr("signed_fixture", py.None()).unwrap();
+            }
+            module
+                .setattr("client_id", client_id.into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr(
+                    "control_id",
+                    ClientOrderId::from("SIGNED-CHILD").into_py_any(py).unwrap(),
+                )
+                .unwrap();
+            module
+                .setattr("ids", order_ids.map(|id| id.to_string()).to_vec())
+                .unwrap();
+            module
+                .setattr(
+                    "native_borrow_available",
+                    pyo3::Py::new(
+                        py,
+                        OrdinaryCallbackBorrowProbe {
+                            engine: engine.clone(),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let release = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |_: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    release
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .send(())
+                        .map_err(|()| {
+                            pyo3::exceptions::PyRuntimeError::new_err("connect receiver closed")
+                        })
+                },
+            )
+            .unwrap();
+            module.setattr("release_connect", release).unwrap();
+            let enqueue = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    let cause = args
+                        .get_item(0)?
+                        .extract::<String>()?
+                        .parse::<UUID4>()
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                    let mut query = QueryAccount::new(
+                        trader_id,
+                        Some(client_id),
+                        account_id,
+                        UUID4::new(),
+                        args.get_item(1)?.extract::<u64>()?.into(),
+                        None,
+                        None,
+                    );
+                    query.causation_id = Some(cause);
+                    msgbus::send_trading_command(
+                        MessagingSwitchboard::exec_engine_queue_execute(),
+                        TradingCommand::QueryAccount(query),
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+            module.setattr("enqueue", enqueue).unwrap();
+            py.run(c_str!(r#"
+import asyncio
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = signed_fixture.outbox_database if signed_fixture is not None else Path(directory.name) / "batch.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE observations(kind TEXT, event_id TEXT, cuid TEXT, outlet TEXT, own TEXT, first TEXT, second TEXT, borrow_free INTEGER)")
+records = []
+errors = []
+query_effects = []
+dispatches = []
+waiting = False
+running = False
+stopping = False
+node_error = None
+stop_status = None
+child_rows = []
+control_requests = []
+control_at_start = None
+
+class BatchStrategy(Strategy):
+    def on_start(self):
+        global running, control_at_start
+        if signed_fixture is not None:
+            # This is an inherited standalone emulator history, before binding the closed gate.
+            self.submit_order(control_order, client_id=client_id)
+            control_at_start = str(self.cache.order(control_id).status)
+            signed_fixture.install_order_gate(self, signed_fixture.gate)
+        running = True
+    def on_stop(self):
+        global stopping, stop_status
+        stopping = True
+        stop_status = self._control_delivery_status()
+    def on_dispose(self): pass
+    def observe(self, event, outlet):
+        cuid = str(event.client_order_id)
+        if cuid not in ids: return
+        try:
+            row = (type(event).__name__, str(event.event_id), cuid, outlet,
+                str(self.cache.order(event.client_order_id).status),
+                str(self.cache.order(order_ids[2]).status),
+                str(self.cache.order(order_ids[3]).status), native_borrow_available())
+            with sqlite3.connect(database, timeout=0) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)", row)
+            records.append(row)
+            if outlet == "specific":
+                enqueue(str(event.event_id), event.ts_init)
+                if signed_fixture is not None and cuid == ids[2]:
+                    self.cancel_order(control_id, client_id=client_id)
+                    control_requests.append((str(event.event_id), str(self.cache.order(control_id).status)))
+                    if signed_scenario != "positive":
+                        desired_lifecycle = "running" if signed_scenario == "generation" else "stopped" if signed_scenario == "stopped" else "paused"
+                        signed_fixture.commit_new_desired(desired_lifecycle, signed_scenario == "spec")
+                if lifecycle == "failure" and cuid == ids[2]:
+                    raise ValueError("batch callback failure:" + str(event.event_id))
+        except BaseException as error:
+            errors.append(repr(error))
+            raise
+    def on_order_submitted(self, event): self.observe(event, "specific")
+    def on_order_accepted(self, event): self.observe(event, "specific")
+    def child(self, event, outlet):
+        row = (str(event.event_id), str(event.client_order_id), outlet,
+            str(self.cache.order(control_id).status),
+            str(self.cache.order(order_ids[2]).status),
+            str(self.cache.order(order_ids[3]).status), native_borrow_available())
+        assert row[3:] == ("CANCELED", "ACCEPTED", "SUBMITTED", True), row
+        signed_fixture.record_cancellation(event)
+        child_rows.append(row)
+    def on_order_canceled(self, event):
+        if signed_fixture is not None and event.client_order_id == control_id:
+            self.child(event, "specific")
+        else:
+            self.observe(event, "specific")
+    def on_order_event(self, event):
+        if signed_fixture is not None and event.client_order_id == control_id:
+            if type(event).__name__ == "OrderCanceled": self.child(event, "aggregate")
+        elif type(event).__name__ != "OrderInitialized":
+            self.observe(event, "aggregate")
+
+strategy = BatchStrategy()
+def mark_waiting():
+    global waiting
+    waiting = True
+def on_dispatch(command_id): dispatches.append(command_id)
+def on_query_completed(*row): query_effects.append(row)
+def persisted():
+    with sqlite3.connect(database, timeout=0) as connection:
+        return [(*row[:-1], bool(row[-1])) for row in connection.execute("SELECT * FROM observations ORDER BY rowid")]
+def cleanup(): directory.cleanup()
+"#), Some(&module.dict()), None).unwrap();
+            module.unbind()
+        });
+        let strategy = Python::attach(|py| observer.bind(py).getattr("strategy").unwrap().unbind());
+        let strategy_id = node
+            .kernel()
+            .trader()
+            .borrow_mut()
+            .add_python_strategy_instance(&strategy)
+            .unwrap();
+        let mut inputs = Vec::new();
+        let mut prefixes = Vec::new();
+        for (index, order_id) in order_ids.iter().enumerate() {
+            let venue_id = VenueOrderId::from(format!("V-{index}"));
+            let submitted = OrderSubmitted::new(
+                trader_id,
+                strategy_id,
+                instrument.id(),
+                *order_id,
+                account_id,
+                UUID4::new(),
+                now,
+                now,
+            );
+            let accepted = OrderAccepted::new(
+                trader_id,
+                strategy_id,
+                instrument.id(),
+                *order_id,
+                venue_id,
+                account_id,
+                UUID4::new(),
+                now,
+                now,
+                false,
+            );
+            let canceled = OrderCanceled::new(
+                trader_id,
+                strategy_id,
+                instrument.id(),
+                *order_id,
+                UUID4::new(),
+                now,
+                now,
+                false,
+                Some(venue_id),
+                Some(account_id),
+                None,
+            );
+            let mut order = OrderTestBuilder::new(OrderType::Limit)
+                .trader_id(trader_id)
+                .strategy_id(strategy_id)
+                .instrument_id(instrument.id())
+                .client_order_id(*order_id)
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from("100.00"))
+                .price(Price::from("0.390"))
+                .build();
+            if kind != "submitted" {
+                order.apply(OrderEventAny::Submitted(submitted)).unwrap();
+            }
+            if kind == "canceled" {
+                order.apply(OrderEventAny::Accepted(accepted)).unwrap();
+            }
+            inputs.push(match kind {
+                "submitted" => OrderEventAny::Submitted(submitted),
+                "accepted" => OrderEventAny::Accepted(accepted),
+                "canceled" => OrderEventAny::Canceled(canceled),
+                _ => unreachable!(),
+            });
+            prefixes.push(order.events().into_iter().cloned().collect::<Vec<_>>());
+            cache
+                .borrow_mut()
+                .add_order(order, None, Some(client_id), false)
+                .unwrap();
+        }
+        if signed_fixture.is_some() {
+            use nautilus_model::{enums::TriggerType, python::orders::order_any_to_pyobject};
+            let order = OrderTestBuilder::new(OrderType::StopLimit)
+                .trader_id(trader_id)
+                .strategy_id(strategy_id)
+                .instrument_id(instrument.id())
+                .client_order_id(ClientOrderId::from("SIGNED-CHILD"))
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from("100.00"))
+                .price(Price::from("0.620"))
+                .trigger_price(Price::from("0.600"))
+                .trigger_type(TriggerType::BidAsk)
+                .emulation_trigger(TriggerType::BidAsk)
+                .build();
+            Python::attach(|py| {
+                observer
+                    .bind(py)
+                    .setattr("control_order", order_any_to_pyobject(py, order).unwrap())
+                    .unwrap();
+            });
+        }
+        let batches: Vec<_> = inputs
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|events| {
+                Some(match kind {
+                    "submitted" => ExecutionEvent::OrderSubmittedBatch(OrderSubmittedBatch::new(
+                        events
+                            .iter()
+                            .map(|event| {
+                                let OrderEventAny::Submitted(event) = event else {
+                                    unreachable!()
+                                };
+                                *event
+                            })
+                            .collect(),
+                    )),
+                    "accepted" => ExecutionEvent::OrderAcceptedBatch(OrderAcceptedBatch::new(
+                        events
+                            .iter()
+                            .map(|event| {
+                                let OrderEventAny::Accepted(event) = event else {
+                                    unreachable!()
+                                };
+                                *event
+                            })
+                            .collect(),
+                    )),
+                    "canceled" => ExecutionEvent::OrderCanceledBatch(OrderCanceledBatch::new(
+                        events
+                            .iter()
+                            .map(|event| {
+                                let OrderEventAny::Canceled(event) = event else {
+                                    unreachable!()
+                                };
+                                *event
+                            })
+                            .collect(),
+                    )),
+                    _ => unreachable!(),
+                })
+            })
+            .collect();
+        let batches = Mutex::new(batches);
+        let sender = get_exec_event_sender();
+        Python::attach(|py| {
+            let send = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    let index = args.get_item(0)?.extract::<usize>()?;
+                    sender
+                        .send(batches.lock().unwrap()[index].take().unwrap())
+                        .map_err(|error| {
+                            pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                        })
+                },
+            )
+            .unwrap();
+            observer.bind(py).setattr("send_batch", send).unwrap();
+            observer
+                .bind(py)
+                .setattr(
+                    "order_ids",
+                    order_ids
+                        .into_iter()
+                        .map(|id| id.into_py_any(py).unwrap())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            observer
+                .bind(py)
+                .setattr(
+                    "predecessor",
+                    match kind {
+                        "submitted" => "INITIALIZED",
+                        "accepted" => "SUBMITTED",
+                        "canceled" => "ACCEPTED",
+                        _ => unreachable!(),
+                    },
+                )
+                .unwrap();
+            observer
+                .bind(py)
+                .setattr(
+                    "target",
+                    match kind {
+                        "submitted" => "SUBMITTED",
+                        "accepted" => "ACCEPTED",
+                        "canceled" => "CANCELED",
+                        _ => unreachable!(),
+                    },
+                )
+                .unwrap();
+        });
+        let config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            account_type: AccountType::Cash,
+            oms_type: OmsType::Netting,
+            base_currency: Some(Currency::USDC()),
+            starting_balances: vec![Money::from("100000 USDC")],
+            ..Default::default()
+        };
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            config.venue,
+            config.oms_type,
+            account_id,
+            config.account_type,
+            config.base_currency,
+            cache.clone(),
+        );
+        let inner = SandboxExecutionClient::new(core, config, clock, cache.clone());
+        let capture = inner.account_capture_probe().unwrap();
+        let queries = Rc::new(RefCell::new(Vec::new()));
+        let stopped = Rc::new(Cell::new(0));
+        engine
+            .borrow_mut()
+            .register_client(Box::new(HeldSandboxConnect {
+                inner,
+                finish: Some(receive),
+                phase: Rc::new(Cell::new(ConnectPhase::Before)),
+                waiting_callback: Python::attach(|py| {
+                    observer.bind(py).getattr("mark_waiting").unwrap().unbind()
+                }),
+                queries: queries.clone(),
+                stopped: stopped.clone(),
+                completed_query_callback: Some(Python::attach(|py| {
+                    observer
+                        .bind(py)
+                        .getattr("on_query_completed")
+                        .unwrap()
+                        .unbind()
+                })),
+            }))
+            .unwrap();
+        let queued = Rc::new(RefCell::new(Vec::new()));
+        let dispatched = Rc::new(RefCell::new(Vec::new()));
+        let raw = Rc::new(RefCell::new(Vec::new()));
+        let published = Rc::new(RefCell::new(Vec::new()));
+        let observed_owner = Rc::new(RefCell::new(None));
+        msgbus::set_bus_tap(Rc::new(BatchTap {
+            queries: HostedQueryTap {
+                engine,
+                queued: queued.clone(),
+                dispatched: dispatched.clone(),
+                callback: Python::attach(|py| {
+                    observer.bind(py).getattr("on_dispatch").unwrap().unbind()
+                }),
+            },
+            raw: raw.clone(),
+            published: published.clone(),
+            owner: observed_owner.clone(),
+        }));
+        let (py_node, result) = Python::attach(|py| {
+            let node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &node).unwrap();
+            globals.set_item("observer", observer.bind(py)).unwrap();
+            let result = py.run(c_str!(r#"
+import asyncio
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    async def wait_for(predicate):
+        while not predicate():
+            if task.done():
+                await task
+                raise AssertionError("node stopped before batch checkpoint")
+            await asyncio.sleep(0)
+    try:
+        await asyncio.wait_for(wait_for(lambda: observer.waiting), timeout=3)
+        if observer.lifecycle == "pending":
+            observer.send_batch(0)
+            # Real connect remains held; no canonical or external processing is possible yet.
+            await asyncio.sleep(0.02)
+            assert not observer.running and not observer.records
+            for order_id in observer.order_ids[:2]:
+                assert str(observer.strategy.cache.order(order_id).status) == observer.predecessor
+        observer.release_connect()
+        await asyncio.wait_for(wait_for(lambda: observer.running), timeout=3)
+        if observer.lifecycle == "pending":
+            for order_id in observer.order_ids[:2]:
+                assert str(observer.strategy.cache.order(order_id).status) == observer.target
+            assert not observer.records
+        observer.send_batch(1)
+        if observer.lifecycle == "failure" or (observer.signed_scenario is not None and observer.signed_scenario != "positive"):
+            await asyncio.wait_for(wait_for(lambda: observer.stopping), timeout=3)
+            if observer.lifecycle == "failure": observer.send_batch(2)
+            try:
+                await asyncio.wait_for(task, timeout=3)
+            except TimeoutError:
+                raise
+            except Exception as error:
+                observer.node_error = repr(error)
+            else:
+                raise AssertionError("normal node swallowed batch callback failure")
+        else:
+            await asyncio.wait_for(wait_for(lambda: len(observer.records) == 4 and len(observer.query_effects) == 2), timeout=3)
+            if observer.signed_scenario == "positive": assert len(observer.child_rows) == 2, observer.child_rows
+            node.handle().stop()
+            if observer.lifecycle == "shutdown":
+                await asyncio.wait_for(wait_for(lambda: observer.stopping), timeout=3)
+                observer.send_batch(2)
+            await asyncio.wait_for(task, timeout=3)
+    finally:
+        node.handle().stop()
+        if not task.done(): await asyncio.wait_for(task, timeout=3)
+asyncio.run(exercise())
+"#), Some(&globals), None);
+            (node, result)
+        });
+        msgbus::clear_bus_tap();
+        let final_orders: Vec<_> = order_ids
+            .iter()
+            .map(|id| cache.borrow().order_owned(id).unwrap())
+            .collect();
+        let final_account = cache.borrow().account_owned(&account_id).unwrap();
+        let final_control = cache
+            .borrow()
+            .order_owned(&ClientOrderId::from("SIGNED-CHILD"));
+        let final_positions = (
+            cache
+                .borrow()
+                .positions_open(None, None, None, None, None)
+                .len(),
+            cache
+                .borrow()
+                .positions_closed(None, None, None, None, None)
+                .len(),
+        );
+        let owner = observed_owner.borrow().clone().unwrap();
+        let owner_status = owner.status().unwrap().unwrap();
+        let retained = owner.retained_incoming_orders().unwrap();
+        let signed_observations = Python::attach(|py| {
+            let module = observer.bind(py);
+            let child_rows: Vec<(String, String, String, String, String, String, bool)> =
+                module.getattr("child_rows").unwrap().extract().unwrap();
+            let requests: Vec<(String, String)> = module
+                .getattr("control_requests")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let started: Option<String> = module
+                .getattr("control_at_start")
+                .unwrap()
+                .extract()
+                .unwrap();
+            (child_rows, requests, started)
+        });
+        let (rows, persisted, errors, query_effects, node_error, state) = Python::attach(|py| {
+            let module = observer.bind(py);
+            let rows: Vec<BatchRow> = module.getattr("records").unwrap().extract().unwrap();
+            let persisted: Vec<BatchRow> =
+                module.call_method0("persisted").unwrap().extract().unwrap();
+            let errors: Vec<String> = module.getattr("errors").unwrap().extract().unwrap();
+            let query_effects: Vec<QueryCompletion> =
+                module.getattr("query_effects").unwrap().extract().unwrap();
+            let node_error: Option<String> =
+                module.getattr("node_error").unwrap().extract().unwrap();
+            let state: NodeState = py_node
+                .call_method0(py, "handle")
+                .unwrap()
+                .getattr(py, "state")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            py_node.call_method0(py, "dispose").unwrap();
+            module.call_method0("cleanup").unwrap();
+            (rows, persisted, errors, query_effects, node_error, state)
+        });
+        assert!(
+            result.is_ok(),
+            "batch {kind}/{lifecycle}: {result:?}; raw={:?}; rows={rows:?}; errors={errors:?}; retained={retained:?}",
+            raw.borrow()
+        );
+        assert_eq!(state, NodeState::Stopped);
+        assert!(stopped.get() > 0);
+        assert_eq!(
+            capture.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        let predecessor = match kind {
+            "submitted" => OrderStatus::Initialized,
+            "accepted" => OrderStatus::Submitted,
+            "canceled" => OrderStatus::Accepted,
+            _ => unreachable!(),
+        };
+        let target = match kind {
+            "submitted" => OrderStatus::Submitted,
+            "accepted" => OrderStatus::Accepted,
+            "canceled" => OrderStatus::Canceled,
+            _ => unreachable!(),
+        };
+        let callback_failure = lifecycle == "failure";
+        let signed_retired = signed_scenario.is_some_and(|scenario| scenario != "positive");
+        let failure = callback_failure || signed_retired;
+        let applied: Vec<_> = (0..6)
+            .filter(|index| match index {
+                0 | 1 => lifecycle == "pending",
+                2 => true,
+                3 => !failure,
+                4 | 5 => lifecycle == "shutdown",
+                _ => unreachable!(),
+            })
+            .collect();
+        let expected_raw: Vec<_> = applied.iter().map(|index| inputs[*index].clone()).collect();
+        let is_batch_order = |event: &&OrderEventAny| order_ids.contains(&event.client_order_id());
+        assert_eq!(
+            raw.borrow()
+                .iter()
+                .filter(is_batch_order)
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_raw
+        );
+        assert_eq!(
+            published
+                .borrow()
+                .iter()
+                .filter(is_batch_order)
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_raw
+        );
+        assert_eq!(rows, persisted);
+        let mut expected_rows = Vec::new();
+        for index in 2..if failure { 3 } else { 4 } {
+            let event = inputs[index].clone().into_boxed();
+            for outlet in ["specific", "aggregate"] {
+                expected_rows.push((
+                    event.type_name().to_owned(),
+                    event.id().to_string(),
+                    order_ids[index].to_string(),
+                    outlet.to_owned(),
+                    target.to_string(),
+                    target.to_string(),
+                    if index == 2 { predecessor } else { target }.to_string(),
+                    true,
+                ));
+            }
+        }
+        assert_eq!(rows, expected_rows);
+        for (index, order) in final_orders.iter().enumerate() {
+            let is_applied = applied.contains(&index);
+            assert_eq!(
+                order.status(),
+                if is_applied { target } else { predecessor }
+            );
+            let mut history = prefixes[index].clone();
+            if is_applied {
+                history.push(inputs[index].clone());
+            }
+            assert_eq!(
+                order.events().into_iter().cloned().collect::<Vec<_>>(),
+                history
+            );
+            assert_eq!(order.quantity(), Quantity::from("100.00"));
+            assert_eq!(order.filled_qty(), Quantity::from("0.00"));
+            assert!(order.commissions().is_empty());
+        }
+        assert_eq!(
+            final_account.balance_total(None),
+            Some(Money::from("100000 USDC"))
+        );
+        assert_eq!(final_positions, (0, 0));
+        if callback_failure {
+            assert_eq!(
+                errors,
+                vec![format!(
+                    "ValueError('batch callback failure:{}')",
+                    inputs[2].clone().into_boxed().id()
+                )]
+            );
+            assert!(node_error.unwrap().contains("ExternalCallback"));
+            assert_eq!(owner_status.1, Some(OwnerDeliveryError::ExternalCallback));
+            assert!(owner_status.0 >= 5);
+            assert_eq!(retained.len(), 4);
+            let mut previous_cause = None;
+            for (retained, index) in retained.iter().zip([2, 3, 4, 5]) {
+                let OwnerIncomingOrder::Process(original) = &retained.event else {
+                    panic!("original typed batch leg required")
+                };
+                assert_eq!(original, &inputs[index]);
+                let cause = retained.cause.expect("original admitted incoming identity");
+                assert_eq!(cause.event_id, original.clone().into_boxed().id());
+                assert_ne!(
+                    cause.incarnation.to_string(),
+                    "00000000-0000-0000-0000-000000000000"
+                );
+                if let Some(previous) = previous_cause {
+                    let previous: owner_delivery::OwnerIncomingCause = previous;
+                    assert_eq!(cause.incarnation, previous.incarnation);
+                    assert!(cause.sequence > previous.sequence);
+                }
+                previous_cause = Some(cause);
+                assert_eq!(
+                    retained.stage,
+                    if index == 2 {
+                        OwnerIncomingStage::DispatchReturned
+                    } else {
+                        OwnerIncomingStage::NotDispatched
+                    }
+                );
+            }
+            assert_eq!(queued.borrow().len(), 1);
+            assert!(dispatched.borrow().is_empty());
+            assert!(queries.borrow().is_empty());
+            assert!(query_effects.is_empty());
+        } else if signed_retired {
+            assert!(errors.is_empty());
+            assert!(node_error.unwrap().contains("ControlEnter"));
+            assert_eq!(owner_status.1, Some(OwnerDeliveryError::ControlEnter));
+            assert!(owner_status.0 > 0);
+            assert_eq!(retained.len(), 1);
+            let OwnerIncomingOrder::Process(original) = &retained[0].event else {
+                panic!("original unprocessed batch leg required")
+            };
+            assert_eq!(original, &inputs[3]);
+            assert_eq!(retained[0].stage, OwnerIncomingStage::NotDispatched);
+            assert_eq!(retained[0].error, OwnerDeliveryError::ControlEnter);
+            assert_eq!(queued.borrow().len(), 1);
+            assert!(dispatched.borrow().is_empty());
+            assert!(queries.borrow().is_empty());
+            assert!(query_effects.is_empty());
+        } else {
+            assert!(errors.is_empty());
+            assert!(node_error.is_none());
+            assert_eq!(owner_status, (0, None));
+            assert!(retained.is_empty());
+            assert_eq!(*queued.borrow(), *dispatched.borrow());
+            assert_eq!(queries.borrow().len(), 2);
+            assert_eq!(query_effects.len(), 2);
+            for (index, ((query, phase), effect)) in
+                queries.borrow().iter().zip(query_effects).enumerate()
+            {
+                assert_eq!(query, &queued.borrow()[index]);
+                assert_eq!(*phase, ConnectPhase::Returned);
+                assert_eq!(
+                    query.causation_id,
+                    Some(inputs[index + 2].clone().into_boxed().id())
+                );
+                assert_eq!(effect.0, query.command_id.to_string());
+                assert_ne!(effect.1, effect.2);
+                assert_eq!(effect.4, effect.3 + 1);
+                assert_eq!(effect.6, Money::from("100000 USDC").to_string());
+                assert!(
+                    final_account
+                        .events()
+                        .iter()
+                        .any(|event| event.event_id.to_string() == effect.2)
+                );
+            }
+        }
+        if let Some(fixture) = &signed_fixture {
+            let (child_rows, requests, started) = signed_observations;
+            eprintln!(
+                "incoming signed {signed_scenario:?}: {}; child_rows={child_rows:?}; requests={requests:?}; owner={owner_status:?}; retained={retained:?}",
+                fixture.diagnostics()
+            );
+            assert_eq!(started.as_deref(), Some("EMULATED"));
+            assert_eq!(
+                requests,
+                vec![(
+                    inputs[2].clone().into_boxed().id().to_string(),
+                    "EMULATED".to_owned()
+                )]
+            );
+            let control = final_control.unwrap();
+            assert_eq!(
+                control.status(),
+                if signed_retired {
+                    OrderStatus::Emulated
+                } else {
+                    OrderStatus::Canceled
+                }
+            );
+            assert_eq!(control.filled_qty(), Quantity::from("0.00"));
+            assert!(control.commissions().is_empty());
+            // The emulator's direct native source differs from the batch's Async ingress.
+            // Pair its typed publication with the actual canonical history and user callbacks.
+            let cancellations: Vec<_> = published.borrow().iter().filter(|event| matches!(event, OrderEventAny::Canceled(event) if event.client_order_id == ClientOrderId::from("SIGNED-CHILD"))).cloned().collect();
+            if signed_retired {
+                assert!(child_rows.is_empty());
+                assert!(cancellations.is_empty());
+            } else {
+                assert_eq!(cancellations.len(), 1);
+                let cancel = cancellations[0].clone().into_boxed();
+                assert_eq!(
+                    child_rows,
+                    ["specific", "aggregate"]
+                        .map(|outlet| (
+                            cancel.id().to_string(),
+                            "SIGNED-CHILD".to_owned(),
+                            outlet.to_owned(),
+                            "CANCELED".to_owned(),
+                            "ACCEPTED".to_owned(),
+                            "SUBMITTED".to_owned(),
+                            true,
+                        ))
+                        .to_vec()
+                );
+                let batch_trace: Vec<_> = published
+                    .borrow()
+                    .iter()
+                    .filter(|event| {
+                        event.client_order_id() == order_ids[2]
+                            || event.client_order_id() == order_ids[3]
+                            || matches!(event, OrderEventAny::Canceled(_))
+                    })
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    batch_trace,
+                    vec![
+                        inputs[2].clone(),
+                        cancellations[0].clone(),
+                        inputs[3].clone()
+                    ]
+                );
+                assert_eq!(
+                    control
+                        .events()
+                        .into_iter()
+                        .filter(|event| matches!(event, OrderEventAny::Canceled(_)))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    cancellations
+                );
+            }
+            Python::attach(|py| {
+                let scope = PyDict::new(py);
+                scope.set_item("fixture", fixture.module.bind(py)).unwrap();
+                scope.set_item("retired", signed_retired).unwrap();
+                py.run(c_str!(r#"
+assert fixture.outbox_identity == fixture.observer_identity
+assert fixture.retirement_errors == []
+assert not fixture.refusals
+assert fixture.source_audit()
+if retired:
+    assert len(fixture.desired_commits) == 1
+    assert fixture.desired_commits[0][1] == fixture.verified.command.generation + 1
+    assert fixture.boundary.platform_opening_gate.authority.generation == fixture.verified.command.generation
+else:
+    assert fixture.desired_commits == []
+    assert len(fixture.callback_rows) == 2
+    assert fixture.callback_rows[0] == fixture.callback_rows[1]
+    with fixture.sqlite3.connect(fixture.observer_database, timeout=0) as connection:
+        assert connection.execute("SELECT event_id, client_order_id FROM callback_observations ORDER BY rowid").fetchall() == fixture.callback_rows
+    assert fixture.store.load_opening_gate_state_sync(fixture.boundary.platform_opening_gate.authority) == "awaiting_release"
+    try:
+        fixture.boundary.platform_opening_gate.assert_released()
+    except fixture.RunnerOpeningGateClosed as error:
+        assert error.reason_code == "awaiting_opening_release"
+    else:
+        raise AssertionError("engineering cancel must not release the actual opening gate")
+"#), Some(&scope), None).unwrap();
+            });
+        }
+    }
+
+    fn exercise_hosted_terminal_callbacks(expired: bool, callback_failure: bool) {
+        use nautilus_common::{
+            live::get_data_event_sender,
+            messages::DataEvent,
+            owner_delivery::{
+                self, OwnerDeliveryCause, OwnerDeliveryError, OwnerExternalEvent,
+                OwnerIncomingOrder, OwnerIncomingStage, OwnerObserver,
+            },
+        };
+        use nautilus_trading::python::strategy::PyStrategy;
+
+        type DeliveryRow = (String, String, String, String, String, bool);
+        type QueryCompletion = (String, String, String, usize, usize, u64, String);
+        type DeliveryStatus = (bool, Option<(usize, Option<String>)>);
+
+        fn identity(event: &OrderEventAny) -> (String, String, String) {
+            let event = event.clone().into_boxed();
+            (
+                event.type_name().to_owned(),
+                event.id().to_string(),
+                event.client_order_id().to_string(),
+            )
+        }
+
+        struct TerminalTap {
+            queries: HostedQueryTap,
+            cache: Rc<RefCell<Cache>>,
+            raw: Rc<RefCell<Vec<OrderEventAny>>>,
+            outward: Rc<RefCell<Vec<(OrderEventAny, OrderStatus)>>>,
+            quotes: Rc<RefCell<Vec<QuoteTick>>>,
+            owner: Rc<RefCell<Option<OwnerObserver>>>,
+        }
+        impl BusTap for TerminalTap {
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn Any) {
+                if let Some(event) = message.downcast_ref::<OrderEventAny>()
+                    && topic.as_str() == format!("events.order.{}", event.strategy_id())
+                    && !matches!(event, OrderEventAny::Initialized(_))
+                {
+                    let cached = self
+                        .cache
+                        .borrow()
+                        .order_owned(&event.client_order_id())
+                        .unwrap();
+                    self.outward
+                        .borrow_mut()
+                        .push((event.clone(), cached.status()));
+                }
+            }
+            fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+                if let Some(observer) = owner_delivery::current_observer() {
+                    self.owner.borrow_mut().get_or_insert(observer);
+                }
+                self.queries.on_send(endpoint, message);
+                if endpoint == MessagingSwitchboard::exec_engine_process()
+                    && let Some(event) = message.downcast_ref::<OrderEventAny>()
+                {
+                    self.raw.borrow_mut().push(event.clone());
+                }
+                if endpoint == MessagingSwitchboard::data_engine_process_data()
+                    && let Some(Data::Quote(quote)) = message.downcast_ref::<Data>()
+                {
+                    self.quotes.borrow_mut().push(*quote);
+                }
+            }
+        }
+
+        Python::initialize();
+        let trader_id = TraderId::from("TERMINAL-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("TERMINAL");
+        let order_id = ClientOrderId::from("TERMINAL-ORDER");
+        let node = LiveNodeBuilder::from_config(LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: Duration::from_secs(3),
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::ZERO,
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap()
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let clock = node.kernel().clock();
+        let now = clock.borrow().timestamp_ns();
+        let mut instrument = binary_option();
+        instrument.id = InstrumentId::from("TERMINAL.SIM");
+        instrument.activation_ns = 1.into();
+        instrument.expiration_ns = (now.as_u64() + 86_400_000_000_000).into();
+        let instrument = InstrumentAny::BinaryOption(instrument);
+        let quote = QuoteTick::new(
+            instrument.id(),
+            Price::from("0.400"),
+            Price::from("0.410"),
+            Quantity::from("10000.00"),
+            Quantity::from("10000.00"),
+            now,
+            now,
+        );
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        cache.borrow_mut().add_quote(quote).unwrap();
+        let data_sender = get_data_event_sender();
+        let observer = Python::attach(|py| {
+            let module = PyModule::new(py, "hosted_terminal_observer").unwrap();
+            module
+                .setattr("Strategy", py.get_type::<PyStrategy>())
+                .unwrap();
+            module
+                .setattr("client_id", client_id.into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr("order_id", order_id.into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr("instrument_id", instrument.id().into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr("side", OrderSide::Buy.into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr(
+                    "quantity",
+                    Quantity::from("100.00").into_py_any(py).unwrap(),
+                )
+                .unwrap();
+            module
+                .setattr(
+                    "price",
+                    Price::from(if expired { "0.390" } else { "0.420" })
+                        .into_py_any(py)
+                        .unwrap(),
+                )
+                .unwrap();
+            module
+                .setattr(
+                    "tif",
+                    (if expired {
+                        TimeInForce::Gtd
+                    } else {
+                        TimeInForce::Gtc
+                    })
+                    .into_py_any(py)
+                    .unwrap(),
+                )
+                .unwrap();
+            module.setattr("expired_case", expired).unwrap();
+            module
+                .setattr("callback_failure", callback_failure)
+                .unwrap();
+            module
+                .setattr(
+                    "native_borrow_available",
+                    pyo3::Py::new(
+                        py,
+                        OrdinaryCallbackBorrowProbe {
+                            engine: engine.clone(),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let send_quote = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    let timestamp = args.get_item(0)?.extract::<u64>()?;
+                    let mut current = quote;
+                    current.ts_event = timestamp.into();
+                    current.ts_init = timestamp.into();
+                    data_sender
+                        .send(DataEvent::Data(Data::Quote(current)))
+                        .map_err(|error| {
+                            pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                        })
+                },
+            )
+            .unwrap();
+            module.setattr("send_quote", send_quote).unwrap();
+            let enqueue = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    let cause = args
+                        .get_item(0)?
+                        .extract::<String>()?
+                        .parse::<UUID4>()
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                    let mut query = QueryAccount::new(
+                        trader_id,
+                        Some(client_id),
+                        account_id,
+                        UUID4::new(),
+                        args.get_item(1)?.extract::<u64>()?.into(),
+                        None,
+                        None,
+                    );
+                    query.causation_id = Some(cause);
+                    msgbus::send_trading_command(
+                        MessagingSwitchboard::exec_engine_queue_execute(),
+                        TradingCommand::QueryAccount(query),
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+            module.setattr("enqueue", enqueue).unwrap();
+            py.run(c_str!(r#"
+import asyncio
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "terminal.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE observations(kind TEXT, event_id TEXT, identity TEXT, outlet TEXT, state TEXT, native_borrow_free INTEGER)")
+delivered = []
+query_effects = []
+dispatches = []
+errors = []
+accepted = False
+done = False
+expiry = None
+quote_timestamp = None
+initial_status = None
+stop_status = None
+node_error = None
+
+class TerminalStrategy(Strategy):
+    def on_start(self):
+        global expiry, initial_status
+        expiry = self.clock.timestamp_ns() + 1_000_000_000 if expired_case else None
+        self.order = self.order_factory.limit(
+            instrument_id, side, quantity, price, time_in_force=tif,
+            expire_time=expiry, post_only=not expired_case, client_order_id=order_id,
+        )
+        initial_status = str(self.order.status)
+        self.submit_order(self.order, client_id=client_id)
+    def on_stop(self):
+        global stop_status
+        stop_status = self._control_delivery_status()
+    def on_dispose(self): pass
+    def observe(self, event, outlet):
+        global accepted, done
+        try:
+            cached = self.cache.order(event.client_order_id)
+            row = (type(event).__name__, str(event.event_id), str(event.client_order_id), outlet, str(cached.status), native_borrow_available())
+            with sqlite3.connect(database, timeout=0) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?)", row)
+            delivered.append(row)
+            if outlet == "specific":
+                if type(event).__name__ in {"OrderSubmitted", "OrderRejected", "OrderExpired"}:
+                    enqueue(str(event.event_id), event.ts_init)
+                if type(event).__name__ == "OrderAccepted": accepted = True
+                if type(event).__name__ in {"OrderRejected", "OrderExpired"}:
+                    done = True
+                    if callback_failure:
+                        raise ValueError("terminal callback failure:" + str(event.event_id))
+        except BaseException as error:
+            errors.append(repr(error))
+            raise
+    def on_order_submitted(self, event): self.observe(event, "specific")
+    def on_order_accepted(self, event): self.observe(event, "specific")
+    def on_order_rejected(self, event): self.observe(event, "specific")
+    def on_order_expired(self, event): self.observe(event, "specific")
+    def on_order_event(self, event):
+        if type(event).__name__ != "OrderInitialized": self.observe(event, "aggregate")
+
+strategy = TerminalStrategy()
+def mark_waiting(): pass
+def on_dispatch(command_id): dispatches.append(command_id)
+def on_query_completed(command_id, previous_id, observed_id, before_count, after_count, ts_event, balance):
+    query_effects.append((command_id, previous_id, observed_id, before_count, after_count, ts_event, balance))
+def persisted():
+    with sqlite3.connect(database, timeout=0) as connection:
+        rows = connection.execute("SELECT * FROM observations ORDER BY rowid").fetchall()
+    return [(*row[:-1], bool(row[-1])) for row in rows]
+def cleanup(): directory.cleanup()
+"#), Some(&module.dict()), None).unwrap();
+            module.unbind()
+        });
+        let strategy = Python::attach(|py| observer.bind(py).getattr("strategy").unwrap().unbind());
+        node.kernel()
+            .trader()
+            .borrow_mut()
+            .add_python_strategy_instance(&strategy)
+            .unwrap();
+        let client_config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            account_type: AccountType::Cash,
+            oms_type: OmsType::Netting,
+            base_currency: Some(Currency::USDC()),
+            starting_balances: vec![Money::from("100000 USDC")],
+            ..Default::default()
+        };
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            client_config.venue,
+            client_config.oms_type,
+            account_id,
+            client_config.account_type,
+            client_config.base_currency,
+            cache.clone(),
+        );
+        let inner = SandboxExecutionClient::new(core, client_config, clock, cache.clone());
+        let capture = inner.account_capture_probe().unwrap();
+        let queries = Rc::new(RefCell::new(Vec::new()));
+        let stopped = Rc::new(Cell::new(0));
+        let (finish, receive) = oneshot::channel();
+        finish.send(()).unwrap();
+        engine
+            .borrow_mut()
+            .register_client(Box::new(HeldSandboxConnect {
+                inner,
+                finish: Some(receive),
+                phase: Rc::new(Cell::new(ConnectPhase::Before)),
+                waiting_callback: Python::attach(|py| {
+                    observer.bind(py).getattr("mark_waiting").unwrap().unbind()
+                }),
+                queries: queries.clone(),
+                stopped: stopped.clone(),
+                completed_query_callback: Some(Python::attach(|py| {
+                    observer
+                        .bind(py)
+                        .getattr("on_query_completed")
+                        .unwrap()
+                        .unbind()
+                })),
+            }))
+            .unwrap();
+        let queued = Rc::new(RefCell::new(Vec::new()));
+        let dispatched = Rc::new(RefCell::new(Vec::new()));
+        let raw = Rc::new(RefCell::new(Vec::new()));
+        let outward = Rc::new(RefCell::new(Vec::new()));
+        let quotes = Rc::new(RefCell::new(Vec::new()));
+        let observed_owner = Rc::new(RefCell::new(None));
+        msgbus::set_bus_tap(Rc::new(TerminalTap {
+            queries: HostedQueryTap {
+                engine,
+                queued: queued.clone(),
+                dispatched: dispatched.clone(),
+                callback: Python::attach(|py| {
+                    observer.bind(py).getattr("on_dispatch").unwrap().unbind()
+                }),
+            },
+            cache: cache.clone(),
+            raw: raw.clone(),
+            outward: outward.clone(),
+            quotes: quotes.clone(),
+            owner: observed_owner.clone(),
+        }));
+        let (py_node, result) = Python::attach(|py| {
+            let node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &node).unwrap();
+            globals.set_item("observer", observer.bind(py)).unwrap();
+            let result = py.run(c_str!(r#"
+import asyncio
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    async def wait_for(predicate):
+        while not predicate():
+            if task.done():
+                await task
+                raise AssertionError("native node stopped before terminal observations")
+            if observer.errors: raise AssertionError(observer.errors)
+            await asyncio.sleep(0)
+    try:
+        if observer.expired_case:
+            await asyncio.wait_for(wait_for(lambda: observer.accepted), timeout=3)
+            async def reach_expiry():
+                while observer.strategy.clock.timestamp_ns() <= observer.expiry:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(reach_expiry(), timeout=3)
+            observer.quote_timestamp = observer.strategy.clock.timestamp_ns()
+            observer.send_quote(observer.quote_timestamp)
+        if observer.callback_failure:
+            try:
+                await asyncio.wait_for(task, timeout=3)
+            except TimeoutError:
+                raise
+            except Exception as error:
+                observer.node_error = repr(error)
+            else:
+                raise AssertionError("normal node swallowed an actual callback failure")
+        else:
+            await asyncio.wait_for(wait_for(lambda: observer.done and len(observer.query_effects) == 2), timeout=3)
+    except BaseException:
+        print("terminal diagnostics", observer.delivered, observer.errors, observer.query_effects, flush=True)
+        raise
+    finally:
+        node.handle().stop()
+        if not task.done():
+            await asyncio.wait_for(task, timeout=3)
+        elif not observer.callback_failure:
+            await task
+asyncio.run(exercise())
+"#), Some(&globals), None);
+            (node, result)
+        });
+        msgbus::clear_bus_tap();
+        let order_after_stop = cache.borrow().order_owned(&order_id);
+        let account_after_stop = cache.borrow().account_owned(&account_id);
+        let open_after_stop = cache
+            .borrow()
+            .positions_open(None, None, None, None, None)
+            .len();
+        let closed_after_stop = cache
+            .borrow()
+            .positions_closed(None, None, None, None, None)
+            .len();
+        let owner = observed_owner
+            .borrow()
+            .clone()
+            .expect("actual hosted owner observed at ingress");
+        let owner_status = owner.status().unwrap().unwrap();
+        let retained_outputs = owner.retained_typed_deliveries().unwrap();
+        let retained_inputs = owner.retained_incoming_orders().unwrap();
+        let retained_commands = owner.retained_commands().unwrap();
+        let observations = Python::attach(|py| {
+            let module = observer.bind(py);
+            let delivered: Vec<DeliveryRow> =
+                module.getattr("delivered").unwrap().extract().unwrap();
+            let persisted: Vec<DeliveryRow> =
+                module.call_method0("persisted").unwrap().extract().unwrap();
+            let errors: Vec<String> = module.getattr("errors").unwrap().extract().unwrap();
+            let effects: Vec<QueryCompletion> =
+                module.getattr("query_effects").unwrap().extract().unwrap();
+            let expiry: Option<u64> = module.getattr("expiry").unwrap().extract().unwrap();
+            let quote_timestamp: Option<u64> = module
+                .getattr("quote_timestamp")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let initial_status: String =
+                module.getattr("initial_status").unwrap().extract().unwrap();
+            let state: NodeState = py_node
+                .call_method0(py, "handle")
+                .unwrap()
+                .getattr(py, "state")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            let stop_status: DeliveryStatus =
+                module.getattr("stop_status").unwrap().extract().unwrap();
+            let node_error: Option<String> =
+                module.getattr("node_error").unwrap().extract().unwrap();
+            let old_failures: Vec<(String, Option<String>, String, Option<String>)> = strategy
+                .call_method0(py, "_control_delivery_failures")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            py_node.call_method0(py, "dispose").unwrap();
+            module.call_method0("cleanup").unwrap();
+            (
+                delivered,
+                persisted,
+                errors,
+                effects,
+                expiry,
+                quote_timestamp,
+                initial_status,
+                state,
+                stop_status,
+                node_error,
+                old_failures,
+            )
+        });
+        assert!(
+            result.is_ok(),
+            "actual hosted terminal exercise: {result:?}"
+        );
+        assert!(stopped.get() >= 1);
+        assert_eq!(
+            capture.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        let (
+            delivered,
+            persisted,
+            errors,
+            effects,
+            expiry,
+            quote_timestamp,
+            initial_status,
+            state,
+            stop_status,
+            node_error,
+            old_failures,
+        ) = observations;
+        if callback_failure {
+            eprintln!(
+                "incoming terminal failure: node_error={node_error:?}, stop_status={stop_status:?}, owner_status={owner_status:?}, inputs={retained_inputs:?}, outputs={retained_outputs:?}, commands={retained_commands:?}"
+            );
+        }
+        assert_eq!(state, NodeState::Stopped);
+        if callback_failure {
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains("ValueError('terminal callback failure:"));
+            assert!(node_error.as_ref().unwrap().contains("ExternalCallback"));
+            assert!(!stop_status.0);
+            let (pending_at_stop, failure_at_stop) = stop_status.1.unwrap();
+            assert!(pending_at_stop >= 2);
+            assert_eq!(
+                failure_at_stop.as_deref(),
+                Some("native owner delivery ExternalCallback")
+            );
+            assert_eq!(owner_status.1, Some(OwnerDeliveryError::ExternalCallback));
+            assert!(owner_status.0 >= 3);
+        } else {
+            assert!(errors.is_empty());
+            assert!(node_error.is_none());
+            assert_eq!(owner_status, (0, None));
+        }
+        assert!(
+            old_failures.is_empty(),
+            "command-only empty failures are not the node's overall status"
+        );
+        assert_eq!(initial_status, "INITIALIZED");
+        assert_eq!(persisted, delivered);
+        let cached = order_after_stop.unwrap();
+        let canonical: Vec<_> = cached
+            .events()
+            .iter()
+            .filter(|event| !matches!(event, OrderEventAny::Initialized(_)))
+            .map(|event| identity(event))
+            .collect();
+        let ingress: Vec<_> = raw.borrow().iter().map(identity).collect();
+        let published: Vec<_> = outward
+            .borrow()
+            .iter()
+            .map(|(event, _)| identity(event))
+            .collect();
+        assert_eq!(ingress, canonical);
+        assert_eq!(published, canonical);
+        let expected_kinds = if expired {
+            vec!["OrderSubmitted", "OrderAccepted", "OrderExpired"]
+        } else {
+            vec!["OrderSubmitted", "OrderRejected"]
+        };
+        assert_eq!(
+            canonical
+                .iter()
+                .map(|(kind, _, _)| kind.as_str())
+                .collect::<Vec<_>>(),
+            expected_kinds
+        );
+        let expected_states = if expired {
+            vec![
+                OrderStatus::Submitted,
+                OrderStatus::Accepted,
+                OrderStatus::Expired,
+            ]
+        } else {
+            vec![OrderStatus::Submitted, OrderStatus::Rejected]
+        };
+        assert_eq!(
+            outward
+                .borrow()
+                .iter()
+                .map(|(_, state)| *state)
+                .collect::<Vec<_>>(),
+            expected_states
+        );
+        let expected: Vec<_> = canonical
+            .iter()
+            .zip(expected_states)
+            .flat_map(|((kind, event_id, cuid), state)| {
+                ["specific", "aggregate"].map(|outlet| {
+                    (
+                        kind.clone(),
+                        event_id.clone(),
+                        cuid.clone(),
+                        outlet.to_owned(),
+                        state.to_string(),
+                        true,
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(delivered, expected);
+        assert_eq!(
+            cached.status(),
+            if expired {
+                OrderStatus::Expired
+            } else {
+                OrderStatus::Rejected
+            }
+        );
+        assert_eq!(cached.quantity(), Quantity::from("100.00"));
+        assert_eq!(cached.filled_qty(), Quantity::from("0.00"));
+        assert!(cached.commissions().is_empty());
+        assert_eq!(cached.account_id(), Some(account_id));
+        assert_eq!(
+            account_after_stop.as_ref().unwrap().balance_total(None),
+            Some(Money::from("100000 USDC"))
+        );
+        assert_eq!(open_after_stop, 0);
+        assert_eq!(closed_after_stop, 0);
+        assert_eq!(queued.borrow().len(), 2);
+        let executed_queries = if callback_failure {
+            usize::from(expired)
+        } else {
+            2
+        };
+        assert_eq!(
+            &queued.borrow()[..executed_queries],
+            dispatched.borrow().as_slice()
+        );
+        assert_eq!(queries.borrow().len(), executed_queries);
+        assert_eq!(effects.len(), executed_queries);
+        let account = account_after_stop.unwrap();
+        let account_events: std::collections::HashSet<_> = account
+            .events()
+            .iter()
+            .map(|event| event.event_id.to_string())
+            .collect();
+        let mut fresh_query_events = std::collections::HashSet::new();
+        let causes: Vec<_> = canonical
+            .iter()
+            .filter(|(kind, _, _)| kind != "OrderAccepted")
+            .map(|(_, event_id, _)| event_id.clone())
+            .collect();
+        for (index, ((query, phase), effect)) in queries.borrow().iter().zip(&effects).enumerate() {
+            assert_eq!(*query, queued.borrow()[index]);
+            assert_eq!(*phase, ConnectPhase::Returned);
+            assert_eq!(query.causation_id.unwrap().to_string(), causes[index]);
+            assert_eq!(effect.0, query.command_id.to_string());
+            assert_ne!(effect.1, effect.2);
+            assert!(fresh_query_events.insert(effect.2.clone()));
+            assert!(account_events.contains(&effect.2));
+            assert_eq!(effect.4, effect.3 + 1);
+            assert!(effect.5 >= query.ts_init.as_u64());
+            assert_eq!(effect.6, Money::from("100000 USDC").to_string());
+        }
+        if callback_failure {
+            let terminal = raw.borrow().last().unwrap().clone();
+            let terminal_id = terminal.clone().into_boxed().id();
+            assert_eq!(
+                errors,
+                vec![format!(
+                    "ValueError('terminal callback failure:{terminal_id}')"
+                )]
+            );
+            assert_eq!(retained_outputs.len(), 1);
+            let retained = &retained_outputs[0];
+            let OwnerDeliveryCause::Incoming(cause) = retained.cause else {
+                panic!("normal ingress cannot acquire a synthetic control cause");
+            };
+            assert_eq!(cause.event_id, terminal_id);
+            assert_eq!(cause.sequence, canonical.len() as u64);
+            assert_eq!(retained.event_id, terminal_id);
+            assert_eq!(retained.error, Some(OwnerDeliveryError::ExternalCallback));
+            let OwnerExternalEvent::Order(original) = &retained.event else {
+                panic!("the failed terminal callback must retain its original order event");
+            };
+            assert_eq!(*original, terminal);
+            assert_eq!(retained_inputs.len(), 1);
+            assert_eq!(retained_inputs[0].cause, Some(cause));
+            assert_eq!(
+                retained_inputs[0].stage,
+                OwnerIncomingStage::DispatchReturned
+            );
+            assert_eq!(
+                retained_inputs[0].error,
+                OwnerDeliveryError::ExternalCallback
+            );
+            let OwnerIncomingOrder::Process(original) = &retained_inputs[0].event else {
+                panic!("an applied terminal event cannot become a publication");
+            };
+            assert_eq!(*original, terminal);
+            assert_eq!(retained_commands.len(), 2 - executed_queries);
+            for (retained, query) in retained_commands
+                .iter()
+                .zip(&queued.borrow()[executed_queries..])
+            {
+                assert_eq!(
+                    retained.endpoint,
+                    MessagingSwitchboard::exec_engine_execute()
+                );
+                assert_eq!(
+                    retained.command,
+                    TradingCommand::QueryAccount(query.clone())
+                );
+                assert_eq!(
+                    retained.cause, None,
+                    "a plain Async query has not entered a control factory"
+                );
+                assert_eq!(retained.error, OwnerDeliveryError::ExternalCallback);
+            }
+            assert_eq!(owner_status.0, 2 + retained_commands.len());
+        } else {
+            assert!(retained_outputs.is_empty());
+            assert!(retained_inputs.is_empty());
+            assert!(retained_commands.is_empty());
+        }
+        if expired {
+            assert!(quote_timestamp.unwrap() > expiry.unwrap());
+            assert_eq!(quotes.borrow().len(), 1);
+            assert_eq!(
+                quotes.borrow()[0].ts_init.as_u64(),
+                quote_timestamp.unwrap()
+            );
+            assert_eq!(cached.expire_time().unwrap().as_u64(), expiry.unwrap());
+            let accepted = raw
+                .borrow()
+                .iter()
+                .find_map(|event| {
+                    if let OrderEventAny::Accepted(event) = event {
+                        Some(event.venue_order_id)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            assert_eq!(cached.venue_order_id(), Some(accepted));
+        } else {
+            assert!(quotes.borrow().is_empty());
+            assert!(expiry.is_none());
+            assert!(cached.venue_order_id().is_none());
+        }
     }
 }
 

@@ -24,9 +24,13 @@ use std::{
 
 use nautilus_common::owner_delivery::{
     self, EnteredOwnerControl, OwnerControlContext, OwnerDeliveryError, OwnerExternalAction,
+    OwnerExternalEvent,
 };
-use nautilus_model::{events::OrderEventAny, python::events::order::order_event_to_pyobject};
-use pyo3::{exceptions::PyRuntimeError, prelude::*};
+use nautilus_model::{
+    events::{OrderEventAny, PositionEvent},
+    python::events::order::order_event_to_pyobject,
+};
+use pyo3::{IntoPyObjectExt, exceptions::PyRuntimeError, prelude::*};
 
 pub(super) struct PythonOwnerControl {
     factory: Py<PyAny>,
@@ -123,8 +127,32 @@ pub(super) fn dispatch_order_callback(
     method: &'static str,
     event: OrderEventAny,
 ) -> PyResult<()> {
-    let event_id = event.clone().into_boxed().id();
-    let callback = Box::new(PythonOrderCallback {
+    dispatch_callback(target, method, OwnerExternalEvent::Order(event))
+}
+
+pub(super) fn dispatch_position_callback(
+    target: Py<PyAny>,
+    method: &'static str,
+    event: PositionEvent,
+) -> PyResult<()> {
+    dispatch_callback(target, method, OwnerExternalEvent::Position(event))
+}
+
+fn dispatch_callback(
+    target: Py<PyAny>,
+    method: &'static str,
+    event: OwnerExternalEvent,
+) -> PyResult<()> {
+    let event_id = match &event {
+        OwnerExternalEvent::Order(event) => event.clone().into_boxed().id(),
+        OwnerExternalEvent::Position(event) => match event {
+            PositionEvent::PositionOpened(event) => event.event_id,
+            PositionEvent::PositionChanged(event) => event.event_id,
+            PositionEvent::PositionClosed(event) => event.event_id,
+            PositionEvent::PositionAdjusted(event) => event.event_id,
+        },
+    };
+    let callback = Box::new(PythonOwnerCallback {
         target: Some(target),
         method,
         event,
@@ -141,17 +169,17 @@ pub(super) fn dispatch_order_callback(
     Ok(())
 }
 
-struct PythonOrderCallback {
+struct PythonOwnerCallback {
     target: Option<Py<PyAny>>,
     method: &'static str,
-    event: OrderEventAny,
+    event: OwnerExternalEvent,
     error: Option<PyErr>,
     owner: ThreadId,
 }
 
-impl OwnerExternalAction for PythonOrderCallback {
-    fn original_event(&self) -> &OrderEventAny {
-        &self.event
+impl OwnerExternalAction for PythonOwnerCallback {
+    fn original_event(&self) -> OwnerExternalEvent {
+        self.event.clone()
     }
 
     fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
@@ -159,7 +187,16 @@ impl OwnerExternalAction for PythonOrderCallback {
             return Err(OwnerDeliveryError::WrongOwner);
         }
         Python::attach(|py| {
-            let result = order_event_to_pyobject(py, self.event.clone()).and_then(|event| {
+            let event = match self.event.clone() {
+                OwnerExternalEvent::Order(event) => order_event_to_pyobject(py, event),
+                OwnerExternalEvent::Position(event) => match event {
+                    PositionEvent::PositionOpened(event) => event.into_py_any(py),
+                    PositionEvent::PositionChanged(event) => event.into_py_any(py),
+                    PositionEvent::PositionClosed(event) => event.into_py_any(py),
+                    PositionEvent::PositionAdjusted(event) => event.into_py_any(py),
+                },
+            };
+            let result = event.and_then(|event| {
                 self.target
                     .as_ref()
                     .expect("owned callback target")
@@ -176,7 +213,7 @@ impl OwnerExternalAction for PythonOrderCallback {
     }
 }
 
-impl Drop for PythonOrderCallback {
+impl Drop for PythonOwnerCallback {
     fn drop(&mut self) {
         assert_eq!(self.owner, thread::current().id());
         Python::attach(|py| {

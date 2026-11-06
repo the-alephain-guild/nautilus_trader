@@ -512,7 +512,11 @@ impl AsyncRunner {
         let _capture_dispatch = crate::node::account_capture::dispatch_guard(
             crate::node::account_capture::EXEC_COMMANDS,
         );
-        msgbus::send_trading_command(MessagingSwitchboard::exec_engine_execute(), cmd);
+        let message = TradingCommandMessage::new(MessagingSwitchboard::exec_engine_execute(), cmd);
+        if let Some(message) = nautilus_common::owner_delivery::retain_undispatched_command(message)
+        {
+            msgbus::send_trading_command(message.endpoint(), message.command().clone());
+        }
     }
 
     /// Dispatches a deferred trading command to its direct endpoint.
@@ -524,7 +528,11 @@ impl AsyncRunner {
         );
         let mut messages = vec![message];
         while let Some(message) = messages.pop() {
-            messages.extend(message.dispatch().into_iter().rev());
+            if let Some(message) =
+                nautilus_common::owner_delivery::retain_undispatched_command(message)
+            {
+                messages.extend(message.dispatch().into_iter().rev());
+            }
         }
         drain_owner_delivery();
     }
@@ -537,40 +545,52 @@ impl AsyncRunner {
             crate::node::account_capture::dispatch_guard(crate::node::account_capture::EXEC_EVENTS);
         match event {
             ExecutionEvent::OrderInitializedPublication(initialized) => {
-                let topic = nautilus_common::msgbus::switchboard::get_event_order_topic(
-                    initialized.strategy_id,
-                );
-                msgbus::publish_order_event(topic, &OrderEventAny::Initialized(initialized));
+                Self::handle_incoming_orders(vec![
+                    nautilus_common::owner_delivery::OwnerIncomingOrder::PublishInitialized(
+                        initialized,
+                    ),
+                ]);
             }
             ExecutionEvent::Order(order_event) => {
-                msgbus::send_order_event(MessagingSwitchboard::exec_engine_process(), order_event);
+                Self::handle_incoming_orders(vec![
+                    nautilus_common::owner_delivery::OwnerIncomingOrder::Process(order_event),
+                ]);
             }
             ExecutionEvent::OrderSubmittedBatch(batch) => {
-                for submitted in batch {
-                    msgbus::send_order_event(
-                        MessagingSwitchboard::exec_engine_process(),
-                        OrderEventAny::Submitted(submitted),
-                    );
-                    drain_owner_delivery();
-                }
+                Self::handle_incoming_orders(
+                    batch
+                        .into_iter()
+                        .map(|submitted| {
+                            nautilus_common::owner_delivery::OwnerIncomingOrder::Process(
+                                OrderEventAny::Submitted(submitted),
+                            )
+                        })
+                        .collect(),
+                );
             }
             ExecutionEvent::OrderAcceptedBatch(batch) => {
-                for accepted in batch {
-                    msgbus::send_order_event(
-                        MessagingSwitchboard::exec_engine_process(),
-                        OrderEventAny::Accepted(accepted),
-                    );
-                    drain_owner_delivery();
-                }
+                Self::handle_incoming_orders(
+                    batch
+                        .into_iter()
+                        .map(|accepted| {
+                            nautilus_common::owner_delivery::OwnerIncomingOrder::Process(
+                                OrderEventAny::Accepted(accepted),
+                            )
+                        })
+                        .collect(),
+                );
             }
             ExecutionEvent::OrderCanceledBatch(batch) => {
-                for canceled in batch {
-                    msgbus::send_order_event(
-                        MessagingSwitchboard::exec_engine_process(),
-                        OrderEventAny::Canceled(canceled),
-                    );
-                    drain_owner_delivery();
-                }
+                Self::handle_incoming_orders(
+                    batch
+                        .into_iter()
+                        .map(|canceled| {
+                            nautilus_common::owner_delivery::OwnerIncomingOrder::Process(
+                                OrderEventAny::Canceled(canceled),
+                            )
+                        })
+                        .collect(),
+                );
             }
             ExecutionEvent::Report(report) => {
                 Self::handle_exec_report(report);
@@ -583,6 +603,14 @@ impl AsyncRunner {
             }
         }
         drain_owner_delivery();
+    }
+
+    pub(crate) fn handle_incoming_orders(
+        events: Vec<nautilus_common::owner_delivery::OwnerIncomingOrder>,
+    ) {
+        if let Err(error) = nautilus_common::owner_delivery::dispatch_incoming_orders(events) {
+            nautilus_common::owner_delivery::record_failure(error);
+        }
     }
 
     #[inline]

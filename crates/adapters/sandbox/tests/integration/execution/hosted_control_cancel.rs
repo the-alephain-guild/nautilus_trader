@@ -188,13 +188,13 @@ fn bounded_setup_output(_command: &mut Command) -> Output {
     panic!("explicit cross-repository setup currently requires Unix bounded subprocess I/O");
 }
 
-struct CustosControlFixture {
-    module: pyo3::Py<PyModule>,
+pub(super) struct CustosControlFixture {
+    pub(super) module: pyo3::Py<PyModule>,
 }
 
 impl CustosControlFixture {
     // All external discovery is inside the explicitly ignored test body
-    fn new(same_outbox_database: bool) -> Self {
+    pub(super) fn new(same_outbox_database: bool) -> Self {
         let source = PathBuf::from(
             std::env::var("CUSTOS_SOURCE_ROOT")
                 .expect("CUSTOS_SOURCE_ROOT must explicitly name the Custos checkout"),
@@ -682,7 +682,7 @@ def cleanup():
         Self { module }
     }
 
-    fn diagnostics(&self) -> String {
+    pub(super) fn diagnostics(&self) -> String {
         Python::attach(|py| {
             self.module
                 .bind(py)
