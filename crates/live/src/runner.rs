@@ -176,7 +176,15 @@ pub(crate) enum PendingRunnerEvent {
     DataCommand(DataCommand),
 }
 
+/// Drives channels on one concrete native owner thread.
+///
+/// This runner and its `run` future are not `Send`: construction, sender binding,
+/// and execution remain on the same thread as the owner-local retained work.
+/// Poll it directly or concurrently with other local futures, rather than using `tokio::spawn`.
+/// The channel senders and [`AsyncRunnerHandle`] remain transferable to other threads.
 pub struct AsyncRunner {
+    owner_delivery: nautilus_common::owner_delivery::OwnerDelivery,
+    startup_failure: Option<nautilus_common::owner_delivery::OwnerDeliveryError>,
     #[cfg(feature = "node")]
     pub(crate) capture_progress: std::sync::Arc<crate::node::account_capture::CaptureProgress>,
     channels: AsyncRunnerChannels,
@@ -221,7 +229,8 @@ impl Debug for AsyncRunner {
 impl AsyncRunner {
     /// Creates a new [`AsyncRunner`] instance.
     ///
-    /// Creates channels but does not bind senders to thread-local storage.
+    /// Creates channels and the local owner, but does not bind thread-local senders.
+    /// Construction and subsequent binding or execution stay on this same thread.
     /// Call [`bind_senders`](Self::bind_senders) before creating clients that
     /// read from TLS, and again before entering the event loop.
     #[must_use]
@@ -238,6 +247,8 @@ impl AsyncRunner {
         let (data_cmd_tx, data_cmd_rx) = unbounded_channel::<DataCommand>();
 
         Self {
+            owner_delivery: nautilus_common::owner_delivery::OwnerDelivery::new(),
+            startup_failure: None,
             #[cfg(feature = "node")]
             capture_progress: Arc::default(),
             channels: AsyncRunnerChannels {
@@ -373,7 +384,21 @@ impl AsyncRunner {
     ///
     /// This method processes time, system, execution, and data events in an async loop.
     /// It will run until a signal is received or the event streams are closed.
+    /// The future remains local to the construction thread when polled alongside other futures.
     pub async fn run(&mut self) {
+        if let Some(error) = self.owner_delivery_failure() {
+            log::error!("Cannot restart a failed native owner: {error}");
+            return;
+        }
+        let owner_delivery = self.owner_delivery.clone();
+        let _owner_binding = match owner_delivery.bind() {
+            Ok(owner) => owner,
+            Err(error) => {
+                self.startup_failure.get_or_insert(error);
+                log::error!("Cannot bind native owner: {error}");
+                return;
+            }
+        };
         self.bind_senders();
 
         log::info!("AsyncRunner starting");
@@ -412,7 +437,19 @@ impl AsyncRunner {
                     return;
                 }
             };
+            if let Err(error) = owner_delivery.drain() {
+                log::error!("Native owner failed with retained work: {error}");
+                return;
+            }
         }
+    }
+
+    /// Returns the retained native owner failure, including after `run` returns.
+    #[must_use]
+    pub fn owner_delivery_failure(
+        &self,
+    ) -> Option<nautilus_common::owner_delivery::OwnerDeliveryError> {
+        self.owner_delivery.failure().or(self.startup_failure)
     }
 
     /// Handles a time event by running its callback.
@@ -465,6 +502,7 @@ impl AsyncRunner {
                 msgbus::send_defi_data(MessagingSwitchboard::data_engine_process_defi_data(), data);
             }
         }
+        drain_owner_delivery();
     }
 
     /// Dispatches an internal execution command directly to the execution engine.
@@ -488,6 +526,7 @@ impl AsyncRunner {
         while let Some(message) = messages.pop() {
             messages.extend(message.dispatch().into_iter().rev());
         }
+        drain_owner_delivery();
     }
 
     /// Handles an execution event by sending to the appropriate engine endpoint.
@@ -512,6 +551,7 @@ impl AsyncRunner {
                         MessagingSwitchboard::exec_engine_process(),
                         OrderEventAny::Submitted(submitted),
                     );
+                    drain_owner_delivery();
                 }
             }
             ExecutionEvent::OrderAcceptedBatch(batch) => {
@@ -520,6 +560,7 @@ impl AsyncRunner {
                         MessagingSwitchboard::exec_engine_process(),
                         OrderEventAny::Accepted(accepted),
                     );
+                    drain_owner_delivery();
                 }
             }
             ExecutionEvent::OrderCanceledBatch(batch) => {
@@ -528,6 +569,7 @@ impl AsyncRunner {
                         MessagingSwitchboard::exec_engine_process(),
                         OrderEventAny::Canceled(canceled),
                     );
+                    drain_owner_delivery();
                 }
             }
             ExecutionEvent::Report(report) => {
@@ -540,6 +582,7 @@ impl AsyncRunner {
                 );
             }
         }
+        drain_owner_delivery();
     }
 
     #[inline]
@@ -549,6 +592,12 @@ impl AsyncRunner {
             crate::node::account_capture::dispatch_guard(crate::node::account_capture::EXEC_EVENTS);
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_execution_report(endpoint, report);
+    }
+}
+
+fn drain_owner_delivery() {
+    if let Err(error) = nautilus_common::owner_delivery::drain_current() {
+        nautilus_common::owner_delivery::record_failure(error);
     }
 }
 
@@ -670,14 +719,18 @@ mod tests {
     use nautilus_common::{
         cache::Cache,
         clock::TestClock,
-        live::runner::{
-            get_data_event_sender, get_exec_event_sender, get_system_command_sender,
-            get_system_event_sender, try_get_system_command_sender, try_get_system_event_sender,
+        live::{
+            dst,
+            runner::{
+                get_data_event_sender, get_exec_event_sender, get_system_command_sender,
+                get_system_event_sender, try_get_system_command_sender,
+                try_get_system_event_sender,
+            },
         },
         messages::{
             ExecutionEvent, ExecutionReport,
             data::{SubscribeCommand, SubscribeCustomData},
-            execution::{CancelAllOrders, TradingCommand},
+            execution::{CancelAllOrders, QueryAccount, TradingCommand},
             system::{ReconnectSocket, SocketState, SocketStateChange},
         },
         msgbus::{TypedIntoHandler, stubs::get_typed_into_message_saving_handler},
@@ -711,6 +764,28 @@ mod tests {
     use ustr::Ustr;
 
     use super::*;
+
+    async fn finish_runner_after_stop<T>(
+        run: impl std::future::Future<Output = T>,
+        stopped: &mut tokio::sync::oneshot::Receiver<dst::time::Instant>,
+        budget: Duration,
+    ) -> Result<T, &'static str> {
+        tokio::pin!(run);
+        tokio::select! {
+            biased;
+            stopped_at = stopped => {
+                let stopped_at = stopped_at.map_err(|_| "producer stop marker was dropped")?;
+                let remaining = budget
+                    .checked_sub(stopped_at.elapsed())
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or("original stop deadline elapsed before the runner was polled")?;
+                dst::time::timeout(remaining, &mut run)
+                    .await
+                    .map_err(|_| "original stop deadline elapsed while the runner was pending")
+            }
+            result = &mut run => Ok(result),
+        }
+    }
 
     // Test fixture for creating test quotes
     fn test_quote() -> QuoteTick {
@@ -764,6 +839,8 @@ mod tests {
         let (exec_cmd_tx, _) = tokio::sync::mpsc::unbounded_channel();
 
         AsyncRunner {
+            owner_delivery: nautilus_common::owner_delivery::OwnerDelivery::new(),
+            startup_failure: None,
             #[cfg(feature = "node")]
             capture_progress: Arc::default(),
             channels: AsyncRunnerChannels {
@@ -1044,16 +1121,28 @@ mod tests {
         );
 
         // Start runner
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            // Send shutdown signal
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).unwrap();
+            stopped_tx.send(stopped_at).unwrap();
+
+            // Runner should stop quickly
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(100));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        // Send shutdown signal
-        signal_tx.send(()).unwrap();
-
-        // Runner should stop quickly
-        let result = tokio::time::timeout(Duration::from_millis(100), runner_handle).await;
         assert!(result.is_ok(), "Runner should stop on signal");
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
+        );
     }
 
     #[tokio::test]
@@ -1077,21 +1166,33 @@ mod tests {
         );
 
         // Start runner
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            drop(data_tx);
+
+            // Yield to let runner enter event loop before stop signal
+            tokio::task::yield_now().await;
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).ok();
+            stopped_tx.send(stopped_at).unwrap();
+
+            // Runner should stop when channels close or on signal
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(200));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        drop(data_tx);
-
-        // Yield to let runner enter event loop before stop signal
-        tokio::task::yield_now().await;
-        signal_tx.send(()).ok();
-
-        // Runner should stop when channels close or on signal
-        let result = tokio::time::timeout(Duration::from_millis(200), runner_handle).await;
         assert!(
             result.is_ok(),
             "Runner should stop when channels close or on signal"
+        );
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
         );
     }
 
@@ -1134,20 +1235,31 @@ mod tests {
         }
 
         // Start runner in background
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            // Wait for all senders
+            for handle in handles {
+                handle.await.unwrap();
+            }
+
+            // Yield to let runner enter event loop before stop signal
+            tokio::task::yield_now().await;
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).unwrap();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(200));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        // Wait for all senders
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        // Yield to let runner enter event loop before stop signal
-        tokio::task::yield_now().await;
-        signal_tx.send(()).unwrap();
-
-        let _ = tokio::time::timeout(Duration::from_millis(200), runner_handle).await;
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
+        );
     }
 
     #[rstest]
@@ -1391,33 +1503,44 @@ mod tests {
             signal_tx.clone(),
         );
 
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
+                TraderId::from("TRADER-001"),
+                None,
+                StrategyId::from("S-001"),
+                InstrumentId::from("EUR/USD.SIM"),
+                Some(OrderSide::Buy),
+                UUID4::new(),
+                UnixNanos::default(),
+                None,
+                None, // correlation_id
+            ));
+            exec_cmd_tx
+                .send(TradingCommandMessage::new(
+                    MessagingSwitchboard::exec_engine_execute(),
+                    command,
+                ))
+                .unwrap();
+
+            tokio::task::yield_now().await;
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).unwrap();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(100));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
-            TraderId::from("TRADER-001"),
-            None,
-            StrategyId::from("S-001"),
-            InstrumentId::from("EUR/USD.SIM"),
-            Some(OrderSide::Buy),
-            UUID4::new(),
-            UnixNanos::default(),
-            None,
-            None, // correlation_id
-        ));
-        exec_cmd_tx
-            .send(TradingCommandMessage::new(
-                MessagingSwitchboard::exec_engine_execute(),
-                command,
-            ))
-            .unwrap();
-
-        tokio::task::yield_now().await;
-        signal_tx.send(()).unwrap();
-
-        let result = tokio::time::timeout(Duration::from_millis(100), runner_handle).await;
         assert!(result.is_ok(), "Runner should process command and stop");
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
+        );
     }
 
     #[tokio::test]
@@ -1441,38 +1564,49 @@ mod tests {
             signal_tx.clone(),
         );
 
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            for i in 0..10 {
+                let strategy_id = format!("S-{i:03}");
+                let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
+                    TraderId::from("TRADER-001"),
+                    None,
+                    StrategyId::from(strategy_id.as_str()),
+                    InstrumentId::from("EUR/USD.SIM"),
+                    Some(OrderSide::Buy),
+                    UUID4::new(),
+                    UnixNanos::default(),
+                    None,
+                    None, // correlation_id
+                ));
+                exec_cmd_tx
+                    .send(TradingCommandMessage::new(
+                        MessagingSwitchboard::exec_engine_execute(),
+                        command,
+                    ))
+                    .unwrap();
+            }
+
+            tokio::task::yield_now().await;
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).unwrap();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(100));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        for i in 0..10 {
-            let strategy_id = format!("S-{i:03}");
-            let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
-                TraderId::from("TRADER-001"),
-                None,
-                StrategyId::from(strategy_id.as_str()),
-                InstrumentId::from("EUR/USD.SIM"),
-                Some(OrderSide::Buy),
-                UUID4::new(),
-                UnixNanos::default(),
-                None,
-                None, // correlation_id
-            ));
-            exec_cmd_tx
-                .send(TradingCommandMessage::new(
-                    MessagingSwitchboard::exec_engine_execute(),
-                    command,
-                ))
-                .unwrap();
-        }
-
-        tokio::task::yield_now().await;
-        signal_tx.send(()).unwrap();
-
-        let result = tokio::time::timeout(Duration::from_millis(100), runner_handle).await;
         assert!(
             result.is_ok(),
             "Runner should process all commands and stop"
+        );
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
         );
     }
 
@@ -1645,15 +1779,26 @@ mod tests {
             signal_tx.clone(),
         );
 
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            // Use stop via signal_tx directly
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).unwrap();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(100));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        // Use stop via signal_tx directly
-        signal_tx.send(()).unwrap();
-
-        let result = tokio::time::timeout(Duration::from_millis(100), runner_handle).await;
         assert!(result.is_ok(), "Runner should stop when stop() is called");
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
+        );
     }
 
     #[tokio::test]
@@ -1676,135 +1821,146 @@ mod tests {
             signal_tx.clone(),
         );
 
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            // Send data event
+            let quote = test_quote();
+            data_evt_tx
+                .send(DataEvent::Data(Data::Quote(quote)))
+                .unwrap();
+
+            // Send data command
+            let command = DataCommand::Subscribe(SubscribeCommand::Data(SubscribeCustomData {
+                client_id: Some(ClientId::from("TEST")),
+                venue: None,
+                data_type: DataType::new("QuoteTick", None, None),
+                command_id: UUID4::new(),
+                ts_init: UnixNanos::default(),
+                correlation_id: None,
+                params: None,
+            }));
+            data_cmd_tx.send(command).unwrap();
+
+            // Send time event
+            let event = TimeEvent::new(
+                Ustr::from("test"),
+                UUID4::new(),
+                UnixNanos::from(1),
+                UnixNanos::from(2),
+            );
+            let callback = TimeEventCallback::from(|_: TimeEvent| {});
+            let message = TimeEventMessage::new(event, callback);
+            time_evt_tx.send(message).unwrap();
+
+            // Send execution order event
+            let order_event = OrderSubmittedSpec::builder()
+                .client_order_id(ClientOrderId::from("O-001"))
+                .build();
+            exec_evt_tx
+                .send(ExecutionEvent::Order(OrderEventAny::Submitted(order_event)))
+                .unwrap();
+
+            // Send execution report (OrderStatus)
+            let order_status = OrderStatusReport::new(
+                AccountId::from("SIM-001"),
+                InstrumentId::from("EUR/USD.SIM"),
+                Some(ClientOrderId::from("O-001")),
+                VenueOrderId::from("V-001"),
+                OrderSide::Buy.into(),
+                OrderType::Market,
+                TimeInForce::Gtc,
+                OrderStatus::Accepted,
+                Quantity::from(100_000),
+                Quantity::from(100_000),
+                UnixNanos::from(1),
+                UnixNanos::from(2),
+                UnixNanos::from(3),
+                None,
+            );
+            exec_evt_tx
+                .send(ExecutionEvent::Report(ExecutionReport::Order(Box::new(
+                    order_status,
+                ))))
+                .unwrap();
+
+            // Send execution report (Fill)
+            let fill = FillReport::new(
+                AccountId::from("SIM-001"),
+                InstrumentId::from("EUR/USD.SIM"),
+                VenueOrderId::from("V-001"),
+                TradeId::from("T-001"),
+                OrderSide::Buy,
+                Quantity::from(100_000),
+                Price::from("1.10000"),
+                Money::from("10 USD"),
+                LiquiditySide::Taker,
+                Some(ClientOrderId::from("O-001")),
+                None,
+                UnixNanos::from(1),
+                UnixNanos::from(2),
+                None,
+            );
+            exec_evt_tx
+                .send(ExecutionEvent::Report(ExecutionReport::Fill(Box::new(
+                    fill,
+                ))))
+                .unwrap();
+
+            // Send execution report (Position)
+            let position = PositionStatusReport::new(
+                AccountId::from("SIM-001"),
+                InstrumentId::from("EUR/USD.SIM"),
+                PositionSide::Long,
+                Quantity::from(100_000),
+                UnixNanos::from(1),
+                UnixNanos::from(2),
+                None,
+                Some(PositionId::from("P-001")),
+                None,
+            );
+            exec_evt_tx
+                .send(ExecutionEvent::Report(ExecutionReport::Position(Box::new(
+                    position,
+                ))))
+                .unwrap();
+
+            // Send account event
+            let account_state = AccountState::new(
+                AccountId::from("SIM-001"),
+                AccountType::Cash,
+                vec![],
+                vec![],
+                true,
+                UUID4::new(),
+                UnixNanos::from(1),
+                UnixNanos::from(2),
+                None,
+            );
+            exec_evt_tx
+                .send(ExecutionEvent::Account(account_state))
+                .unwrap();
+
+            // Yield to let runner enter event loop before stop signal
+            tokio::task::yield_now().await;
+            let stopped_at = dst::time::Instant::now();
+            signal_tx.send(()).unwrap();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(200));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        // Send data event
-        let quote = test_quote();
-        data_evt_tx
-            .send(DataEvent::Data(Data::Quote(quote)))
-            .unwrap();
-
-        // Send data command
-        let command = DataCommand::Subscribe(SubscribeCommand::Data(SubscribeCustomData {
-            client_id: Some(ClientId::from("TEST")),
-            venue: None,
-            data_type: DataType::new("QuoteTick", None, None),
-            command_id: UUID4::new(),
-            ts_init: UnixNanos::default(),
-            correlation_id: None,
-            params: None,
-        }));
-        data_cmd_tx.send(command).unwrap();
-
-        // Send time event
-        let event = TimeEvent::new(
-            Ustr::from("test"),
-            UUID4::new(),
-            UnixNanos::from(1),
-            UnixNanos::from(2),
-        );
-        let callback = TimeEventCallback::from(|_: TimeEvent| {});
-        let message = TimeEventMessage::new(event, callback);
-        time_evt_tx.send(message).unwrap();
-
-        // Send execution order event
-        let order_event = OrderSubmittedSpec::builder()
-            .client_order_id(ClientOrderId::from("O-001"))
-            .build();
-        exec_evt_tx
-            .send(ExecutionEvent::Order(OrderEventAny::Submitted(order_event)))
-            .unwrap();
-
-        // Send execution report (OrderStatus)
-        let order_status = OrderStatusReport::new(
-            AccountId::from("SIM-001"),
-            InstrumentId::from("EUR/USD.SIM"),
-            Some(ClientOrderId::from("O-001")),
-            VenueOrderId::from("V-001"),
-            OrderSide::Buy.into(),
-            OrderType::Market,
-            TimeInForce::Gtc,
-            OrderStatus::Accepted,
-            Quantity::from(100_000),
-            Quantity::from(100_000),
-            UnixNanos::from(1),
-            UnixNanos::from(2),
-            UnixNanos::from(3),
-            None,
-        );
-        exec_evt_tx
-            .send(ExecutionEvent::Report(ExecutionReport::Order(Box::new(
-                order_status,
-            ))))
-            .unwrap();
-
-        // Send execution report (Fill)
-        let fill = FillReport::new(
-            AccountId::from("SIM-001"),
-            InstrumentId::from("EUR/USD.SIM"),
-            VenueOrderId::from("V-001"),
-            TradeId::from("T-001"),
-            OrderSide::Buy,
-            Quantity::from(100_000),
-            Price::from("1.10000"),
-            Money::from("10 USD"),
-            LiquiditySide::Taker,
-            Some(ClientOrderId::from("O-001")),
-            None,
-            UnixNanos::from(1),
-            UnixNanos::from(2),
-            None,
-        );
-        exec_evt_tx
-            .send(ExecutionEvent::Report(ExecutionReport::Fill(Box::new(
-                fill,
-            ))))
-            .unwrap();
-
-        // Send execution report (Position)
-        let position = PositionStatusReport::new(
-            AccountId::from("SIM-001"),
-            InstrumentId::from("EUR/USD.SIM"),
-            PositionSide::Long,
-            Quantity::from(100_000),
-            UnixNanos::from(1),
-            UnixNanos::from(2),
-            None,
-            Some(PositionId::from("P-001")),
-            None,
-        );
-        exec_evt_tx
-            .send(ExecutionEvent::Report(ExecutionReport::Position(Box::new(
-                position,
-            ))))
-            .unwrap();
-
-        // Send account event
-        let account_state = AccountState::new(
-            AccountId::from("SIM-001"),
-            AccountType::Cash,
-            vec![],
-            vec![],
-            true,
-            UUID4::new(),
-            UnixNanos::from(1),
-            UnixNanos::from(2),
-            None,
-        );
-        exec_evt_tx
-            .send(ExecutionEvent::Account(account_state))
-            .unwrap();
-
-        // Yield to let runner enter event loop before stop signal
-        tokio::task::yield_now().await;
-        signal_tx.send(()).unwrap();
-
-        let result = tokio::time::timeout(Duration::from_millis(200), runner_handle).await;
         assert!(
             result.is_ok(),
             "Runner should process all event types and stop cleanly"
+        );
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
         );
     }
 
@@ -1831,15 +1987,228 @@ mod tests {
         // Get handle before moving runner
         let handle = runner.handle();
 
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            // Use handle to stop
+            let stopped_at = dst::time::Instant::now();
+            handle.stop();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(100));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        // Use handle to stop
-        handle.stop();
-
-        let result = tokio::time::timeout(Duration::from_millis(100), runner_handle).await;
         assert!(result.is_ok(), "Runner should stop via handle");
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejected_runner_preserves_first_owner_senders_and_original_queues() {
+        msgbus::get_message_bus().borrow_mut().dispose();
+        let mut first = AsyncRunner::new();
+        let first_owner = first.owner_delivery.bind().unwrap();
+        first.bind_senders();
+        let data = get_data_cmd_sender();
+        let trading = get_trading_cmd_sender();
+        let time = get_time_event_sender();
+        let data_events = get_data_event_sender();
+        let exec_events = get_exec_event_sender();
+        let system_events = get_system_event_sender();
+        let system_commands = get_system_command_sender();
+        let effects = Rc::new(std::cell::Cell::new(0));
+        let endpoint = "LocalRunner.rejectedOwnerQuery".into();
+        msgbus::register_trading_command_endpoint(
+            endpoint,
+            TypedIntoHandler::from({
+                let effects = effects.clone();
+                move |_command: TradingCommand| effects.set(effects.get() + 1)
+            }),
+        );
+        let make_query = || {
+            TradingCommand::QueryAccount(QueryAccount::new(
+                TraderId::from("TRADER-001"),
+                None,
+                AccountId::from("SIM-001"),
+                UUID4::new(),
+                UnixNanos::from(1),
+                None,
+                None,
+            ))
+        };
+        let first_query = make_query();
+        first
+            .exec_cmd_tx
+            .send(TradingCommandMessage::new(endpoint, first_query.clone()))
+            .unwrap();
+        let mut second = AsyncRunner::new();
+        let second_query = make_query();
+        second
+            .exec_cmd_tx
+            .send(TradingCommandMessage::new(endpoint, second_query.clone()))
+            .unwrap();
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_millis(100), second.run())
+                .await
+                .expect("another owner must be rejected without waiting for channel input");
+        }
+        let initial_failure = second.owner_delivery_failure();
+        drop(first_owner);
+        tokio::time::timeout(Duration::from_millis(100), second.run())
+            .await
+            .expect("a rejected runner must stay failed after the first owner leaves");
+        let same_senders = [
+            Arc::ptr_eq(&data, &get_data_cmd_sender()),
+            Arc::ptr_eq(&trading, &get_trading_cmd_sender()),
+            Arc::ptr_eq(&time, &get_time_event_sender()),
+            data_events.same_channel(&get_data_event_sender()),
+            exec_events.same_channel(&get_exec_event_sender()),
+            system_events.same_channel(&get_system_event_sender()),
+            system_commands.same_channel(&get_system_command_sender()),
+        ];
+        let first_pending = first.channels.exec_cmd_rx.try_recv().unwrap();
+        let second_pending = second.channels.exec_cmd_rx.try_recv().unwrap();
+        assert_eq!(first_pending.endpoint(), endpoint);
+        assert_eq!(first_pending.command(), &first_query);
+        assert_eq!(second_pending.endpoint(), endpoint);
+        assert_eq!(second_pending.command(), &second_query);
+        assert!(first.channels.exec_cmd_rx.try_recv().is_err());
+        assert!(second.channels.exec_cmd_rx.try_recv().is_err());
+        let observation = (
+            same_senders,
+            first.owner_delivery_failure(),
+            first.owner_delivery.failure(),
+            initial_failure,
+            second.owner_delivery_failure(),
+            effects.get(),
+        );
+        eprintln!("rejected owner observations: {observation:?}");
+        assert_eq!(
+            observation,
+            (
+                [true; 7],
+                None,
+                None,
+                Some(nautilus_common::owner_delivery::OwnerDeliveryError::WrongOwner),
+                Some(nautilus_common::owner_delivery::OwnerDeliveryError::WrongOwner),
+                0,
+            )
+        );
+        msgbus::get_message_bus().borrow_mut().dispose();
+    }
+
+    #[tokio::test]
+    async fn test_local_runner_consumes_cross_thread_senders_and_stop_handle() {
+        msgbus::get_message_bus().borrow_mut().dispose();
+        let owner_thread = std::thread::current().id();
+        let mut runner = AsyncRunner::new();
+        let data_sender = AsyncDataCommandSender::new(runner.data_cmd_tx.clone());
+        let trading_sender = AsyncTradingCommandSender::new(runner.exec_cmd_tx.clone());
+        let time_sender = AsyncTimeEventSender::new(runner.time_evt_tx.clone());
+        let stop = runner.handle();
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let data_observed = Rc::new(RefCell::new(Vec::new()));
+        let trading_observed = Rc::new(RefCell::new(Vec::new()));
+        let time_observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let endpoint = "LocalRunner.crossThreadQuery".into();
+        msgbus::register_data_command_endpoint(
+            MessagingSwitchboard::data_engine_execute(),
+            TypedIntoHandler::from({
+                let observed = data_observed.clone();
+                let ack = ack_tx.clone();
+                move |command: DataCommand| {
+                    observed.borrow_mut().push(command);
+                    ack.send(("data", std::thread::current().id())).unwrap();
+                }
+            }),
+        );
+        msgbus::register_trading_command_endpoint(
+            endpoint,
+            TypedIntoHandler::from({
+                let observed = trading_observed.clone();
+                let ack = ack_tx.clone();
+                move |command: TradingCommand| {
+                    observed.borrow_mut().push(command);
+                    ack.send(("trading", std::thread::current().id())).unwrap();
+                }
+            }),
+        );
+        let data_command = DataCommand::Subscribe(SubscribeCommand::Data(SubscribeCustomData {
+            client_id: Some(ClientId::from("TEST")),
+            venue: None,
+            data_type: DataType::new("cross_thread_test", None, None),
+            command_id: UUID4::new(),
+            ts_init: UnixNanos::from(1),
+            correlation_id: None,
+            params: None,
+        }));
+        let trading_command = TradingCommand::QueryAccount(QueryAccount::new(
+            TraderId::from("TRADER-001"),
+            None,
+            AccountId::from("SIM-001"),
+            UUID4::new(),
+            UnixNanos::from(2),
+            None,
+            None,
+        ));
+        let time_event = TimeEvent::new(
+            Ustr::from("cross_thread_test"),
+            UUID4::new(),
+            UnixNanos::from(3),
+            UnixNanos::from(4),
+        );
+        let worker = std::thread::spawn({
+            let data_command = data_command.clone();
+            let trading_command = trading_command.clone();
+            let time_event = time_event.clone();
+            let time_observed = time_observed.clone();
+            move || {
+                data_sender.execute(data_command);
+                trading_sender.execute(TradingCommandMessage::new(endpoint, trading_command));
+                time_sender.send(TimeEventMessage::new(
+                    time_event,
+                    TimeEventCallback::from(move |event: TimeEvent| {
+                        time_observed.lock().unwrap().push(event);
+                        ack_tx.send(("time", std::thread::current().id())).unwrap();
+                    }),
+                ));
+                let mut labels = Vec::new();
+                for _ in 0..3 {
+                    let (label, actual_thread) =
+                        ack_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                    assert_eq!(actual_thread, owner_thread);
+                    labels.push(label);
+                }
+                labels.sort_unstable();
+                assert_eq!(labels, ["data", "time", "trading"]);
+                stop.stop();
+                std::thread::current().id()
+            }
+        });
+        let result = dst::time::timeout(Duration::from_secs(5), async {
+            runner.run().await;
+            (
+                runner.owner_delivery_failure(),
+                runner.owner_delivery.pending(),
+            )
+        })
+        .await;
+        let sender_thread = worker.join().expect("cross-thread sender panicked");
+        assert_ne!(sender_thread, owner_thread);
+        assert_eq!(
+            result.expect("local runner did not stop after all three acknowledgements"),
+            (None, 0)
+        );
+        assert_eq!(&*data_observed.borrow(), &[data_command]);
+        assert_eq!(&*trading_observed.borrow(), &[trading_command]);
+        assert_eq!(&*time_observed.lock().unwrap(), &[time_event]);
+        msgbus::get_message_bus().borrow_mut().dispose();
     }
 
     #[tokio::test]
@@ -1884,16 +2253,27 @@ mod tests {
                 .unwrap();
         }
 
-        let runner_handle = tokio::spawn(async move {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::oneshot::channel();
+        let producer = async move {
+            // Yield to let runner enter event loop before stop signal
+            tokio::task::yield_now().await;
+            let stopped_at = dst::time::Instant::now();
+            handle.stop();
+            stopped_tx.send(stopped_at).unwrap();
+        };
+        let run = async {
             runner.run().await;
-        });
+            runner.owner_delivery_failure()
+        };
+        let observed = finish_runner_after_stop(run, &mut stopped_rx, Duration::from_millis(200));
+        let (result, ()) = tokio::join!(observed, producer);
 
-        // Yield to let runner enter event loop before stop signal
-        tokio::task::yield_now().await;
-        handle.stop();
-
-        let result = tokio::time::timeout(Duration::from_millis(200), runner_handle).await;
         assert!(result.is_ok(), "Runner should process events and stop");
+        assert_eq!(
+            result.expect("local runner exceeded its original stop deadline"),
+            None,
+            "local runner must not hide an owner-delivery failure"
+        );
     }
 
     #[rstest]

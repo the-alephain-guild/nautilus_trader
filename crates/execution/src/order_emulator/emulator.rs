@@ -114,12 +114,40 @@ impl OrderEmulator {
         let execute_weak = weak.clone();
         let execute_pending = pending_messages.clone();
         let execute_handler = TypedIntoHandler::from(move |cmd: TradingCommand| {
+            let message = nautilus_common::runner::TradingCommandMessage::new(
+                MessagingSwitchboard::order_emulator_execute(),
+                cmd,
+            );
+            let cmd = match nautilus_common::owner_delivery::capture_registered_control_command(
+                message,
+            ) {
+                Ok(Some(message)) => message.into_parts().1,
+                Ok(None) | Err(_) => return,
+            };
             if let Some(emulator) = execute_weak.upgrade() {
-                match emulator.try_borrow_mut() {
-                    Ok(mut emulator) => emulator.execute(cmd),
-                    Err(_) => execute_pending
-                        .borrow_mut()
-                        .push_back(PendingMessage::Command(Box::new(cmd))),
+                let handled = match emulator.try_borrow_mut() {
+                    Ok(mut emulator) => {
+                        emulator.execute(cmd);
+                        true
+                    }
+                    Err(_) => {
+                        let message = PendingMessage::Command(Box::new(cmd));
+                        let message = if let Some(continuation) =
+                            nautilus_common::owner_delivery::current_continuation()
+                        {
+                            PendingMessage::Controlled {
+                                message: Box::new(message),
+                                continuation,
+                            }
+                        } else {
+                            message
+                        };
+                        execute_pending.borrow_mut().push_back(message);
+                        false
+                    }
+                };
+                if handled {
+                    super::handlers::schedule_owner_continuation(&emulator);
                 }
             }
         });
@@ -389,14 +417,106 @@ impl OrderEmulator {
     }
 
     fn drain_pending_messages(&mut self) {
+        if nautilus_common::owner_delivery::is_controlled_phase() {
+            return;
+        }
         loop {
+            if matches!(
+                self.pending_messages.borrow().front(),
+                Some(PendingMessage::Controlled { .. })
+            ) {
+                return;
+            }
             let message = self.pending_messages.borrow_mut().pop_front();
             match message {
                 Some(PendingMessage::Command(command)) => self.execute(*command),
                 Some(PendingMessage::Event(event)) => self.on_event(&event),
+                Some(PendingMessage::ManagerAction(action)) => {
+                    self.dispatch_manager_action(*action);
+                }
+                Some(PendingMessage::Controlled { .. }) => {
+                    unreachable!("controlled continuation is owner-dispatched")
+                }
                 None => break,
             }
         }
+    }
+
+    pub(crate) fn pending_owner_phase(
+        &self,
+    ) -> Option<(nautilus_common::owner_delivery::OwnerContinuation, bool)> {
+        match self.pending_messages.borrow().front() {
+            Some(PendingMessage::Controlled {
+                message,
+                continuation,
+            }) => Some((
+                continuation.clone(),
+                !matches!(message.as_ref(), PendingMessage::Event(_)),
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn resume_one_owner_phase(
+        &mut self,
+    ) -> Result<(), nautilus_common::owner_delivery::OwnerDeliveryError> {
+        let Some(next) = self.pending_messages.borrow_mut().pop_front() else {
+            return Ok(());
+        };
+        let PendingMessage::Controlled {
+            message,
+            continuation,
+        } = next
+        else {
+            self.pending_messages.borrow_mut().push_front(next);
+            return Err(nautilus_common::owner_delivery::OwnerDeliveryError::WrongOwner);
+        };
+        if !continuation.matches_current() {
+            self.pending_messages
+                .borrow_mut()
+                .push_front(PendingMessage::Controlled {
+                    message,
+                    continuation,
+                });
+            return Err(nautilus_common::owner_delivery::OwnerDeliveryError::WrongOwner);
+        }
+        let next = Some(*message);
+        match next {
+            Some(PendingMessage::Event(event)) => self.on_event(&event),
+            Some(PendingMessage::Command(command)) => {
+                if !nautilus_common::owner_delivery::is_control_command(&command) {
+                    self.pending_messages
+                        .borrow_mut()
+                        .push_front(PendingMessage::Controlled {
+                            message: Box::new(PendingMessage::Command(command)),
+                            continuation,
+                        });
+                    return Err(
+                        nautilus_common::owner_delivery::OwnerDeliveryError::UnsupportedEffect,
+                    );
+                }
+                self.execute(*command);
+            }
+            Some(PendingMessage::ManagerAction(action)) => {
+                if !matches!(action.as_ref(), OrderManagerAction::CancelLocal(_)) {
+                    self.pending_messages
+                        .borrow_mut()
+                        .push_front(PendingMessage::Controlled {
+                            message: Box::new(PendingMessage::ManagerAction(action)),
+                            continuation,
+                        });
+                    return Err(
+                        nautilus_common::owner_delivery::OwnerDeliveryError::UnsupportedEffect,
+                    );
+                }
+                self.dispatch_manager_action(*action);
+            }
+            Some(PendingMessage::Controlled { .. }) => {
+                return Err(nautilus_common::owner_delivery::OwnerDeliveryError::WrongOwner);
+            }
+            None => {}
+        }
+        Ok(())
     }
 
     pub const fn on_stop(&self) {}
@@ -483,6 +603,14 @@ impl OrderEmulator {
     }
 
     pub fn execute(&mut self, command: TradingCommand) {
+        if !nautilus_common::owner_delivery::is_controlled_phase()
+            && self.pending_owner_phase().is_some()
+        {
+            self.pending_messages
+                .borrow_mut()
+                .push_back(PendingMessage::Command(Box::new(command)));
+            return;
+        }
         log::info!("{RECV}{CMD} {command}");
 
         match command {
@@ -499,6 +627,16 @@ impl OrderEmulator {
     }
 
     fn dispatch_manager_actions(&mut self, actions: Vec<OrderManagerAction>) {
+        if let Some(continuation) = nautilus_common::owner_delivery::current_continuation() {
+            let mut pending = self.pending_messages.borrow_mut();
+            for action in actions.into_iter().rev() {
+                pending.push_front(PendingMessage::Controlled {
+                    message: Box::new(PendingMessage::ManagerAction(Box::new(action))),
+                    continuation: continuation.clone(),
+                });
+            }
+            return;
+        }
         for action in actions {
             self.dispatch_manager_action(action);
         }
@@ -3786,8 +3924,10 @@ mod tests {
             assert_eq!(pending.len(), 1);
             match pending.front().unwrap() {
                 PendingMessage::Event(event) => assert_eq!(event.as_ref(), &original),
-                PendingMessage::Command(command) => {
-                    panic!("expected the original native cancel event, received {command:?}");
+                message @ (PendingMessage::Command(_)
+                | PendingMessage::ManagerAction(_)
+                | PendingMessage::Controlled { .. }) => {
+                    panic!("expected the original native cancel event, received {message:?}");
                 }
             }
             let cached_a = cache.borrow().order_owned(&client_order_id_a).unwrap();

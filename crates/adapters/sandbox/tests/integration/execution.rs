@@ -16,6 +16,12 @@
 //! Tests for sandbox execution client.
 
 #[cfg(feature = "python")]
+#[path = "execution/hosted_control_cancel.rs"]
+mod hosted_control_cancel;
+#[cfg(feature = "python")]
+#[path = "execution/hosted_control_delivery.rs"]
+mod hosted_control_delivery;
+#[cfg(feature = "python")]
 #[path = "execution/hosted_emulator_callbacks.rs"]
 mod hosted_emulator_callbacks;
 

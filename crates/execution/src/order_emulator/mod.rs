@@ -31,4 +31,9 @@ pub mod handlers;
 pub(crate) enum PendingMessage {
     Command(Box<TradingCommand>),
     Event(Box<OrderEventAny>),
+    ManagerAction(Box<crate::order_manager::OrderManagerAction>),
+    Controlled {
+        message: Box<Self>,
+        continuation: nautilus_common::owner_delivery::OwnerContinuation,
+    },
 }

@@ -198,6 +198,7 @@ pub struct LiveNode {
     external_msgbus: Option<ExternalMessageBusIngress>,
     stream_processors: Vec<StreamProcessor>,
     shutdown_deadline: Option<dst::time::Instant>,
+    owner_delivery: nautilus_common::owner_delivery::OwnerDelivery,
     #[cfg(feature = "plugin")]
     plugins: plugin::NodePlugins,
 }
@@ -235,6 +236,7 @@ impl LiveNode {
             external_msgbus,
             stream_processors: Vec::new(),
             shutdown_deadline: None,
+            owner_delivery: nautilus_common::owner_delivery::OwnerDelivery::new(),
             #[cfg(feature = "plugin")]
             plugins: plugin::NodePlugins,
         }
@@ -312,6 +314,7 @@ impl LiveNode {
             external_msgbus: None,
             stream_processors: Vec::new(),
             shutdown_deadline: None,
+            owner_delivery: nautilus_common::owner_delivery::OwnerDelivery::new(),
             #[cfg(feature = "plugin")]
             plugins: plugin::NodePlugins,
         };
@@ -619,6 +622,13 @@ impl LiveNode {
     }
 
     fn process_runner_event(&mut self, event: PendingRunnerEvent) {
+        let _owner = match self.owner_delivery.bind() {
+            Ok(owner) => owner,
+            Err(error) => {
+                log::error!("Native owner binding failed: {error}");
+                return;
+            }
+        };
         match event {
             PendingRunnerEvent::TimeEvent(message) => {
                 let _ = AsyncRunner::handle_time_event(message);
@@ -629,6 +639,9 @@ impl LiveNode {
             PendingRunnerEvent::ExecCommand(command) => self.process_exec_command(command),
             PendingRunnerEvent::DataEvent(event) => AsyncRunner::handle_data_event(event),
             PendingRunnerEvent::DataCommand(command) => AsyncRunner::handle_data_command(command),
+        }
+        if let Err(error) = self.owner_delivery.drain() {
+            log::error!("Native owner phase failed: {error}");
         }
     }
 
@@ -1035,6 +1048,7 @@ impl LiveNode {
             anyhow::bail!("Runner already consumed - run() called twice");
         }
 
+        let _delivery_owner = self.owner_delivery.bind()?;
         self.prepare_cache().await?;
 
         let Some(runner) = self.runner.take() else {
@@ -1860,7 +1874,9 @@ impl LiveNode {
                     );
                 }
                 Some(request) = account_capture_rx.recv() => {
-                    let maintenance_pending = open_order_report_task.is_some()
+                    let maintenance_pending = self.owner_delivery.pending() != 0
+                        || self.owner_delivery.failure().is_some()
+                        || open_order_report_task.is_some()
                         || targeted_order_report_task.is_some()
                         || position_report_task.is_some();
                     self.process_account_capture(request, || [
@@ -1871,6 +1887,12 @@ impl LiveNode {
                 }
             }
 
+            if let Err(error) = self.owner_delivery.drain() {
+                log::error!("Native owner phase failed: {error}");
+                if self.state() == NodeState::Running {
+                    self.initiate_shutdown();
+                }
+            }
             dispatches_since_yield += 1;
             if dispatches_since_yield >= DISPATCHES_PER_YIELD {
                 dispatches_since_yield = 0;
@@ -1905,6 +1927,11 @@ impl LiveNode {
 
         log::info!("Event loop stopped");
 
+        if let Some(error) = self.owner_delivery.failure() {
+            stop_result?;
+            return Err(error.into());
+        }
+        self.owner_delivery.retire()?;
         stop_result
     }
 

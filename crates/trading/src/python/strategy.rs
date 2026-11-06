@@ -98,6 +98,9 @@ use crate::strategy::{
     StrategyNative, route_time_event,
 };
 
+type PyOwnerDeliveryStatus = (bool, Option<(usize, Option<String>)>);
+type PyOwnerDeliveryFailure = (String, Option<String>, String, Option<String>);
+
 #[pyo3::pymethods]
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl StrategyConfig {
@@ -310,6 +313,8 @@ pub struct PyStrategyInner {
     config: Option<Py<PyAny>>,
     clock: PyClock,
     logger: PyLogger,
+    owner_control: Option<Rc<dyn nautilus_common::owner_delivery::OwnerControlContext>>,
+    delivery_observer: Option<nautilus_common::owner_delivery::OwnerObserver>,
 }
 
 impl Debug for PyStrategyInner {
@@ -438,6 +443,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_event(&self, event: OrderEventAny) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::is_controlled_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_event",
+                    event,
+                );
+            }
             Python::attach(|py| {
                 let py_event = order_event_to_pyobject(py, event)?;
                 py_self.call_method1(py, "on_order_event", (py_event,))
@@ -565,6 +577,13 @@ impl PyStrategyInner {
 
     fn dispatch_on_order_canceled(&self, event: OrderCanceled) -> PyResult<()> {
         if let Some(py_self) = self.python_instance()? {
+            if nautilus_common::owner_delivery::is_controlled_phase() {
+                return super::owner_delivery::dispatch_order_callback(
+                    py_self,
+                    "on_order_canceled",
+                    OrderEventAny::Canceled(event),
+                );
+            }
             Python::attach(|py| {
                 py_self.call_method1(py, "on_order_canceled", (event.into_py_any(py)?,))
             })?;
@@ -1341,6 +1360,8 @@ impl PyStrategy {
             config: None,
             clock,
             logger,
+            owner_control: None,
+            delivery_observer: None,
         };
 
         Ok(Self {
@@ -2011,8 +2032,70 @@ impl PyStrategy {
         })?;
         let inner = self.inner_mut();
 
+        if inner.owner_control.is_some() {
+            if let Some(observer) = &inner.delivery_observer {
+                if !observer.is_current() {
+                    return Err(to_pyruntime_err(
+                        nautilus_common::owner_delivery::OwnerDeliveryError::WrongOwner,
+                    ));
+                }
+            } else {
+                inner.delivery_observer = nautilus_common::owner_delivery::current_observer();
+            }
+        }
+        let _submission = inner
+            .owner_control
+            .clone()
+            .map(nautilus_common::owner_delivery::SubmissionBinding::new)
+            .transpose()
+            .map_err(to_pyruntime_err)?;
+
         Strategy::cancel_order(inner, client_order_id, client_id, params_map)
             .map_err(to_pyruntime_err)
+    }
+
+    /// Binds a real control context factory to this native strategy's owner work.
+    #[pyo3(name = "_bind_control_delivery")]
+    fn py_bind_control_delivery(&mut self, factory: Py<PyAny>) -> PyResult<()> {
+        self.inner_mut().owner_control = Some(Rc::new(
+            super::owner_delivery::PythonOwnerControl::new(factory)?,
+        ));
+        self.inner_mut().delivery_observer = nautilus_common::owner_delivery::current_observer();
+        Ok(())
+    }
+
+    /// Observes real owner work; this status never grants control authority.
+    #[pyo3(name = "_control_delivery_status")]
+    fn py_control_delivery_status(&self) -> PyResult<PyOwnerDeliveryStatus> {
+        let observed = match self.inner().delivery_observer.as_ref() {
+            Some(observer) => observer.status().map_err(to_pyruntime_err)?,
+            None => nautilus_common::owner_delivery::current_status(),
+        };
+        Ok((
+            self.inner().owner_control.is_some(),
+            observed.map(|(pending, failure)| (pending, failure.map(|error| error.to_string()))),
+        ))
+    }
+
+    /// Read-only identities of failed external items; this never retries or authorizes them.
+    #[pyo3(name = "_control_delivery_failures")]
+    fn py_control_delivery_failures(&self) -> PyResult<Vec<PyOwnerDeliveryFailure>> {
+        let Some(observer) = self.inner().delivery_observer.as_ref() else {
+            return Ok(Vec::new());
+        };
+        Ok(observer
+            .retained_deliveries()
+            .map_err(to_pyruntime_err)?
+            .into_iter()
+            .map(|item| {
+                (
+                    item.cause.command_id.to_string(),
+                    item.cause.parent_event_id.map(|id| id.to_string()),
+                    item.event_id.to_string(),
+                    item.error.map(|error| error.to_string()),
+                )
+            })
+            .collect())
     }
 
     /// Cancels the managed GTD expiry for the given order.
@@ -5747,6 +5830,143 @@ class IndicatorEventStrategy:
                 }
                 _ => unreachable!("unhandled order callback case: {method_name}"),
             });
+        });
+    }
+
+    #[derive(Debug)]
+    struct NeutralCallbackCapacityContext;
+
+    struct EnteredNeutralCallbackCapacity;
+
+    impl nautilus_common::owner_delivery::OwnerControlContext for NeutralCallbackCapacityContext {
+        fn enter(
+            &self,
+        ) -> Result<
+            Box<dyn nautilus_common::owner_delivery::EnteredOwnerControl>,
+            nautilus_common::owner_delivery::OwnerDeliveryError,
+        > {
+            Ok(Box::new(EnteredNeutralCallbackCapacity))
+        }
+    }
+
+    impl nautilus_common::owner_delivery::EnteredOwnerControl for EnteredNeutralCallbackCapacity {
+        fn finish(
+            &mut self,
+            _failed: bool,
+        ) -> Result<(), nautilus_common::owner_delivery::OwnerDeliveryError> {
+            Ok(())
+        }
+    }
+
+    #[rstest::rstest]
+    fn test_owner_capacity_fault_survives_python_strategy_trait_discarded_result() {
+        use std::cell::Cell;
+
+        use nautilus_common::{
+            messages::execution::QueryAccount,
+            msgbus::{Endpoint, MStr, TypedIntoHandler},
+            owner_delivery::{
+                OwnerDelivery, OwnerDeliveryError, SubmissionBinding, capture_control_command,
+                current_observer,
+            },
+            runner::TradingCommandMessage,
+        };
+
+        pyo3::Python::initialize();
+        let owner = OwnerDelivery::new();
+        let _owner_binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let (python_strategy, mut native_strategy) =
+            Python::attach(create_registered_tracking_strategy);
+        native_strategy.py_start().unwrap();
+        let target_refcount = || {
+            Python::attach(|py| {
+                py.import("sys")
+                    .unwrap()
+                    .call_method1("getrefcount", (python_strategy.bind(py),))
+                    .unwrap()
+                    .extract::<isize>()
+                    .unwrap()
+            })
+        };
+        let initial_refcount = target_refcount();
+        let events: Vec<_> = (0..1025)
+            .map(|_| OrderCanceled {
+                event_id: UUID4::new(),
+                ..OrderCanceled::default()
+            })
+            .collect();
+        let expected_events = events.clone();
+        let strategy = Rc::new(RefCell::new(native_strategy));
+        let invocations = Rc::new(Cell::new(0));
+        let invocations_copy = invocations.clone();
+        let endpoint: MStr<Endpoint> = "OwnerDelivery.neutralCallbackCapacity".into();
+        let handler = TypedIntoHandler::from(move |_command: TradingCommand| {
+            invocations_copy.set(invocations_copy.get() + 1);
+            if invocations_copy.get() == 1 {
+                for event in &events {
+                    // Exercise the real void trait outlet which discards dispatch's PyResult.
+                    Strategy::on_order_canceled(strategy.borrow_mut().inner_mut(), event);
+                }
+            }
+        });
+        msgbus::register_trading_command_endpoint(endpoint, handler);
+        let command_ids = [UUID4::new(), UUID4::new()];
+        {
+            let _submission =
+                SubmissionBinding::new(Rc::new(NeutralCallbackCapacityContext)).unwrap();
+            for command_id in command_ids {
+                let command = TradingCommand::QueryAccount(QueryAccount::new(
+                    TraderId::from("TRADER-001"),
+                    None,
+                    AccountId::from("SIM-001"),
+                    command_id,
+                    UnixNanos::from(1),
+                    None,
+                    None,
+                ));
+                assert!(
+                    capture_control_command(TradingCommandMessage::new(endpoint, command))
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+        assert_eq!(owner.drain(), Err(OwnerDeliveryError::Capacity));
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::Capacity));
+        let retained = observer.retained_deliveries().unwrap();
+        assert_eq!(retained.len(), expected_events.len());
+        for (item, event) in retained.iter().zip(&expected_events) {
+            assert_eq!(item.event, OrderEventAny::Canceled(*event));
+            assert_eq!(item.event_id, event.event_id);
+            assert_eq!(item.cause.command_id, command_ids[0]);
+            assert_eq!(item.cause.sequence, 1);
+            assert!(item.cause.parent_event_id.is_none());
+        }
+        assert_eq!(
+            retained.last().unwrap().error,
+            Some(OwnerDeliveryError::Capacity)
+        );
+        assert_eq!(
+            owner.drain(),
+            Err(OwnerDeliveryError::Capacity),
+            "failure is sticky and cannot deliver a retained phase on a second drain"
+        );
+        assert_eq!(
+            invocations.get(),
+            1,
+            "capacity failure must stop the next original command"
+        );
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        Python::attach(|py| {
+            assert!(
+                target_refcount() >= initial_refcount + 1025,
+                "every captured item must keep its actual Python target strongly owned"
+            );
+            assert_eq!(
+                python_method_call_count(&python_strategy, py, "on_order_canceled"),
+                0
+            );
         });
     }
 

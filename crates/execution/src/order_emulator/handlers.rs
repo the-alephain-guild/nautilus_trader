@@ -16,7 +16,7 @@
 use std::{any::Any, collections::VecDeque};
 
 use nautilus_common::{messages::execution::TradingCommand, msgbus::Handler};
-use nautilus_core::WeakCell;
+use nautilus_core::{SharedCell, WeakCell};
 use nautilus_model::events::OrderEventAny;
 use ustr::Ustr;
 
@@ -44,7 +44,19 @@ impl Handler<dyn Any> for OrderEmulatorExecuteHandler {
     fn handle(&self, msg: &dyn Any) {
         if let Some(emulator) = self.emulator.upgrade() {
             if let Some(command) = msg.downcast_ref::<TradingCommand>() {
-                emulator.borrow_mut().execute(command.clone());
+                let message = nautilus_common::runner::TradingCommandMessage::new(
+                    nautilus_common::msgbus::MessagingSwitchboard::order_emulator_execute(),
+                    command.clone(),
+                );
+                let command =
+                    match nautilus_common::owner_delivery::capture_registered_control_command(
+                        message,
+                    ) {
+                        Ok(Some(message)) => message.into_parts().1,
+                        Ok(None) | Err(_) => return,
+                    };
+                emulator.borrow_mut().execute(command);
+                schedule_owner_continuation(&emulator);
             } else {
                 log::error!("OrderEmulator received unexpected message type");
             }
@@ -82,18 +94,53 @@ impl Handler<OrderEventAny> for OrderEmulatorOnEventHandler {
 
     fn handle(&self, event: &OrderEventAny) {
         if let Some(emulator) = self.emulator.upgrade() {
-            match emulator.try_borrow_mut() {
-                Ok(mut emulator) => emulator.on_event(event),
+            let handled = match emulator.try_borrow_mut() {
+                Ok(mut emulator) => {
+                    emulator.on_event(event);
+                    true
+                }
                 Err(_) => {
                     // The emulator published this event while handling another
                     // call; defer it so contingency handling is not dropped.
                     if let Some(pending) = self.pending_messages.upgrade() {
-                        pending
-                            .borrow_mut()
-                            .push_back(PendingMessage::Event(Box::new(event.clone())));
+                        let message = PendingMessage::Event(Box::new(event.clone()));
+                        let message = if let Some(continuation) =
+                            nautilus_common::owner_delivery::current_continuation()
+                        {
+                            PendingMessage::Controlled {
+                                message: Box::new(message),
+                                continuation: continuation
+                                    .with_parent_event(event.clone().into_boxed().id()),
+                            }
+                        } else {
+                            message
+                        };
+                        pending.borrow_mut().push_back(message);
                     }
+                    false
                 }
+            };
+            if handled {
+                schedule_owner_continuation(&emulator);
             }
         }
+    }
+}
+
+pub(super) fn schedule_owner_continuation(emulator: &SharedCell<OrderEmulator>) {
+    let Some((continuation, requires_control)) = emulator.borrow().pending_owner_phase() else {
+        return;
+    };
+    let emulator = emulator.clone();
+    let result = continuation.schedule(
+        requires_control,
+        Box::new(move || {
+            let result = emulator.borrow_mut().resume_one_owner_phase();
+            schedule_owner_continuation(&emulator);
+            result
+        }),
+    );
+    if let Err(error) = result {
+        nautilus_common::owner_delivery::record_failure(error);
     }
 }

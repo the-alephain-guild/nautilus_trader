@@ -22,6 +22,7 @@
 
 pub mod algorithm;
 pub mod controller;
+mod owner_delivery;
 pub mod sessions;
 pub mod strategy;
 

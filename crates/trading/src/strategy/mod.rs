@@ -2402,7 +2402,7 @@ fn publish_order_initialized(order: &OrderAny) {
 fn send_emulator_command(command: TradingCommand) {
     log_cmd_send(&command);
     let endpoint = MessagingSwitchboard::order_emulator_execute();
-    msgbus::send_trading_command(endpoint, command);
+    send_owner_control_or_original(endpoint, command);
 }
 
 fn send_algo_command(command: SubmitOrder, exec_algorithm_id: ExecAlgorithmId) {
@@ -2416,13 +2416,28 @@ fn send_algo_command(command: SubmitOrder, exec_algorithm_id: ExecAlgorithmId) {
 fn send_risk_command(command: TradingCommand) {
     log_cmd_send(&command);
     let endpoint = MessagingSwitchboard::risk_engine_queue_execute();
-    msgbus::send_trading_command(endpoint, command);
+    send_owner_control_or_original(endpoint, command);
 }
 
 fn send_exec_command(command: TradingCommand) {
     log_cmd_send(&command);
     let endpoint = MessagingSwitchboard::exec_engine_queue_execute();
-    msgbus::send_trading_command(endpoint, command);
+    send_owner_control_or_original(endpoint, command);
+}
+
+fn send_owner_control_or_original(
+    endpoint: nautilus_common::msgbus::MStr<nautilus_common::msgbus::Endpoint>,
+    command: TradingCommand,
+) {
+    let message = nautilus_common::runner::TradingCommandMessage::new(endpoint, command);
+    match nautilus_common::owner_delivery::capture_control_command(message) {
+        Ok(Some(message)) => {
+            let (endpoint, command) = message.into_parts();
+            msgbus::send_trading_command(endpoint, command);
+        }
+        Ok(None) => {}
+        Err(error) => nautilus_common::owner_delivery::record_failure(error),
+    }
 }
 
 fn log_cmd_send(command: &TradingCommand) {

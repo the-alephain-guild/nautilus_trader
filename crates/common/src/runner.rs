@@ -546,6 +546,12 @@ impl TradingCommandMessage {
         self.endpoint
     }
 
+    /// Returns the unchanged direct endpoint and original typed command.
+    #[must_use]
+    pub fn into_parts(self) -> (MStr<Endpoint>, TradingCommand) {
+        (self.endpoint, self.command)
+    }
+
     /// Dispatches the command and returns commands deferred by the endpoint handler.
     #[must_use]
     pub fn dispatch(self) -> Vec<Self> {
