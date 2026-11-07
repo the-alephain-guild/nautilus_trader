@@ -3137,6 +3137,1043 @@ asyncio.run(exercise())
         }
     }
 
+    #[pyo3::pyclass(unsendable)]
+    struct FlipCallbackStateProbe {
+        engine: Rc<RefCell<ExecutionEngine>>,
+        cache: Rc<RefCell<Cache>>,
+        account_id: AccountId,
+    }
+
+    #[pyo3::pymethods]
+    impl FlipCallbackStateProbe {
+        fn __call__(&self, position_id: PositionId) -> (bool, String, String) {
+            let borrow = self.engine.try_borrow_mut();
+            let available = borrow.is_ok();
+            drop(borrow);
+            let cache = self.cache.borrow();
+            let account = cache.account_owned(&self.account_id).unwrap();
+            let position = cache.position_owned(&position_id).unwrap();
+            (
+                available,
+                serde_json::to_string(&account).unwrap(),
+                serde_json::to_string(&position).unwrap(),
+            )
+        }
+    }
+
+    #[rstest]
+    #[case::long_to_short(true)]
+    #[case::short_to_long(false)]
+    fn test_hosted_netting_flip_delivers_completed_fill(#[case] initially_long: bool) {
+        run_hosted_netting_flip(initially_long, false, false);
+    }
+
+    #[rstest]
+    fn test_hosted_netting_flip_retains_closed_callback_fault() {
+        run_hosted_netting_flip(true, true, false);
+    }
+
+    #[rstest]
+    #[ignore = "requires explicit CUSTOS_SOURCE_ROOT and compatible Custos PYO3_PYTHON"]
+    fn test_cross_repo_netting_flip_retains_signed_child_after_closed_fault() {
+        run_hosted_netting_flip(true, true, true);
+    }
+
+    fn run_hosted_netting_flip(initially_long: bool, fail_closed: bool, signed_child: bool) {
+        use nautilus_common::owner_delivery::{
+            self, OwnerDeliveryCause, OwnerDeliveryError, OwnerExternalEvent, OwnerIncomingOrder,
+            OwnerIncomingStage, OwnerObserver,
+        };
+        use nautilus_model::python::orders::order_any_to_pyobject;
+        use nautilus_trading::python::strategy::PyStrategy;
+        use pyo3::types::PyTypeMethods;
+
+        type FlipRow = (String, String, String, String, String, String, bool);
+        type FlipDeliveryStatus = (bool, Option<(usize, Option<String>)>);
+
+        fn typed_value(event: &OwnerExternalEvent) -> serde_json::Value {
+            match event {
+                OwnerExternalEvent::Order(event) => serde_json::to_value(event).unwrap(),
+                OwnerExternalEvent::Position(PositionEvent::PositionOpened(event)) => {
+                    serde_json::to_value(event).unwrap()
+                }
+                OwnerExternalEvent::Position(PositionEvent::PositionClosed(event)) => {
+                    serde_json::to_value(event).unwrap()
+                }
+                other => panic!("unexpected typed output {other:?}"),
+            }
+        }
+
+        struct FlipTap {
+            incoming: Rc<RefCell<Vec<OrderEventAny>>>,
+            outputs: Rc<RefCell<Vec<OwnerExternalEvent>>>,
+            owner: Rc<RefCell<Option<OwnerObserver>>>,
+            native_cancels: Rc<RefCell<Vec<TradingCommand>>>,
+        }
+        impl BusTap for FlipTap {
+            fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+                if endpoint == MessagingSwitchboard::order_emulator_execute()
+                    && let Some(command @ TradingCommand::CancelOrder(_)) =
+                        message.downcast_ref::<TradingCommand>()
+                {
+                    self.native_cancels.borrow_mut().push(command.clone());
+                }
+                if endpoint == MessagingSwitchboard::exec_engine_process()
+                    && let Some(event) = message.downcast_ref::<OrderEventAny>()
+                {
+                    self.incoming.borrow_mut().push(event.clone());
+                    self.owner
+                        .borrow_mut()
+                        .get_or_insert_with(|| owner_delivery::current_observer().unwrap());
+                }
+            }
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn Any) {
+                if let Some(event) = message.downcast_ref::<OrderEventAny>()
+                    && topic.as_str() == format!("events.order.{}", event.strategy_id())
+                    && matches!(event, OrderEventAny::Filled(_))
+                {
+                    self.outputs
+                        .borrow_mut()
+                        .push(OwnerExternalEvent::Order(event.clone()));
+                }
+                if let Some(event) = message.downcast_ref::<PositionEvent>()
+                    && topic.as_str().starts_with("events.position.")
+                {
+                    self.outputs
+                        .borrow_mut()
+                        .push(OwnerExternalEvent::Position(event.clone()));
+                }
+            }
+        }
+
+        Python::initialize();
+        let signed_fixture =
+            signed_child.then(|| super::hosted_control_cancel::CustosControlFixture::new(true));
+        let trader_id = TraderId::from("FLIP-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("FLIP");
+        let node = LiveNodeBuilder::from_config(LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: Duration::from_secs(3),
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::ZERO,
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap()
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let clock = node.kernel().clock();
+        let mut perpetual = crypto_perpetual_ethusdt();
+        perpetual.id = InstrumentId::from("FLIP.SIM");
+        perpetual.maker_fee = Decimal::new(1, 3);
+        perpetual.taker_fee = Decimal::new(1, 3);
+        let instrument = InstrumentAny::CryptoPerpetual(perpetual);
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let observer = Python::attach(|py| {
+            let module = PyModule::new(py, "hosted_netting_flip_observer").unwrap();
+            module
+                .setattr("Strategy", py.get_type::<PyStrategy>())
+                .unwrap();
+            module
+                .setattr("client_id", client_id.into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr("account_id", account_id.into_py_any(py).unwrap())
+                .unwrap();
+            module.setattr("fail_closed", fail_closed).unwrap();
+            if let Some(fixture) = &signed_fixture {
+                module
+                    .setattr("signed_fixture", fixture.module.bind(py))
+                    .unwrap();
+            } else {
+                module.setattr("signed_fixture", py.None()).unwrap();
+            }
+            module
+                .setattr(
+                    "control_id",
+                    ClientOrderId::from("FLIP-CONTROL").into_py_any(py).unwrap(),
+                )
+                .unwrap();
+            module
+                .setattr(
+                    "native_state",
+                    pyo3::Py::new(
+                        py,
+                        FlipCallbackStateProbe {
+                            engine: engine.clone(),
+                            cache: cache.clone(),
+                            account_id,
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            py.run(c_str!(r#"
+import asyncio
+import sqlite3
+import tempfile
+from pathlib import Path
+import os
+
+directory = tempfile.TemporaryDirectory()
+database = signed_fixture.outbox_database if signed_fixture is not None else Path(directory.name) / "flip.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE deliveries(kind TEXT, event_id TEXT, outlet TEXT, position_id TEXT, quantity TEXT, side TEXT, borrow_free INTEGER)")
+records = []
+payloads = []
+states = []
+errors = []
+done = False
+node_error = None
+stop_status = None
+control_at_start = None
+control_requests = []
+original_authority = signed_fixture.boundary.platform_opening_gate.authority if signed_fixture is not None else None
+database_identity = (str(database.resolve()), os.stat(database).st_dev, os.stat(database).st_ino)
+
+def observe(outlet, event):
+    position = strategy.cache.position(event.position_id)
+    native_free, account_json, position_json = native_state(event.position_id)
+    row = (type(event).__name__, str(event.event_id), outlet, str(event.position_id),
+           str(position.quantity), str(position.side), native_free)
+    with sqlite3.connect(database, timeout=0) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO deliveries VALUES (?, ?, ?, ?, ?, ?, ?)", row)
+    records.append(row)
+    payloads.append((outlet, event))
+    states.append((str(event.event_id), account_json, position_json))
+
+class FlipStrategy(Strategy):
+    def on_start(self):
+        global control_at_start
+        if signed_fixture is not None:
+            # Standalone local history predates the control-only gate; no financial grant is added.
+            self.submit_order(control_order, client_id=client_id)
+            control_at_start = str(self.cache.order(control_id).status)
+        self.submit_order(self.orders[0], client_id=client_id)
+    def on_stop(self):
+        global stop_status
+        stop_status = self._control_delivery_status()
+    def on_dispose(self): pass
+    def on_order_filled(self, event): observe("specific", event)
+    def on_order_event(self, event):
+        if type(event).__name__ == "OrderFilled": observe("aggregate", event)
+    def on_position_opened(self, event):
+        observe("specific", event)
+        if event.opening_order_id == self.orders[0].client_order_id:
+            self.submit_order(self.orders[1], client_id=client_id)
+    def on_position_closed(self, event):
+        observe("specific", event)
+        if fail_closed:
+            if signed_fixture is not None:
+                signed_fixture.install_order_gate(self, signed_fixture.gate)
+                before = self.clock.timestamp_ns()
+                self.cancel_order(control_id, client_id=client_id, params={"closed_parent": str(event.event_id)})
+                after = self.clock.timestamp_ns()
+                control_requests.append((str(event.event_id), before, after, str(self.cache.order(control_id).status)))
+            enqueue_query(str(event.event_id), event.ts_init)
+            send_late()
+            try:
+                raise ValueError("closed callback:" + str(event.event_id))
+            except ValueError as error:
+                errors.append(repr(error))
+                raise
+    def on_position_event(self, event):
+        global done
+        observe("aggregate", event)
+        if type(event).__name__ == "PositionOpened" and event.opening_order_id == self.orders[1].client_order_id:
+            done = True
+
+strategy = FlipStrategy()
+def mark_waiting(): pass
+def persisted():
+    with sqlite3.connect(database, timeout=0) as connection:
+        return [(a,b,c,d,e,f,bool(g)) for a,b,c,d,e,f,g in connection.execute("SELECT * FROM deliveries ORDER BY rowid")]
+def cleanup(): directory.cleanup()
+"#), Some(&module.dict()), None).unwrap();
+            module.unbind()
+        });
+        let strategy = Python::attach(|py| observer.bind(py).getattr("strategy").unwrap().unbind());
+        let strategy_id = node
+            .kernel()
+            .trader()
+            .borrow_mut()
+            .add_python_strategy_instance(&strategy)
+            .unwrap();
+        if signed_child {
+            use nautilus_model::enums::TriggerType;
+            let control_order = OrderTestBuilder::new(OrderType::StopLimit)
+                .trader_id(trader_id)
+                .strategy_id(strategy_id)
+                .instrument_id(instrument.id())
+                .client_order_id(ClientOrderId::from("FLIP-CONTROL"))
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from("0.100"))
+                .price(Price::from("101.00"))
+                .trigger_price(Price::from("101.00"))
+                .trigger_type(TriggerType::BidAsk)
+                .emulation_trigger(TriggerType::BidAsk)
+                .build();
+            Python::attach(|py| {
+                observer
+                    .bind(py)
+                    .setattr(
+                        "control_order",
+                        order_any_to_pyobject(py, control_order).unwrap(),
+                    )
+                    .unwrap();
+            });
+        }
+        let orders: Vec<_> = [
+            ("FLIP-OPEN", initially_long, "1.000"),
+            ("FLIP-CROSS", !initially_long, "1.500"),
+        ]
+        .into_iter()
+        .map(|(id, buy, quantity)| {
+            OrderTestBuilder::new(OrderType::Limit)
+                .trader_id(trader_id)
+                .strategy_id(strategy_id)
+                .instrument_id(instrument.id())
+                .client_order_id(id.into())
+                .side(if buy { OrderSide::Buy } else { OrderSide::Sell })
+                .quantity(Quantity::from(quantity))
+                .price(Price::from(if buy { "100.02" } else { "100.00" }))
+                .build()
+        })
+        .collect();
+        Python::attach(|py| {
+            strategy
+                .bind(py)
+                .setattr(
+                    "orders",
+                    orders
+                        .iter()
+                        .map(|order| order_any_to_pyobject(py, order.clone()).unwrap())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+        });
+        let config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            oms_type: OmsType::Netting,
+            account_type: AccountType::Margin,
+            base_currency: Some(Currency::USDT()),
+            starting_balances: vec![Money::from("1000000 USDT")],
+            ..Default::default()
+        };
+        let late_order = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(trader_id)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument.id())
+            .client_order_id("FLIP-LATE".into())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("1.000"))
+            .price(Price::from("99.00"))
+            .build();
+        let late_input = TestOrderEventStubs::submitted(&late_order, account_id);
+        if fail_closed {
+            cache
+                .borrow_mut()
+                .add_order(late_order.clone(), None, Some(client_id), true)
+                .unwrap();
+        }
+        let late_sender = nautilus_common::live::get_exec_event_sender();
+        let late = Mutex::new(Some(late_input.clone()));
+        Python::attach(|py| {
+            let send_late = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |_args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    late_sender
+                        .send(ExecutionEvent::Order(late.lock().unwrap().take().unwrap()))
+                        .map_err(|error| {
+                            pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                        })
+                },
+            )
+            .unwrap();
+            observer.bind(py).setattr("send_late", send_late).unwrap();
+            let enqueue_query = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    let cause: UUID4 = args
+                        .get_item(0)?
+                        .extract::<String>()?
+                        .parse()
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                    let ts = args.get_item(1)?.extract::<u64>()?;
+                    let mut query = QueryAccount::new(
+                        trader_id,
+                        Some(client_id),
+                        account_id,
+                        UUID4::new(),
+                        UnixNanos::from(ts),
+                        None,
+                        None,
+                    );
+                    query.causation_id = Some(cause);
+                    msgbus::send_trading_command(
+                        MessagingSwitchboard::exec_engine_queue_execute(),
+                        TradingCommand::QueryAccount(query),
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+            observer
+                .bind(py)
+                .setattr("enqueue_query", enqueue_query)
+                .unwrap();
+        });
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            config.venue,
+            config.oms_type,
+            account_id,
+            config.account_type,
+            config.base_currency,
+            cache.clone(),
+        );
+        let inner = SandboxExecutionClient::new(core, config, clock.clone(), cache.clone());
+        let capture = inner.account_capture_probe().unwrap();
+        let stopped = Rc::new(Cell::new(0));
+        engine
+            .borrow_mut()
+            .register_client(ready_hosted_sandbox_client(
+                inner,
+                Python::attach(|py| observer.bind(py).getattr("mark_waiting").unwrap().unbind()),
+                stopped.clone(),
+            ))
+            .unwrap();
+        let incoming = Rc::new(RefCell::new(Vec::new()));
+        let outputs = Rc::new(RefCell::new(Vec::new()));
+        let observed_owner = Rc::new(RefCell::new(None));
+        let native_cancels = Rc::new(RefCell::new(Vec::new()));
+        msgbus::set_bus_tap(Rc::new(FlipTap {
+            incoming: incoming.clone(),
+            outputs: outputs.clone(),
+            owner: observed_owner.clone(),
+            native_cancels: native_cancels.clone(),
+        }));
+        let quote_sender = nautilus_common::live::get_data_event_sender();
+        let quote = QuoteTick::new(
+            instrument.id(),
+            Price::from("100.00"),
+            Price::from("100.02"),
+            Quantity::from("100.000"),
+            Quantity::from("100.000"),
+            clock.borrow().timestamp_ns(),
+            clock.borrow().timestamp_ns(),
+        );
+        quote_sender
+            .send(nautilus_common::messages::DataEvent::Data(Data::Quote(
+                quote,
+            )))
+            .unwrap();
+        let (py_node, result) = Python::attach(|py| {
+            let node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &node).unwrap();
+            globals.set_item("observer", observer.bind(py)).unwrap();
+            let result = py.run(
+                c_str!(
+                    r#"
+import asyncio
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    async def wait_done():
+        while not observer.done:
+            if task.done():
+                await task
+                raise AssertionError("node exited before flip notifications")
+            await asyncio.sleep(0)
+    try:
+        if observer.fail_closed:
+            try:
+                await asyncio.wait_for(task, timeout=3)
+            except TimeoutError:
+                raise
+            except Exception as error:
+                observer.node_error = repr(error)
+            else:
+                raise AssertionError("normal node swallowed Closed callback failure")
+        else:
+            await asyncio.wait_for(wait_done(), timeout=3)
+    finally:
+        node.handle().stop()
+        if not task.done():
+            await asyncio.wait_for(task, timeout=3)
+        elif not observer.fail_closed:
+            await task
+asyncio.run(exercise())
+"#
+                ),
+                Some(&globals),
+                None,
+            );
+            (node, result)
+        });
+        msgbus::clear_bus_tap();
+        let account = cache.borrow().account_owned(&account_id).unwrap();
+        let position_id = PositionId::new(format!("{}-{strategy_id}", instrument.id()));
+        let position = cache.borrow().position_owned(&position_id);
+        let snapshots = cache.borrow().position_snapshots(Some(&position_id), None);
+        let position_indexes = (
+            cache.borrow().is_position_open(&position_id),
+            cache.borrow().is_position_closed(&position_id),
+        );
+        let final_orders: Vec<_> = orders
+            .iter()
+            .map(|order| {
+                cache
+                    .borrow()
+                    .order_owned(&order.client_order_id())
+                    .unwrap()
+            })
+            .collect();
+        let owner = observed_owner.borrow().clone().unwrap();
+        let owner_status = owner.status().unwrap().unwrap();
+        let retained_inputs = owner.retained_incoming_orders().unwrap();
+        let retained_outputs = owner.retained_typed_deliveries().unwrap();
+        let retained_commands = owner.retained_commands().unwrap();
+        let late_after_stop = cache.borrow().order_owned(&late_order.client_order_id());
+        let command_count = engine.borrow().command_count();
+        let control_after_stop = cache
+            .borrow()
+            .order_owned(&ClientOrderId::from("FLIP-CONTROL"));
+        let command_work = owner.retained_command_work().unwrap();
+        assert_eq!(owner.retained_command_work().unwrap(), command_work);
+        if let Some(fixture) = &signed_fixture {
+            Python::attach(|py| {
+                let scope = PyDict::new(py);
+                scope.set_item("observer", observer.bind(py)).unwrap();
+                scope.set_item("fixture", fixture.module.bind(py)).unwrap();
+                py.run(c_str!(r#"
+import os
+assert observer.control_at_start == "EMULATED"
+assert fixture.boundary.platform_opening_gate.authority == observer.original_authority == fixture.EngineLifecycleAuthority.from_verified_command(fixture.verified)
+assert fixture.outbox_identity == fixture.observer_identity
+assert os.path.samefile(observer.database, fixture.outbox_database)
+assert observer.database_identity[1:] == (fixture.outbox_identity["device"], fixture.outbox_identity["inode"])
+assert fixture.source_audit()
+assert not fixture.refusals
+assert not fixture.canceled_callbacks
+"#), Some(&scope), None).unwrap();
+            });
+        }
+        let control_requests: Vec<(String, u64, u64, String)> = Python::attach(|py| {
+            observer
+                .bind(py)
+                .getattr("control_requests")
+                .unwrap()
+                .extract()
+                .unwrap()
+        });
+        let (rows, persisted, state, callback_payloads, states, errors, node_error, stop_status) =
+            Python::attach(|py| {
+                let module = observer.bind(py);
+                let rows: Vec<FlipRow> = module.getattr("records").unwrap().extract().unwrap();
+                let persisted: Vec<FlipRow> =
+                    module.call_method0("persisted").unwrap().extract().unwrap();
+                let state = py_node
+                    .call_method0(py, "handle")
+                    .unwrap()
+                    .getattr(py, "state")
+                    .unwrap()
+                    .extract::<NodeState>(py)
+                    .unwrap();
+                let payloads: Vec<(String, pyo3::Py<pyo3::PyAny>)> =
+                    module.getattr("payloads").unwrap().extract().unwrap();
+                let callback_payloads: Vec<_> = payloads
+                    .into_iter()
+                    .map(|(outlet, event)| {
+                        let kind: String = event.bind(py).get_type().name().unwrap().to_string();
+                        let payload = match kind.as_str() {
+                            "OrderFilled" => OwnerExternalEvent::Order(OrderEventAny::Filled(
+                                event.bind(py).extract::<OrderFilled>().unwrap(),
+                            )),
+                            "PositionClosed" => {
+                                OwnerExternalEvent::Position(PositionEvent::PositionClosed(
+                                    event.bind(py).extract::<PositionClosed>().unwrap(),
+                                ))
+                            }
+                            "PositionOpened" => {
+                                OwnerExternalEvent::Position(PositionEvent::PositionOpened(
+                                    event
+                                        .bind(py)
+                                        .extract::<nautilus_model::events::PositionOpened>()
+                                        .unwrap(),
+                                ))
+                            }
+                            other => panic!("unexpected callback payload {other}"),
+                        };
+                        (outlet, payload)
+                    })
+                    .collect();
+                let states: Vec<(String, String, String)> =
+                    module.getattr("states").unwrap().extract().unwrap();
+                let errors: Vec<String> = module.getattr("errors").unwrap().extract().unwrap();
+                let node_error: Option<String> =
+                    module.getattr("node_error").unwrap().extract().unwrap();
+                let stop_status: FlipDeliveryStatus =
+                    module.getattr("stop_status").unwrap().extract().unwrap();
+                py_node.call_method0(py, "dispose").unwrap();
+                module.call_method0("cleanup").unwrap();
+                (
+                    rows,
+                    persisted,
+                    state,
+                    callback_payloads,
+                    states,
+                    errors,
+                    node_error,
+                    stop_status,
+                )
+            });
+        assert!(
+            result.is_ok(),
+            "flip runtime {result:?}, rows={rows:?}, incoming={:?}, outputs={:?}",
+            incoming.borrow(),
+            outputs.borrow()
+        );
+        assert_eq!(state, NodeState::Stopped);
+        assert!(stopped.get() > 0);
+        assert_eq!(
+            capture.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        assert_eq!(rows, persisted);
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter().all(|row| row.6),
+            "all specific and aggregate callbacks must be outside the native borrow: {rows:?}"
+        );
+        let position = position.unwrap();
+        assert_eq!(position.quantity, Quantity::from("0.500"));
+        assert_eq!(
+            position.side,
+            if initially_long {
+                PositionSide::Short
+            } else {
+                PositionSide::Long
+            }
+        );
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots[0].is_closed());
+        assert_eq!(position_indexes, (true, false));
+        let output_kinds: Vec<_> = outputs
+            .borrow()
+            .iter()
+            .map(|event| match event {
+                OwnerExternalEvent::Order(OrderEventAny::Filled(_)) => "Filled",
+                OwnerExternalEvent::Position(PositionEvent::PositionOpened(_)) => "Opened",
+                OwnerExternalEvent::Position(PositionEvent::PositionClosed(_)) => "Closed",
+                other => panic!("unexpected output {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            output_kinds,
+            ["Filled", "Opened", "Filled", "Closed", "Opened"]
+        );
+        let mut expected_rows = Vec::new();
+        for output in outputs.borrow().iter() {
+            let (kind, id, quantity, side) = match output {
+                OwnerExternalEvent::Order(OrderEventAny::Filled(fill)) => (
+                    "OrderFilled",
+                    fill.event_id,
+                    if fill.client_order_id == orders[0].client_order_id() {
+                        "1.000"
+                    } else {
+                        "0.500"
+                    },
+                    if fill.client_order_id == orders[0].client_order_id() {
+                        initially_long
+                    } else {
+                        !initially_long
+                    },
+                ),
+                OwnerExternalEvent::Position(PositionEvent::PositionOpened(event)) => (
+                    "PositionOpened",
+                    event.event_id,
+                    if event.opening_order_id == orders[0].client_order_id() {
+                        "1.000"
+                    } else {
+                        "0.500"
+                    },
+                    if event.opening_order_id == orders[0].client_order_id() {
+                        initially_long
+                    } else {
+                        !initially_long
+                    },
+                ),
+                OwnerExternalEvent::Position(PositionEvent::PositionClosed(event)) => {
+                    ("PositionClosed", event.event_id, "0.500", !initially_long)
+                }
+                other => panic!("unexpected flip output {other:?}"),
+            };
+            for outlet in ["specific", "aggregate"] {
+                expected_rows.push((
+                    kind.to_owned(),
+                    id.to_string(),
+                    outlet.to_owned(),
+                    position_id.to_string(),
+                    quantity.to_owned(),
+                    if side { "LONG" } else { "SHORT" }.to_owned(),
+                    true,
+                ));
+            }
+        }
+        assert_eq!(rows, expected_rows);
+        assert_eq!(outputs.borrow().len(), 5);
+        assert_eq!(callback_payloads.len(), 10);
+        for ((outlet, actual), (expected_outlet, expected)) in callback_payloads.iter().zip(
+            outputs
+                .borrow()
+                .iter()
+                .flat_map(|event| [("specific", event), ("aggregate", event)]),
+        ) {
+            assert_eq!(outlet, expected_outlet);
+            assert_eq!(
+                typed_value(actual),
+                typed_value(expected),
+                "every Python callback retains the complete published typed original"
+            );
+        }
+        assert_eq!(states.len(), 10);
+        for (_, account_json, position_json) in &states[4..] {
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(account_json).unwrap(),
+                serde_json::to_value(&account).unwrap()
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(position_json).unwrap(),
+                serde_json::to_value(&position).unwrap()
+            );
+        }
+        let original_fills: Vec<_> = incoming
+            .borrow()
+            .iter()
+            .filter_map(|event| {
+                if let OrderEventAny::Filled(fill) = event {
+                    Some(fill.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(original_fills.len(), 2);
+        for (index, original) in original_fills.iter().enumerate() {
+            let canonical: Vec<_> = final_orders[index]
+                .events()
+                .into_iter()
+                .filter_map(|event| {
+                    if let OrderEventAny::Filled(fill) = event {
+                        Some(fill.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(canonical.len(), 1);
+            let mut normalized = original.clone();
+            normalized.position_id = Some(position_id);
+            assert_eq!(canonical[0], normalized);
+            let OwnerExternalEvent::Order(OrderEventAny::Filled(published)) =
+                &outputs.borrow()[index * 2]
+            else {
+                panic!("real published fill required")
+            };
+            assert_eq!(published, &canonical[0]);
+            assert_eq!(canonical[0].liquidity_side, LiquiditySide::Taker);
+            let expected_fee = Money::from_decimal(
+                canonical[0].last_qty.as_decimal()
+                    * canonical[0].last_px.as_decimal()
+                    * instrument.taker_fee(),
+                Currency::USDT(),
+            )
+            .unwrap();
+            assert_eq!(canonical[0].commission, Some(expected_fee));
+            assert_eq!(
+                final_orders[index].commissions().get(&Currency::USDT()),
+                Some(&expected_fee)
+            );
+        }
+        let closing = snapshots[0].events.last().unwrap();
+        let opening = position.events.first().unwrap();
+        assert_eq!(closing.event_id, original_fills[1].event_id);
+        assert_ne!(opening.event_id, closing.event_id);
+        assert_eq!(opening.causation_id, Some(closing.event_id));
+        assert_eq!(opening.trade_id, closing.trade_id);
+        assert_eq!(closing.last_qty, Quantity::from("1.000"));
+        assert_eq!(opening.last_qty, Quantity::from("0.500"));
+        assert_eq!(
+            opening.last_qty + closing.last_qty,
+            original_fills[1].last_qty
+        );
+        assert_eq!(
+            closing.commission.unwrap() + opening.commission.unwrap(),
+            original_fills[1].commission.unwrap()
+        );
+        let fees = original_fills
+            .iter()
+            .fold(Money::zero(Currency::USDT()), |sum, fill| {
+                sum + fill.commission.unwrap()
+            });
+        // Closing one unit across the actual 100.00/100.02 spread loses exactly 0.02.
+        let gross = if initially_long {
+            original_fills[1].last_px.as_decimal() - original_fills[0].last_px.as_decimal()
+        } else {
+            original_fills[0].last_px.as_decimal() - original_fills[1].last_px.as_decimal()
+        } * closing.last_qty.as_decimal();
+        assert_eq!(gross, Decimal::new(-2, 2));
+        let expected_pnl = Money::from_decimal(gross, Currency::USDT()).unwrap() - fees;
+        assert_eq!(
+            account.balance_total(None).unwrap(),
+            Money::from("1000000 USDT") + expected_pnl
+        );
+        assert_eq!(
+            snapshots[0].realized_pnl.unwrap() + position.realized_pnl.unwrap(),
+            expected_pnl
+        );
+        assert_eq!(
+            snapshots[0].closing_order_id,
+            Some(orders[1].client_order_id())
+        );
+        assert_eq!(position.opening_order_id, orders[1].client_order_id());
+        let outputs_ref = outputs.borrow();
+        let OwnerExternalEvent::Position(PositionEvent::PositionClosed(closed)) = &outputs_ref[3]
+        else {
+            panic!("closed output required")
+        };
+        let OwnerExternalEvent::Position(PositionEvent::PositionOpened(opened)) = &outputs_ref[4]
+        else {
+            panic!("opened output required")
+        };
+        // The cache archive assigns its clone a distinct UUID-suffixed ID. This expected-value
+        // normalization never changes the archive or the live cache observed by callbacks.
+        let archive_prefix = format!("{position_id}-");
+        snapshots[0]
+            .id
+            .as_str()
+            .strip_prefix(&archive_prefix)
+            .unwrap()
+            .parse::<UUID4>()
+            .unwrap();
+        let mut closed_cycle = snapshots[0].clone();
+        closed_cycle.id = position_id;
+        assert_eq!(
+            closed,
+            &PositionClosed::create(&closed_cycle, closing, closed.event_id, closed.ts_init)
+        );
+        assert_eq!(
+            opened,
+            &nautilus_model::events::PositionOpened::create(
+                &position,
+                opening,
+                opened.event_id,
+                opened.ts_init
+            )
+        );
+        assert_ne!(closed.event_id, opened.event_id);
+        assert_ne!(closed.event_id, original_fills[1].event_id);
+        assert_eq!(closed.quantity, Quantity::from("0.000"));
+        assert_eq!(opened.quantity, Quantity::from("0.500"));
+        if fail_closed {
+            assert_eq!(
+                errors,
+                [format!("ValueError('closed callback:{}')", closed.event_id)]
+            );
+            assert!(node_error.unwrap().contains("ExternalCallback"));
+            assert_eq!(owner_status.1, Some(OwnerDeliveryError::ExternalCallback));
+            assert!(owner_status.0 > 0);
+            assert_eq!(stop_status.0, signed_child);
+            let stopped_owner = stop_status
+                .1
+                .expect("actual owner status remains available");
+            assert!(stopped_owner.0 > 0 && stopped_owner.1.unwrap().contains("ExternalCallback"));
+            assert_eq!(retained_outputs.len(), 1);
+            assert_eq!(
+                typed_value(&retained_outputs[0].event),
+                typed_value(&outputs_ref[3])
+            );
+            assert_eq!(
+                retained_outputs[0].error,
+                Some(OwnerDeliveryError::ExternalCallback)
+            );
+            let OwnerDeliveryCause::Incoming(cause) = retained_outputs[0].cause else {
+                panic!("real original Incoming cause required")
+            };
+            assert_eq!(cause.event_id, original_fills[1].event_id);
+            assert_ne!(
+                cause.incarnation.to_string(),
+                "00000000-0000-0000-0000-000000000000"
+            );
+            assert_eq!(retained_inputs.len(), 2);
+            for (item, expected, stage) in [
+                (
+                    &retained_inputs[0],
+                    OrderEventAny::Filled(original_fills[1].clone()),
+                    OwnerIncomingStage::DispatchReturned,
+                ),
+                (
+                    &retained_inputs[1],
+                    late_input,
+                    OwnerIncomingStage::NotDispatched,
+                ),
+            ] {
+                let OwnerIncomingOrder::Process(original) = &item.event else {
+                    panic!("original incoming required")
+                };
+                assert_eq!(original, &expected);
+                assert_eq!(item.stage, stage);
+                let original_cause = item.cause.unwrap();
+                assert_eq!(original_cause.event_id, original.clone().into_boxed().id());
+                assert_eq!(original_cause.incarnation, cause.incarnation);
+            }
+            assert!(
+                retained_inputs[1].cause.unwrap().sequence
+                    > retained_inputs[0].cause.unwrap().sequence
+            );
+            assert_eq!(retained_commands.len(), 1);
+            let TradingCommand::QueryAccount(query) = &retained_commands[0].command else {
+                panic!("original queued neutral query required")
+            };
+            assert_eq!(query.causation_id, Some(closed.event_id));
+            assert_eq!(query.account_id, account_id);
+            assert_eq!(
+                retained_commands[0].error,
+                OwnerDeliveryError::ExternalCallback
+            );
+            let late = late_after_stop.unwrap();
+            assert_eq!(late.status(), OrderStatus::Initialized);
+            assert_eq!(
+                late.events().into_iter().cloned().collect::<Vec<_>>(),
+                [OrderEventAny::Initialized(late_order.init_event().clone())]
+            );
+            assert_eq!(
+                command_count, 2,
+                "neither the late incoming nor the queued query may produce a new effect"
+            );
+        } else {
+            assert!(errors.is_empty());
+            assert!(node_error.is_none());
+            assert_eq!(owner_status, (0, None));
+            assert_eq!(stop_status, (false, Some((0, None))));
+            assert!(
+                retained_inputs.is_empty()
+                    && retained_outputs.is_empty()
+                    && retained_commands.is_empty()
+            );
+            assert!(late_after_stop.is_none());
+            assert_eq!(command_count, 2);
+        }
+        assert!(
+            native_cancels.borrow().is_empty(),
+            "no retained Cancel child may reach the native endpoint"
+        );
+        if signed_child {
+            assert_eq!(command_work.len(), 1);
+            let work = &command_work[0];
+            let TradingCommand::CancelOrder(cancel) = &work.command else {
+                panic!("real captured signed Cancel child required")
+            };
+            assert_eq!(control_requests.len(), 1);
+            let (parent, before, after, state) = &control_requests[0];
+            assert_eq!(parent, &closed.event_id.to_string());
+            assert_eq!(state, "EMULATED");
+            assert!(*before <= cancel.ts_init.as_u64() && cancel.ts_init.as_u64() <= *after);
+            assert_eq!(cancel.trader_id, trader_id);
+            assert_eq!(cancel.strategy_id, strategy_id);
+            assert_eq!(cancel.client_id, Some(client_id));
+            assert_eq!(cancel.instrument_id, instrument.id());
+            assert_eq!(cancel.client_order_id, ClientOrderId::from("FLIP-CONTROL"));
+            assert_eq!(cancel.venue_order_id, None);
+            assert_eq!(cancel.correlation_id, None);
+            assert_eq!(
+                cancel.causation_id, None,
+                "native constructor fields are not rewritten to invent a wire parent"
+            );
+            assert_eq!(
+                serde_json::to_value(&cancel.params).unwrap(),
+                serde_json::json!({"closed_parent": closed.event_id.to_string()})
+            );
+            assert_ne!(
+                cancel.command_id.to_string(),
+                "00000000-0000-0000-0000-000000000000"
+            );
+            assert_eq!(work.cause.command_id, cancel.command_id);
+            assert_eq!(work.cause.parent_event_id, Some(closed.event_id));
+            let original_cause = retained_inputs[0].cause.unwrap();
+            assert_eq!(work.cause.incarnation, original_cause.incarnation);
+            assert!(work.cause.sequence > original_cause.sequence);
+            assert!(retained_inputs[1].cause.unwrap().sequence > work.cause.sequence);
+            assert_eq!(
+                work.endpoint,
+                MessagingSwitchboard::order_emulator_execute()
+            );
+            let control = control_after_stop.unwrap();
+            assert_eq!(control.status(), OrderStatus::Emulated);
+            assert_eq!(control.quantity(), Quantity::from("0.100"));
+            assert_eq!(control.filled_qty(), Quantity::from("0.000"));
+            assert!(control.commissions().is_empty());
+            assert_eq!(
+                control
+                    .events()
+                    .iter()
+                    .map(|event| match event {
+                        OrderEventAny::Initialized(_) => "Initialized",
+                        OrderEventAny::Emulated(_) => "Emulated",
+                        other => panic!("retained cancel changed control order {other:?}"),
+                    })
+                    .collect::<Vec<_>>(),
+                ["Initialized", "Emulated"]
+            );
+            // The first complete observed construction is retained for re-read. Its UUID was
+            // generated inside cancel_order, not independently observed before capture.
+            assert_eq!(owner.retained_command_work().unwrap(), command_work);
+            assert_eq!(owner.status().unwrap().unwrap(), owner_status);
+            eprintln!(
+                "signed flip retained original={command_work:?}; request={control_requests:?}; {}",
+                signed_fixture.as_ref().unwrap().diagnostics()
+            );
+        } else {
+            assert!(control_after_stop.is_none());
+            assert!(control_requests.is_empty());
+            assert!(command_work.is_empty());
+        }
+        for cached in &final_orders {
+            assert_eq!(cached.status(), OrderStatus::Filled);
+            assert_eq!(
+                cached
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(event, OrderEventAny::Filled(_)))
+                    .count(),
+                1
+            );
+        }
+    }
+
     #[rstest]
     #[case::base_quantity(false)]
     #[case::quote_quantity(true)]

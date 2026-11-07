@@ -312,6 +312,16 @@ pub struct RetainedOwnerCommand {
     pub error: OwnerDeliveryError,
 }
 
+/// Original control command work retained by an owner, including after admission failure.
+///
+/// This record excludes native continuations without an ingress command and grants no retry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedOwnerCommandWork {
+    pub cause: OwnerCause,
+    pub endpoint: crate::msgbus::MStr<crate::msgbus::Endpoint>,
+    pub command: TradingCommand,
+}
+
 struct Phase {
     binding: PhaseBinding,
     external: VecDeque<External>,
@@ -396,6 +406,39 @@ impl OwnerObserver {
                     endpoint: item.message.endpoint(),
                     command: item.message.command().clone(),
                     error: item.error,
+                })
+                .collect()
+        }))
+    }
+
+    /// Reads original control commands held in retained work, without changing their owner.
+    ///
+    /// Excludes queued work and native continuations without an ingress command. The owner
+    /// status reports its failure separately; this does not assign an error to an unexecuted item.
+    /// A record may follow admission rejection or phase failure and never proves authorization.
+    ///
+    /// # Errors
+    ///
+    /// Refuses access from a different process or thread.
+    pub fn retained_command_work(
+        &self,
+    ) -> Result<Vec<RetainedOwnerCommandWork>, OwnerDeliveryError> {
+        if self.thread != thread::current().id() || self.pid != std::process::id() {
+            return Err(OwnerDeliveryError::WrongOwner);
+        }
+        Ok(self.owner.upgrade().map_or_else(Vec::new, |owner| {
+            owner
+                .borrow()
+                .retained_work
+                .iter()
+                .filter_map(|work| {
+                    let binding = work.binding.control()?;
+                    let ingress = work.ingress.as_ref()?;
+                    Some(RetainedOwnerCommandWork {
+                        cause: binding.cause,
+                        endpoint: ingress.endpoint(),
+                        command: ingress.command().clone(),
+                    })
                 })
                 .collect()
         }))
@@ -1423,6 +1466,14 @@ mod tests {
         let owner = OwnerDelivery::new();
         let _binding = owner.bind().unwrap();
         let _submission = SubmissionBinding::new(Rc::new(NeutralQueryContext)).unwrap();
+        let effects = Rc::new(Cell::new(0));
+        crate::msgbus::register_trading_command_endpoint(
+            "OwnerDelivery.queryCapacity".into(),
+            crate::msgbus::TypedIntoHandler::from({
+                let effects = effects.clone();
+                move |_command: TradingCommand| effects.set(effects.get() + 1)
+            }),
+        );
         let mut last_query = None;
         for index in 0..=CAPACITY {
             let query = TradingCommand::QueryAccount(QueryAccount::new(
@@ -1468,7 +1519,22 @@ mod tests {
                 state.incarnation
             );
         }
+        let records = current_observer().unwrap().retained_command_work().unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "queued commands are not retained-work records"
+        );
+        assert_eq!(records[0].command, last_query.unwrap());
+        assert_eq!(records[0].endpoint, "OwnerDelivery.queryCapacity".into());
+        assert_eq!(records[0].cause.sequence, (CAPACITY + 1) as u64);
+        assert_eq!(records[0].cause.incarnation, owner.0.borrow().incarnation);
         assert_eq!(owner.drain(), Err(OwnerDeliveryError::Capacity));
+        assert_eq!(
+            effects.get(),
+            0,
+            "diagnosing a rejected work item does not admit any effect"
+        );
         assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
     }
 
@@ -1503,6 +1569,171 @@ mod tests {
             None,
             None,
         ))
+    }
+
+    struct FailingCommandWorkDelivery {
+        event: OrderEventAny,
+        endpoint: crate::msgbus::MStr<crate::msgbus::Endpoint>,
+        command: TradingCommand,
+        context: Rc<dyn OwnerControlContext>,
+    }
+
+    impl OwnerExternalAction for FailingCommandWorkDelivery {
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Order(self.event.clone())
+        }
+
+        fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+            let _submission = SubmissionBinding::new(self.context.clone())?;
+            let immediate = capture_control_command(TradingCommandMessage::new(
+                self.endpoint,
+                self.command.clone(),
+            ))?;
+            if immediate.is_some() {
+                return Err(OwnerDeliveryError::UnsupportedEffect);
+            }
+            Err(OwnerDeliveryError::ExternalCallback)
+        }
+    }
+
+    #[rstest::rstest]
+    fn test_retained_command_work_preserves_original_and_context_without_effects() {
+        use crate::msgbus::{self, Endpoint, MStr, TypedIntoHandler};
+
+        let owner = OwnerDelivery::new();
+        let binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let context: Rc<dyn OwnerControlContext> = Rc::new(NeutralQueryContext);
+        let weak_context = Rc::downgrade(&context);
+        let root_endpoint = msgbus::MessagingSwitchboard::exec_engine_process();
+        let child_endpoint: MStr<Endpoint> = "OwnerDelivery.retainedWorkChild".into();
+        let command = neutral_query(UUID4::new());
+        let event = nautilus_model::events::OrderCanceled {
+            event_id: UUID4::new(),
+            ..Default::default()
+        };
+        let parent_event_id = event.event_id;
+        let event = OrderEventAny::Canceled(event);
+        let root_effects = Rc::new(Cell::new(0));
+        let later_effects = Rc::new(Cell::new(0));
+        msgbus::register_trading_command_endpoint(
+            child_endpoint,
+            TypedIntoHandler::from({
+                let effects = later_effects.clone();
+                move |_command: TradingCommand| effects.set(effects.get() + 1)
+            }),
+        );
+        msgbus::register_order_event_endpoint(
+            root_endpoint,
+            TypedIntoHandler::from({
+                let effects = root_effects.clone();
+                let command = command.clone();
+                let context = context.clone();
+                move |event: OrderEventAny| {
+                    effects.set(effects.get() + 1);
+                    assert!(
+                        capture_external(
+                            parent_event_id,
+                            Box::new(FailingCommandWorkDelivery {
+                                event,
+                                endpoint: child_endpoint,
+                                command: command.clone(),
+                                context: context.clone(),
+                            })
+                        )
+                        .unwrap()
+                        .is_none()
+                    );
+                }
+            }),
+        );
+        assert_eq!(
+            dispatch_incoming_orders(vec![OwnerIncomingOrder::Process(event)]),
+            Err(OwnerDeliveryError::ExternalCallback)
+        );
+        assert_eq!(root_effects.get(), 1);
+        assert_eq!(later_effects.get(), 0);
+        let before = (owner.pending(), owner.failure(), Rc::strong_count(&context));
+        let records = observer.retained_command_work().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].command, command);
+        assert_eq!(records[0].endpoint, child_endpoint);
+        let TradingCommand::QueryAccount(query) = &command else {
+            unreachable!()
+        };
+        assert_eq!(records[0].cause.command_id, query.command_id);
+        assert_eq!(records[0].cause.parent_event_id, Some(parent_event_id));
+        assert_eq!(records[0].cause.sequence, 2);
+        assert_eq!(records[0].cause.incarnation, owner.0.borrow().incarnation);
+        {
+            let state = owner.0.borrow();
+            assert_eq!(state.retained_work.len(), 1);
+            let original = state
+                .retained_work
+                .iter()
+                .find(|work| work.ingress.is_some())
+                .unwrap();
+            assert_eq!(original.ingress.as_ref().unwrap().command(), &command);
+            assert_eq!(
+                original.ingress.as_ref().unwrap().endpoint(),
+                child_endpoint
+            );
+            assert!(Rc::ptr_eq(
+                &original.binding.control().unwrap().context,
+                &context
+            ));
+        }
+        assert!(
+            observer.retained_commands().unwrap().is_empty(),
+            "the rejected-command getter keeps its old meaning"
+        );
+        drop(binding);
+        assert_eq!(
+            observer.retained_command_work().unwrap(),
+            records,
+            "observation does not require an ambient binding"
+        );
+        assert_eq!(
+            (owner.pending(), owner.failure(), Rc::strong_count(&context)),
+            before
+        );
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        assert_eq!(later_effects.get(), 0);
+        drop(context);
+        assert!(weak_context.upgrade().is_some());
+        *msgbus::get_message_bus().borrow_mut() = msgbus::MessageBus::default();
+        assert!(
+            weak_context.upgrade().is_some(),
+            "the owner keeps its retained contexts alive"
+        );
+        drop(owner);
+        assert!(observer.retained_command_work().unwrap().is_empty());
+        assert!(weak_context.upgrade().is_none());
+    }
+
+    #[rstest::rstest]
+    fn test_retained_command_work_checks_owner_thread_pid_and_weak_lifetime() {
+        let owner = OwnerDelivery::new();
+        let binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let mut wrong_thread = observer.clone();
+        wrong_thread.thread = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .unwrap();
+        assert_eq!(
+            wrong_thread.retained_command_work(),
+            Err(OwnerDeliveryError::WrongOwner)
+        );
+        let mut wrong_pid = observer.clone();
+        wrong_pid.pid = observer.pid.wrapping_add(1);
+        assert_eq!(
+            wrong_pid.retained_command_work(),
+            Err(OwnerDeliveryError::WrongOwner)
+        );
+        drop(binding);
+        assert!(observer.retained_command_work().unwrap().is_empty());
+        drop(owner);
+        assert!(observer.retained_command_work().unwrap().is_empty());
     }
 
     type ChildAdmission = (
