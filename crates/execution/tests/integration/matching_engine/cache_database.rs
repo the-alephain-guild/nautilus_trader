@@ -46,6 +46,13 @@ use ustr::Ustr;
 struct FailNthAddOrderState {
     fail_add_order_on: Option<usize>,
     add_order_calls: usize,
+    fail_update_position_on: Option<usize>,
+    update_position_calls: usize,
+    fail_update_order_on: Option<usize>,
+    update_order_calls: usize,
+    fail_update_account_on: Option<usize>,
+    update_account_calls: usize,
+    failed_updates: Vec<&'static str>,
     order_snapshots: Vec<OrderSnapshot>,
     position_snapshots: Vec<PositionSnapshot>,
 }
@@ -56,6 +63,32 @@ pub(super) struct FailNthAddOrderDatabaseControl {
 }
 
 impl FailNthAddOrderDatabaseControl {
+    pub(super) fn set_fail_update_order_on(&self, call: Option<usize>) {
+        let mut state = self.state.lock();
+        state.fail_update_order_on = call;
+        state.update_order_calls = 0;
+    }
+
+    pub(super) fn set_fail_update_account_on(&self, call: Option<usize>) {
+        let mut state = self.state.lock();
+        state.fail_update_account_on = call;
+        state.update_account_calls = 0;
+    }
+
+    pub(super) fn failed_updates(&self) -> Vec<&'static str> {
+        self.state.lock().failed_updates.clone()
+    }
+
+    pub(super) fn set_fail_update_position_on(&self, call: Option<usize>) {
+        let mut state = self.state.lock();
+        state.fail_update_position_on = call;
+        state.update_position_calls = 0;
+    }
+
+    pub(super) fn update_position_calls(&self) -> usize {
+        self.state.lock().update_position_calls
+    }
+
     pub(super) fn set_fail_add_order_on(&self, call: Option<usize>) {
         let mut state = self.state.lock();
         state.fail_add_order_on = call;
@@ -362,14 +395,32 @@ impl CacheDatabaseAdapter for FailNthAddOrderDatabase {
     }
 
     fn update_account(&self, _account: &AccountAny) -> anyhow::Result<()> {
+        let mut state = self.control.state.lock();
+        state.update_account_calls += 1;
+        if state.fail_update_account_on == Some(state.update_account_calls) {
+            state.failed_updates.push("account");
+            anyhow::bail!("Injected post-commit update_account failure");
+        }
         Ok(())
     }
 
     fn update_order(&self, _order_event: &OrderEventAny) -> anyhow::Result<()> {
+        let mut state = self.control.state.lock();
+        state.update_order_calls += 1;
+        if state.fail_update_order_on == Some(state.update_order_calls) {
+            state.failed_updates.push("order");
+            anyhow::bail!("Injected post-commit update_order failure");
+        }
         Ok(())
     }
 
     fn update_position(&self, _position: &Position) -> anyhow::Result<()> {
+        let mut state = self.control.state.lock();
+        state.update_position_calls += 1;
+        if state.fail_update_position_on == Some(state.update_position_calls) {
+            state.failed_updates.push("position");
+            anyhow::bail!("Injected post-commit update_position failure");
+        }
         Ok(())
     }
 

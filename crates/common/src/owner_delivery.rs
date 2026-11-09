@@ -17,6 +17,7 @@
 //!
 //! A context is a current control check, never permission to submit an order.
 
+mod report;
 use std::{
     cell::RefCell,
     collections::VecDeque,
@@ -28,6 +29,8 @@ use std::{
 
 use nautilus_core::UUID4;
 use nautilus_model::events::{OrderEventAny, OrderInitialized, PositionEvent};
+pub use report::*;
+use report::{QueueItem, ReportTask};
 
 use crate::{messages::execution::TradingCommand, runner::TradingCommandMessage};
 
@@ -147,10 +150,15 @@ pub struct RetainedIncomingOrder {
     pub error: OwnerDeliveryError,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "retained typed delivery owns its cause without a second allocation"
+)]
 pub enum OwnerDeliveryCause {
     Control(OwnerCause),
     Incoming(OwnerIncomingCause),
+    Report(OwnerReportCause),
 }
 
 #[derive(Clone, Debug)]
@@ -176,19 +184,45 @@ pub trait OwnerExternalAction {
 struct Binding {
     context: Rc<dyn OwnerControlContext>,
     cause: OwnerCause,
+    report_ancestor: Option<OwnerReportTicket>,
 }
 
 #[derive(Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the same-thread phase owns its binding inline"
+)]
 enum PhaseBinding {
     Control(Binding),
     Incoming(OwnerIncomingCause),
+    Report {
+        cause: OwnerReportCause,
+        control: Option<Binding>,
+    },
 }
 
 impl PhaseBinding {
+    fn report_ancestor(&self) -> Option<OwnerReportTicket> {
+        match self {
+            Self::Report { cause, .. } => Some(cause.ticket),
+            Self::Control(binding) => binding.report_ancestor,
+            Self::Incoming(_) => None,
+        }
+    }
+
+    fn collects_callback_children(&self) -> bool {
+        !matches!(self, Self::Control(_)) || self.report_ancestor().is_some()
+    }
+
+    fn collects_native_children(&self) -> bool {
+        matches!(self, Self::Control(binding) if binding.report_ancestor.is_some())
+    }
+
     fn control(&self) -> Option<&Binding> {
         match self {
             Self::Control(binding) => Some(binding),
             Self::Incoming(_) => None,
+            Self::Report { control, .. } => control.as_ref(),
         }
     }
 
@@ -196,6 +230,15 @@ impl PhaseBinding {
         match self {
             Self::Control(binding) => binding.cause.incarnation,
             Self::Incoming(cause) => cause.incarnation,
+            Self::Report { cause, .. } => cause.incarnation,
+        }
+    }
+
+    fn control_mut(&mut self) -> Option<&mut Binding> {
+        match self {
+            Self::Control(binding) => Some(binding),
+            Self::Incoming(_) => None,
+            Self::Report { control, .. } => control.as_mut(),
         }
     }
 }
@@ -238,14 +281,22 @@ impl OwnerContinuation {
             return PHASE.with(|phase| {
                 let mut phase = phase.borrow_mut();
                 let phase = phase.as_mut().ok_or(OwnerDeliveryError::Unbound)?;
-                let overflow = phase.continuations.len() >= CAPACITY;
-                phase.continuations.push(Work {
-                    binding: self.0.into(),
-                    requires_control,
-                    action,
-                    ingress: None,
-                    incoming: None,
-                });
+                let overflow = phase
+                    .continuations
+                    .iter()
+                    .map(QueueItem::admission_cost)
+                    .sum::<usize>()
+                    >= CAPACITY;
+                phase.continuations.push(
+                    Work {
+                        binding: self.0.into(),
+                        requires_control,
+                        action,
+                        ingress: None,
+                        incoming: None,
+                    }
+                    .into(),
+                );
                 if overflow {
                     record_failure(OwnerDeliveryError::Capacity);
                     return Err(OwnerDeliveryError::Capacity);
@@ -325,7 +376,7 @@ pub struct RetainedOwnerCommandWork {
 struct Phase {
     binding: PhaseBinding,
     external: VecDeque<External>,
-    continuations: Vec<Work>,
+    continuations: Vec<QueueItem>,
     ingress: Option<TradingCommandMessage>,
     incoming: Option<OwnerIncomingOrder>,
 }
@@ -334,7 +385,7 @@ struct Delivery {
     binding: PhaseBinding,
     event_id: UUID4,
     preceding_children: usize,
-    continuations: Vec<Work>,
+    continuations: Vec<QueueItem>,
 }
 
 struct RetainedCommand {
@@ -349,14 +400,30 @@ struct State {
     owner: ThreadId,
     pid: u32,
     next_sequence: u64,
-    queue: VecDeque<Work>,
+    queue: VecDeque<QueueItem>,
     retained_external: VecDeque<External>,
     retained_commands: VecDeque<RetainedCommand>,
-    retained_work: VecDeque<Work>,
+    retained_work: VecDeque<QueueItem>,
     retained_incoming_orders: Vec<RetainedIncomingOrder>,
+    reports: Vec<Rc<RefCell<ReportTask>>>,
     failure: Option<OwnerDeliveryError>,
     draining: bool,
     retired: bool,
+}
+
+impl State {
+    fn pending_count(&self) -> usize {
+        let native = |item: &&QueueItem| match item {
+            QueueItem::Native(work) => !matches!(work.binding, PhaseBinding::Report { .. }),
+            QueueItem::ReportResume(_) => false,
+        };
+        self.queue.iter().filter(native).count()
+            + self.retained_work.iter().filter(native).count()
+            + self.retained_external.len()
+            + self.retained_commands.len()
+            + self.retained_incoming_orders.len()
+            + self.reports.len()
+    }
 }
 
 thread_local! {
@@ -431,6 +498,7 @@ impl OwnerObserver {
                 .borrow()
                 .retained_work
                 .iter()
+                .filter_map(QueueItem::work)
                 .filter_map(|work| {
                     let binding = work.binding.control()?;
                     let ingress = work.ingress.as_ref()?;
@@ -443,6 +511,36 @@ impl OwnerObserver {
                 .collect()
         }))
     }
+    /// Reads original control commands still held in this owner's native queue.
+    ///
+    /// Excludes report resumes and continuations without ingress. This observation neither
+    /// authorizes nor executes work, and assigns no outcome to an unexecuted command.
+    ///
+    /// # Errors
+    /// Refuses another process or owner thread, following the observer's weak lifetime.
+    pub fn queued_command_work(&self) -> Result<Vec<RetainedOwnerCommandWork>, OwnerDeliveryError> {
+        if self.thread != thread::current().id() || self.pid != std::process::id() {
+            return Err(OwnerDeliveryError::WrongOwner);
+        }
+        Ok(self.owner.upgrade().map_or_else(Vec::new, |owner| {
+            owner
+                .borrow()
+                .queue
+                .iter()
+                .filter_map(QueueItem::work)
+                .filter_map(|work| {
+                    let binding = work.binding.control()?;
+                    let ingress = work.ingress.as_ref()?;
+                    Some(RetainedOwnerCommandWork {
+                        cause: binding.cause,
+                        endpoint: ingress.endpoint(),
+                        command: ingress.command().clone(),
+                    })
+                })
+                .collect()
+        }))
+    }
+
     /// # Errors
     ///
     /// Refuses access from a different process or thread.
@@ -493,6 +591,9 @@ impl OwnerObserver {
                             OwnerDeliveryCause::Control(binding.cause)
                         }
                         PhaseBinding::Incoming(cause) => OwnerDeliveryCause::Incoming(*cause),
+                        PhaseBinding::Report { cause, .. } => {
+                            OwnerDeliveryCause::Report(cause.clone())
+                        }
                     },
                     event_id: item.event_id,
                     event: item.action.original_event(),
@@ -516,7 +617,12 @@ impl OwnerObserver {
         Ok(self.owner.upgrade().map_or_else(Vec::new, |owner| {
             let state = owner.borrow();
             let mut result = state.retained_incoming_orders.clone();
-            for work in state.queue.iter().chain(&state.retained_work) {
+            for work in state
+                .queue
+                .iter()
+                .chain(&state.retained_work)
+                .filter_map(QueueItem::work)
+            {
                 if let PhaseBinding::Incoming(cause) = &work.binding
                     && let Some(event) = &work.incoming
                 {
@@ -544,14 +650,7 @@ impl OwnerObserver {
         }
         Ok(self.owner.upgrade().map(|owner| {
             let state = owner.borrow();
-            (
-                state.queue.len()
-                    + state.retained_external.len()
-                    + state.retained_commands.len()
-                    + state.retained_work.len()
-                    + state.retained_incoming_orders.len(),
-                state.failure,
-            )
+            (state.pending_count(), state.failure)
         }))
     }
 
@@ -601,6 +700,7 @@ impl OwnerDelivery {
             retained_commands: VecDeque::new(),
             retained_work: VecDeque::new(),
             retained_incoming_orders: Vec::new(),
+            reports: Vec::new(),
             failure: None,
             draining: false,
             retired: false,
@@ -640,33 +740,27 @@ impl OwnerDelivery {
         if let Err(error) = self.check() {
             let mut state = self.0.borrow_mut();
             state.failure.get_or_insert(error);
-            state.retained_work.push_back(work);
+            state.retained_work.push_back(work.into());
             return Err(error);
         }
         let mut state = self.0.borrow_mut();
         if work.binding.incarnation() != state.incarnation {
-            state.retained_work.push_back(work);
+            state.retained_work.push_back(work.into());
             state.failure.get_or_insert(OwnerDeliveryError::WrongOwner);
             return Err(OwnerDeliveryError::WrongOwner);
         }
         let blocked = state.failure.or_else(|| {
-            (state.queue.len()
-                + state.retained_external.len()
-                + state.retained_commands.len()
-                + state.retained_work.len()
-                + state.retained_incoming_orders.len()
-                >= CAPACITY)
-                .then_some(OwnerDeliveryError::Capacity)
+            (state.pending_count() >= CAPACITY).then_some(OwnerDeliveryError::Capacity)
         });
         if let Some(error) = blocked {
             state.failure.get_or_insert(error);
-            state.retained_work.push_back(work);
+            state.retained_work.push_back(work.into());
             return Err(error);
         }
         if front {
-            state.queue.push_front(work);
+            state.queue.push_front(work.into());
         } else {
-            state.queue.push_back(work);
+            state.queue.push_back(work.into());
         }
         Ok(())
     }
@@ -689,20 +783,16 @@ impl OwnerDelivery {
         error
     }
 
-    fn queue_continuations(&self, work: Vec<Work>) -> Result<(), OwnerDeliveryError> {
+    fn queue_continuations(&self, work: Vec<QueueItem>) -> Result<(), OwnerDeliveryError> {
         let mut state = self.0.borrow_mut();
         let error = state.failure.or_else(|| {
             if work
                 .iter()
-                .any(|item| item.binding.incarnation() != state.incarnation)
+                .any(|item| item.incarnation() != state.incarnation)
             {
                 Some(OwnerDeliveryError::WrongOwner)
-            } else if state.queue.len()
-                + state.retained_external.len()
-                + state.retained_commands.len()
-                + state.retained_work.len()
-                + state.retained_incoming_orders.len()
-                + work.len()
+            } else if state.pending_count()
+                + work.iter().map(QueueItem::admission_cost).sum::<usize>()
                 > CAPACITY
             {
                 Some(OwnerDeliveryError::Capacity)
@@ -838,22 +928,30 @@ impl OwnerDelivery {
             if let Some(error) = self.0.borrow().failure {
                 return Err(error);
             }
-            let Some(mut work) = self.0.borrow_mut().queue.pop_front() else {
+            let item = self.0.borrow_mut().queue.pop_front();
+            let Some(item) = item else {
                 return Ok(());
             };
+            let mut work = match item {
+                QueueItem::Native(work) => work,
+                QueueItem::ReportResume(ticket) => match self.resume_report(ticket)? {
+                    Some(work) => work,
+                    None => continue,
+                },
+            };
             if work.binding.incarnation() != self.0.borrow().incarnation {
-                self.0.borrow_mut().queue.push_front(work);
+                self.0.borrow_mut().queue.push_front(work.into());
                 return Err(OwnerDeliveryError::WrongOwner);
             }
             let mut entered = if work.requires_control {
                 let Some(binding) = work.binding.control() else {
-                    self.0.borrow_mut().queue.push_front(work);
+                    self.0.borrow_mut().queue.push_front(work.into());
                     return Err(OwnerDeliveryError::UnsupportedEffect);
                 };
                 match binding.context.enter() {
                     Ok(entered) => Some(entered),
                     Err(error) => {
-                        self.0.borrow_mut().queue.push_front(work);
+                        self.0.borrow_mut().queue.push_front(work.into());
                         return Err(error);
                     }
                 }
@@ -875,7 +973,7 @@ impl OwnerDelivery {
                 true
             });
             if !installed {
-                self.0.borrow_mut().queue.push_front(work);
+                self.0.borrow_mut().queue.push_front(work.into());
                 let exit = entered.as_mut().map_or(Ok(()), |scope| scope.finish(true));
                 drop(entered);
                 exit?;
@@ -894,10 +992,19 @@ impl OwnerDelivery {
                 scope.finish(native.is_err() || self.failure().is_some())
             });
             drop(entered);
-            let phase_failure = exit.err().or_else(|| {
-                self.failure()
-                    .filter(|error| *error == OwnerDeliveryError::Capacity)
-            });
+            let phase_failure = exit
+                .err()
+                .or_else(|| {
+                    self.failure()
+                        .filter(|error| *error == OwnerDeliveryError::Capacity)
+                })
+                .or_else(|| {
+                    if matches!(phase.binding, PhaseBinding::Report { .. }) {
+                        native.err()
+                    } else {
+                        None
+                    }
+                });
             if let Some(error) = phase_failure {
                 self.retain_incoming_phase(&mut phase, incoming_stage, error);
                 self.0
@@ -914,7 +1021,7 @@ impl OwnerDelivery {
             let mut callback_children = Vec::new();
             while let Some(mut external) = phase.external.pop_front() {
                 let mut binding = external.binding.clone();
-                if let PhaseBinding::Control(binding) = &mut binding {
+                if let Some(binding) = binding.control_mut() {
                     binding.cause.parent_event_id = Some(external.event_id);
                 }
                 external.binding = binding.clone();
@@ -924,8 +1031,10 @@ impl OwnerDelivery {
                         event_id: external.event_id,
                         preceding_children: phase
                             .continuations
-                            .len()
-                            .saturating_add(callback_children.len()),
+                            .iter()
+                            .chain(&callback_children)
+                            .map(QueueItem::admission_cost)
+                            .sum(),
                         continuations: Vec::new(),
                     });
                 });
@@ -965,6 +1074,11 @@ impl OwnerDelivery {
                 return Err(error);
             }
             phase.continuations.extend(callback_children);
+            if let PhaseBinding::Report { cause, .. } = &phase.binding {
+                phase
+                    .continuations
+                    .push(QueueItem::ReportResume(cause.ticket));
+            }
             if let Err(error) = self.queue_continuations(std::mem::take(&mut phase.continuations)) {
                 self.retain_incoming_phase(&mut phase, incoming_stage, error);
                 return Err(error);
@@ -975,11 +1089,7 @@ impl OwnerDelivery {
     #[must_use]
     pub fn pending(&self) -> usize {
         let state = self.0.borrow();
-        state.queue.len()
-            + state.retained_external.len()
-            + state.retained_commands.len()
-            + state.retained_work.len()
-            + state.retained_incoming_orders.len()
+        state.pending_count()
     }
 
     #[must_use]
@@ -1001,6 +1111,7 @@ impl OwnerDelivery {
             || !state.retained_commands.is_empty()
             || !state.retained_work.is_empty()
             || !state.retained_incoming_orders.is_empty()
+            || !state.reports.is_empty()
         {
             return Err(OwnerDeliveryError::PendingAtRetirement);
         }
@@ -1200,7 +1311,11 @@ pub fn capture_control_command(
         Ok(cause) => cause,
         Err(error) => return Err(owner.reject_command(origin, context, message, error)),
     };
-    let binding = Binding { context, cause };
+    let binding = Binding {
+        context,
+        cause,
+        report_ancestor: active_report_ancestor(),
+    };
     let ingress = TradingCommandMessage::new(message.endpoint(), message.command().clone());
     queue_callback_child(
         &owner,
@@ -1278,11 +1393,13 @@ pub fn capture_registered_control_command(
     };
     cause.parent_event_id = binding.cause.parent_event_id;
     let ingress = TradingCommandMessage::new(message.endpoint(), message.command().clone());
-    owner.enqueue(
+    queue_registered_child(
+        &owner,
         Work {
             binding: Binding {
                 context: binding.context,
                 cause,
+                report_ancestor: active_report_ancestor(),
             }
             .into(),
             requires_control: true,
@@ -1296,9 +1413,12 @@ pub fn capture_registered_control_command(
                 Ok(())
             }),
         },
-        false,
     )?;
     Ok(None)
+}
+
+fn queue_registered_child(owner: &OwnerDelivery, work: Work) -> Result<(), OwnerDeliveryError> {
+    queue_callback_child(owner, work)
 }
 
 #[must_use]
@@ -1309,6 +1429,24 @@ pub const fn is_control_command(command: &TradingCommand) -> bool {
             | TradingCommand::QueryAccount(_)
             | TradingCommand::QueryOrder(_)
     )
+}
+
+fn active_report_ancestor() -> Option<OwnerReportTicket> {
+    PHASE
+        .with(|phase| {
+            phase
+                .borrow()
+                .as_ref()
+                .and_then(|phase| phase.binding.report_ancestor())
+        })
+        .or_else(|| {
+            DELIVERY.with(|delivery| {
+                delivery
+                    .borrow()
+                    .as_ref()
+                    .and_then(|delivery| delivery.binding.report_ancestor())
+            })
+        })
 }
 
 fn active_binding() -> Option<Binding> {
@@ -1340,51 +1478,99 @@ fn active_parent_event_id() -> Option<UUID4> {
                     .and_then(|phase| match &phase.binding {
                         PhaseBinding::Control(binding) => binding.cause.parent_event_id,
                         PhaseBinding::Incoming(cause) => Some(cause.event_id),
+                        PhaseBinding::Report { cause, .. } => {
+                            cause.canonical_event_id.or(cause.parent_event_id)
+                        }
                     })
             })
         })
 }
 
 fn queue_callback_child(owner: &OwnerDelivery, work: Work) -> Result<(), OwnerDeliveryError> {
+    queue_callback_item(owner, work.into())
+}
+
+fn queue_callback_item(owner: &OwnerDelivery, work: QueueItem) -> Result<(), OwnerDeliveryError> {
     let mut original = Some(work);
-    let handled = DELIVERY.with(|delivery| {
-        let mut delivery = delivery.borrow_mut();
-        let delivery = delivery
-            .as_mut()
-            .filter(|delivery| matches!(delivery.binding, PhaseBinding::Incoming(_)))?;
-        let work = original.take().expect("owned command before admission");
-        let invalid_owner = owner.check().err();
-        let mut state = owner.0.borrow_mut();
-        let error = state.failure.or(invalid_owner).or_else(|| {
-            if work.binding.incarnation() == state.incarnation {
-                let pending = state.queue.len()
-                    + state.retained_external.len()
-                    + state.retained_commands.len()
-                    + state.retained_work.len()
-                    + state.retained_incoming_orders.len();
-                (pending
-                    .saturating_add(delivery.preceding_children)
-                    .saturating_add(delivery.continuations.len())
-                    >= CAPACITY)
-                    .then_some(OwnerDeliveryError::Capacity)
-            } else {
-                Some(OwnerDeliveryError::WrongOwner)
-            }
-        });
-        // These are concrete factory-bound command children, not permission inherited from ingress.
-        // An already-requested rejected child remains owned alongside the accepted prefix.
-        delivery.continuations.push(work);
-        Some(match error {
-            Some(error) => {
-                state.failure.get_or_insert(error);
-                Err(error)
-            }
-            None => Ok(()),
+    let handled = DELIVERY
+        .with(|delivery| {
+            let mut delivery = delivery.borrow_mut();
+            let delivery = delivery
+                .as_mut()
+                .filter(|delivery| delivery.binding.collects_callback_children())?;
+            Some(admit_phase_child(
+                owner,
+                original.take().expect("owned child before admission"),
+                delivery.preceding_children,
+                &mut delivery.continuations,
+            ))
         })
+        .or_else(|| {
+            PHASE.with(|phase| {
+                let mut phase = phase.borrow_mut();
+                let phase = phase
+                    .as_mut()
+                    .filter(|phase| phase.binding.collects_native_children())?;
+                Some(admit_phase_child(
+                    owner,
+                    original
+                        .take()
+                        .expect("owned native child before admission"),
+                    0,
+                    &mut phase.continuations,
+                ))
+            })
+        });
+    if let Some(result) = handled {
+        return result;
+    }
+    match original.expect("unclaimed original command") {
+        QueueItem::Native(work) => owner.enqueue(work, false),
+        QueueItem::ReportResume(ticket) => {
+            owner
+                .0
+                .borrow_mut()
+                .queue
+                .push_back(QueueItem::ReportResume(ticket));
+            Ok(())
+        }
+    }
+}
+
+fn admit_phase_child(
+    owner: &OwnerDelivery,
+    work: QueueItem,
+    preceding_children: usize,
+    continuations: &mut Vec<QueueItem>,
+) -> Result<(), OwnerDeliveryError> {
+    let invalid_owner = owner.check().err();
+    let mut state = owner.0.borrow_mut();
+    let error = state.failure.or(invalid_owner).or_else(|| {
+        if work.incarnation() == state.incarnation {
+            (state
+                .pending_count()
+                .saturating_add(preceding_children)
+                .saturating_add(
+                    continuations
+                        .iter()
+                        .map(QueueItem::admission_cost)
+                        .sum::<usize>(),
+                )
+                .saturating_add(work.admission_cost())
+                > CAPACITY)
+                .then_some(OwnerDeliveryError::Capacity)
+        } else {
+            Some(OwnerDeliveryError::WrongOwner)
+        }
     });
-    match handled {
-        Some(result) => result,
-        None => owner.enqueue(original.expect("unclaimed original command"), false),
+    // Keep rejected original children with their accepted prefix, without inventing permission.
+    continuations.push(work);
+    match error {
+        Some(error) => {
+            state.failure.get_or_insert(error);
+            Err(error)
+        }
+        None => Ok(()),
     }
 }
 
@@ -1397,7 +1583,10 @@ pub fn drain_current() -> Result<(), OwnerDeliveryError> {
     OWNER
         .with(|owner| owner.borrow().clone())
         .map_or(Ok(()), |owner| {
-            if owner.0.borrow().draining {
+            if has_delivery_phase()
+                || DELIVERY.with(|delivery| delivery.borrow().is_some())
+                || owner.0.borrow().draining
+            {
                 return Ok(());
             }
             owner.drain()
@@ -1505,7 +1694,7 @@ mod tests {
             let state = owner.0.borrow();
             assert_eq!(state.queue.len(), CAPACITY);
             assert_eq!(state.retained_work.len(), 1);
-            let last = state.retained_work.back().unwrap();
+            let last = state.retained_work.back().unwrap().work().unwrap();
             assert_eq!(
                 last.ingress.as_ref().unwrap().command(),
                 last_query.as_ref().unwrap()
@@ -1671,6 +1860,7 @@ mod tests {
             let original = state
                 .retained_work
                 .iter()
+                .filter_map(QueueItem::work)
                 .find(|work| work.ingress.is_some())
                 .unwrap();
             assert_eq!(original.ingress.as_ref().unwrap().command(), &command);
@@ -1711,6 +1901,87 @@ mod tests {
         assert!(weak_context.upgrade().is_none());
     }
 
+    #[derive(Debug)]
+    struct RefusingQueueContext;
+
+    impl OwnerControlContext for RefusingQueueContext {
+        fn enter(&self) -> Result<Box<dyn EnteredOwnerControl>, OwnerDeliveryError> {
+            Err(OwnerDeliveryError::ControlEnter)
+        }
+    }
+
+    #[rstest::rstest]
+    fn test_queued_command_work_preserves_enter_refusal_original_and_context() {
+        use crate::msgbus::{self, Endpoint, MStr, TypedIntoHandler};
+
+        let owner = OwnerDelivery::new();
+        let binding = owner.bind().unwrap();
+        let observer = current_observer().unwrap();
+        let context: Rc<dyn OwnerControlContext> = Rc::new(RefusingQueueContext);
+        let weak = Rc::downgrade(&context);
+        let endpoint: MStr<Endpoint> = "OwnerDelivery.queuedEnterRefusal".into();
+        let command = neutral_query(UUID4::new());
+        let effects = Rc::new(Cell::new(0));
+        msgbus::register_trading_command_endpoint(
+            endpoint,
+            TypedIntoHandler::from({
+                let effects = effects.clone();
+                move |_command: TradingCommand| effects.set(effects.get() + 1)
+            }),
+        );
+        {
+            let _submission = SubmissionBinding::new(context.clone()).unwrap();
+            assert!(
+                capture_control_command(TradingCommandMessage::new(endpoint, command.clone()))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(owner.drain(), Err(OwnerDeliveryError::ControlEnter));
+        assert_eq!(effects.get(), 0);
+        let before = (owner.pending(), owner.failure(), Rc::strong_count(&context));
+        let records = observer.queued_command_work().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].command, command);
+        assert_eq!(records[0].endpoint, endpoint);
+        let TradingCommand::QueryAccount(query) = &command else {
+            unreachable!()
+        };
+        assert_eq!(records[0].cause.command_id, query.command_id);
+        assert_eq!(records[0].cause.parent_event_id, None);
+        assert_eq!(records[0].cause.sequence, 1);
+        assert_eq!(records[0].cause.incarnation, owner.0.borrow().incarnation);
+        {
+            let state = owner.0.borrow();
+            let work = state.queue.front().unwrap().work().unwrap();
+            assert!(Rc::ptr_eq(
+                &work.binding.control().unwrap().context,
+                &context
+            ));
+            assert_eq!(work.ingress.as_ref().unwrap().command(), &command);
+            assert_eq!(work.ingress.as_ref().unwrap().endpoint(), endpoint);
+        }
+        assert!(observer.retained_command_work().unwrap().is_empty());
+        assert!(observer.retained_commands().unwrap().is_empty());
+        drop(binding);
+        assert_eq!(observer.queued_command_work().unwrap(), records);
+        assert_eq!(
+            (owner.pending(), owner.failure(), Rc::strong_count(&context)),
+            before
+        );
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+        drop(context);
+        assert!(weak.upgrade().is_some());
+        drop(owner);
+        assert!(observer.queued_command_work().unwrap().is_empty());
+        assert!(weak.upgrade().is_none());
+        assert_eq!(effects.get(), 0);
+        msgbus::register_trading_command_endpoint(
+            endpoint,
+            TypedIntoHandler::from(|_command: TradingCommand| {}),
+        );
+    }
+
     #[rstest::rstest]
     fn test_retained_command_work_checks_owner_thread_pid_and_weak_lifetime() {
         let owner = OwnerDelivery::new();
@@ -1724,16 +1995,26 @@ mod tests {
             wrong_thread.retained_command_work(),
             Err(OwnerDeliveryError::WrongOwner)
         );
+        assert_eq!(
+            wrong_thread.queued_command_work(),
+            Err(OwnerDeliveryError::WrongOwner)
+        );
         let mut wrong_pid = observer.clone();
         wrong_pid.pid = observer.pid.wrapping_add(1);
         assert_eq!(
             wrong_pid.retained_command_work(),
             Err(OwnerDeliveryError::WrongOwner)
         );
+        assert_eq!(
+            wrong_pid.queued_command_work(),
+            Err(OwnerDeliveryError::WrongOwner)
+        );
         drop(binding);
         assert!(observer.retained_command_work().unwrap().is_empty());
+        assert!(observer.queued_command_work().unwrap().is_empty());
         drop(owner);
         assert!(observer.retained_command_work().unwrap().is_empty());
+        assert!(observer.queued_command_work().unwrap().is_empty());
     }
 
     type ChildAdmission = (
@@ -1884,15 +2165,28 @@ mod tests {
         assert_eq!(state.queue.len(), 1);
         assert_eq!(state.retained_work.len(), CAPACITY + 1);
         assert_eq!(
-            state.queue.front().unwrap().incoming.as_ref().map(|input| {
-                match input {
-                    OwnerIncomingOrder::Process(event) => event.clone(),
-                    OwnerIncomingOrder::PublishInitialized(_) => panic!("not a publication"),
-                }
-            }),
+            state
+                .queue
+                .front()
+                .unwrap()
+                .work()
+                .unwrap()
+                .incoming
+                .as_ref()
+                .map(|input| {
+                    match input {
+                        OwnerIncomingOrder::Process(event) => event.clone(),
+                        OwnerIncomingOrder::PublishInitialized(_) => panic!("not a publication"),
+                    }
+                }),
             Some(expected_second)
         );
-        for (index, work) in state.retained_work.iter().enumerate() {
+        for (index, work) in state
+            .retained_work
+            .iter()
+            .filter_map(QueueItem::work)
+            .enumerate()
+        {
             let binding = work.binding.control().unwrap();
             let TradingCommand::QueryAccount(original) = &commands[index] else {
                 unreachable!("prepared neutral query");
@@ -2120,7 +2414,7 @@ mod tests {
         assert_eq!(&*target.borrow(), &["specific", "aggregate"]);
         let retained = observer.retained_typed_deliveries().unwrap();
         assert_eq!(retained.len(), 1);
-        let OwnerDeliveryCause::Control(cause) = retained[0].cause else {
+        let OwnerDeliveryCause::Control(cause) = &retained[0].cause else {
             panic!("a control output cannot be relabelled as incoming");
         };
         assert_eq!(cause.command_id, command_id);
@@ -2258,6 +2552,7 @@ mod tests {
                     binding: Binding {
                         context: context.clone(),
                         cause,
+                        report_ancestor: None,
                     }
                     .into(),
                     incoming: None,
@@ -2283,6 +2578,7 @@ mod tests {
                     binding: Binding {
                         context: existing_context.clone(),
                         cause: existing_cause,
+                        report_ancestor: None,
                     }
                     .into(),
                     incoming: None,
@@ -2303,7 +2599,7 @@ mod tests {
             {
                 let state = owner.0.borrow();
                 assert!(!state.draining);
-                let work = state.queue.front().unwrap();
+                let work = state.queue.front().unwrap().work().unwrap();
                 assert_eq!(work.binding.control().unwrap().cause, cause);
                 assert!(Rc::ptr_eq(
                     &work.binding.control().unwrap().context,
@@ -2414,7 +2710,12 @@ mod tests {
         let state = owner.0.borrow();
         assert_eq!(state.queue.len(), CAPACITY);
         assert_eq!(state.retained_work.len(), 2);
-        for (work, parent_id) in state.retained_work.iter().zip(parent_ids) {
+        for (work, parent_id) in state
+            .retained_work
+            .iter()
+            .filter_map(QueueItem::work)
+            .zip(parent_ids)
+        {
             assert_eq!(
                 work.binding.control().unwrap().cause.command_id,
                 root_command_id
@@ -2477,6 +2778,8 @@ mod tests {
         assert!(second.0.borrow().queue.is_empty());
         assert_eq!(
             second.0.borrow().retained_work[0]
+                .work()
+                .unwrap()
                 .binding
                 .control()
                 .unwrap()

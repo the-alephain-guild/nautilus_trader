@@ -666,9 +666,9 @@ fn default_registry_unwraps_trading_command_envelope_headers() {
 
 /// Bus tap that mirrors the kernel's [`EventStoreBusTap`]: it consults the registry to
 /// derive headers per-message rather than passing [`Headers::empty`].
-struct HeadersAwareAdapterTap {
-    adapter: Arc<BusCaptureAdapter>,
-    registry: Arc<EncoderRegistry>,
+pub(super) struct HeadersAwareAdapterTap {
+    pub(super) adapter: Arc<BusCaptureAdapter>,
+    pub(super) registry: Arc<EncoderRegistry>,
 }
 
 impl BusTap for HeadersAwareAdapterTap {
@@ -814,4 +814,283 @@ fn tap_path_writes_headers_from_data_response_correlation_handler() {
     drop(adapter);
     let writer = Arc::try_unwrap(writer).expect("sole writer reference");
     let _ = writer.close(run_ended_draft()).expect("close writer");
+}
+
+#[rstest]
+fn runtime_report_resume_captures_one_envelope_raw_inputs_and_canonical_outputs() {
+    use nautilus_common::{
+        enums::Environment, messages::ExecutionReport, owner_delivery::OwnerDelivery,
+    };
+    use nautilus_model::{
+        accounts::CashAccount,
+        instruments::{Instrument, stubs::audusd_sim},
+        orders::{Order, builder::OrderTestBuilder, stubs::TestOrderEventStubs},
+    };
+    use nautilus_system::kernel::NautilusKernel;
+
+    #[derive(serde::Deserialize)]
+    struct BundledReport {
+        order_report: OrderStatusReport,
+        fill_reports: Vec<FillReport>,
+    }
+
+    let mut kernel = NautilusKernel::builder(
+        "runtime-report-capture".into(),
+        TraderId::from("CAPTURE-001"),
+        Environment::Backtest,
+    )
+    .build()
+    .expect("actual kernel including Portfolio");
+    let instrument = audusd_sim();
+    let account_id = AccountId::from("SIM-001");
+    let client_order_id = ClientOrderId::from("CAPTURE-REPORT-ORDER");
+    let venue_order_id = VenueOrderId::from("V-CAPTURE-REPORT");
+    kernel
+        .cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    kernel
+        .cache
+        .borrow_mut()
+        .add_account(CashAccount::default().into())
+        .unwrap();
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .trader_id(TraderId::from("CAPTURE-001"))
+        .instrument_id(instrument.id())
+        .client_order_id(client_order_id)
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    kernel
+        .cache
+        .borrow_mut()
+        .add_order(order.clone(), None, None, false)
+        .unwrap();
+    kernel
+        .exec_engine
+        .borrow_mut()
+        .process(&TestOrderEventStubs::submitted(&order, account_id));
+    let mut status = OrderStatusReport::new(
+        account_id,
+        instrument.id(),
+        Some(client_order_id),
+        venue_order_id,
+        Some(OrderSide::Buy),
+        OrderType::Limit,
+        TimeInForce::Gtc,
+        OrderStatus::Filled,
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+        1_000_000.into(),
+        1_000_002.into(),
+        1_000_003.into(),
+        None,
+    )
+    .with_price(Price::from("1.00000"));
+    status.avg_px = Some("1.00000".parse().unwrap());
+    let fills: Vec<_> = ["CAPTURE-TRADE-1", "CAPTURE-TRADE-2"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, trade)| {
+            FillReport::new(
+                account_id,
+                instrument.id(),
+                venue_order_id,
+                TradeId::from(trade),
+                OrderSide::Buy,
+                Quantity::from(50_000),
+                Price::from("1.00000"),
+                Money::from("0.10 USD"),
+                LiquiditySide::Maker,
+                Some(client_order_id),
+                None,
+                UnixNanos::from(1_000_001 + index as u64),
+                UnixNanos::from(1_000_001 + index as u64),
+                None,
+            )
+        })
+        .collect();
+    let report = ExecutionReport::OrderWithFills(Box::new(status.clone()), fills.clone());
+    let (writer, backend_arc) = writer_with_open_run("run-runtime-report-resume", noop_halt());
+    let registry = Arc::new(default_registry());
+    let adapter = Arc::new(BusCaptureAdapter::new(
+        Arc::clone(&writer),
+        Arc::clone(&registry),
+        noop_halt(),
+    ));
+    let tap: Rc<dyn BusTap> = Rc::new(HeadersAwareAdapterTap {
+        adapter: Arc::clone(&adapter),
+        registry,
+    });
+    msgbus::set_bus_tap(tap);
+    let owner = OwnerDelivery::new();
+    let bound = owner.bind().unwrap();
+    let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+    msgbus::send_execution_report(endpoint, report.clone());
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.pending(), 0);
+    let order_after_first = kernel
+        .cache
+        .borrow()
+        .order(&client_order_id)
+        .unwrap()
+        .clone();
+    assert_eq!(order_after_first.status(), OrderStatus::Filled);
+    assert_eq!(order_after_first.filled_qty(), Quantity::from(100_000));
+    let first_history: Vec<_> = order_after_first
+        .events()
+        .iter()
+        .map(|event| rmp_serde::to_vec_named(event).unwrap())
+        .collect();
+    let first_positions: Vec<_> = kernel
+        .cache
+        .borrow()
+        .positions(None, Some(&instrument.id()), None, Some(&account_id), None)
+        .iter()
+        .map(|position| rmp_serde::to_vec_named(&**position).unwrap())
+        .collect();
+    assert_eq!(first_positions.len(), 1);
+    let first_account = {
+        let cache = kernel.cache.borrow();
+        let account = cache.account(&account_id).unwrap();
+        rmp_serde::to_vec_named(&*account).unwrap()
+    };
+    // A distinct receipt of the same input is captured again, while real fill IDs prevent reapplication.
+    msgbus::send_execution_report(endpoint, report);
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.pending(), 0);
+    let second_history: Vec<_> = kernel
+        .cache
+        .borrow()
+        .order(&client_order_id)
+        .unwrap()
+        .events()
+        .iter()
+        .map(|event| rmp_serde::to_vec_named(event).unwrap())
+        .collect();
+    assert_eq!(second_history, first_history);
+    let second_positions: Vec<_> = kernel
+        .cache
+        .borrow()
+        .positions(None, Some(&instrument.id()), None, Some(&account_id), None)
+        .iter()
+        .map(|position| rmp_serde::to_vec_named(&**position).unwrap())
+        .collect();
+    assert_eq!(second_positions, first_positions);
+    let second_account = {
+        let cache = kernel.cache.borrow();
+        let account = cache.account(&account_id).unwrap();
+        rmp_serde::to_vec_named(&*account).unwrap()
+    };
+    assert_eq!(
+        second_account, first_account,
+        "duplicate input does not reapply balances, commissions or account events"
+    );
+    assert_eq!(kernel.exec_engine.borrow().report_count(), 2);
+    assert_eq!(owner.retire(), Ok(()));
+    drop(bound);
+    msgbus::clear_bus_tap();
+    drop(adapter);
+    let writer = Arc::try_unwrap(writer).expect("writer tap released");
+    let final_hwm = writer
+        .close(run_ended_draft())
+        .expect("real writer drain, join and seal");
+    let entries = backend_arc
+        .lock()
+        .scan_range(1, final_hwm, ScanDirection::Forward)
+        .unwrap();
+    let envelopes: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.topic.as_ref() == endpoint.as_str())
+        .collect();
+    assert_eq!(
+        envelopes.len(),
+        2,
+        "resume must neither lose nor resend the wrapper"
+    );
+    for envelope in &envelopes {
+        assert_eq!(envelope.payload_type.as_str(), "OrderWithFills");
+        let decoded: BundledReport = rmp_serde::from_slice(&envelope.payload).unwrap();
+        assert_eq!(decoded.order_report, status);
+        assert_eq!(decoded.fill_reports, fills);
+    }
+    let raw_orders: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.topic.as_ref() == "reconciliation.raw.OrderStatusReport")
+        .collect();
+    let raw_fills: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.topic.as_ref() == "reconciliation.raw.FillReport")
+        .collect();
+    assert_eq!(raw_orders.len(), 2);
+    assert_eq!(raw_fills.len(), 4);
+    for raw in &raw_orders {
+        assert_eq!(
+            rmp_serde::from_slice::<OrderStatusReport>(&raw.payload).unwrap(),
+            status
+        );
+    }
+    for (raw, original) in raw_fills.iter().zip(fills.iter().cycle()) {
+        assert_eq!(
+            rmp_serde::from_slice::<FillReport>(&raw.payload).unwrap(),
+            *original
+        );
+    }
+    for index in 0..2 {
+        assert!(envelopes[index].seq < raw_orders[index].seq);
+        assert!(raw_orders[index].seq < raw_fills[index * 2].seq);
+        assert!(raw_fills[index * 2].seq < raw_fills[index * 2 + 1].seq);
+    }
+    let canonical_fills: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.payload_type.as_str() == "OrderFilled")
+        .collect();
+    assert_eq!(
+        canonical_fills.len(),
+        2,
+        "canonical identity de-duplication differs from original report capture"
+    );
+    let canonical: Vec<_> = order_after_first
+        .events()
+        .into_iter()
+        .filter_map(|event| {
+            if let OrderEventAny::Filled(fill) = event {
+                Some(fill.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for (entry, original) in canonical_fills.iter().zip(&canonical) {
+        assert_eq!(
+            rmp_serde::from_slice::<OrderFilled>(&entry.payload).unwrap(),
+            *original
+        );
+        assert!(raw_fills[1].seq < entry.seq);
+        assert!(entry.seq < envelopes[1].seq);
+    }
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.payload_type.as_str() == "OrderAccepted")
+            .count(),
+        1
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.payload_type.as_str() == "PositionOpened")
+            .count(),
+        1
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.payload_type.as_str() == "PositionChanged")
+            .count(),
+        1
+    );
+    kernel.dispose();
 }

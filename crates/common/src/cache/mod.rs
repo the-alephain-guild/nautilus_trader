@@ -2180,6 +2180,13 @@ where
     intersect_filter_sources(sources)
 }
 
+/// A canonical order commit and the result of its subsequent derived-state refresh.
+#[derive(Debug)]
+pub struct OrderCacheUpdate {
+    pub order: OrderAny,
+    pub refresh_failure: Option<anyhow::Error>,
+}
+
 /// A common in-memory `Cache` for market and execution related data.
 #[cfg_attr(
     feature = "python",
@@ -5295,6 +5302,18 @@ impl Cache {
     ///
     /// Returns an error if the order is not found or rejects the event.
     pub fn update_order(&mut self, event: &OrderEventAny) -> anyhow::Result<OrderAny> {
+        let updated = self.update_order_outcome(event)?;
+        Ok(updated.order)
+    }
+
+    /// Commits the event once and retains a subsequent refresh failure with that snapshot.
+    ///
+    /// # Errors
+    /// Returns an error when the event cannot be committed to its canonical order.
+    pub fn update_order_outcome(
+        &mut self,
+        event: &OrderEventAny,
+    ) -> anyhow::Result<OrderCacheUpdate> {
         let event_client_order_id = event.client_order_id();
         let client_order_id = if self.order_exists(&event_client_order_id) {
             event_client_order_id
@@ -5329,14 +5348,26 @@ impl Cache {
 
         *order_cell.borrow_mut() = snapshot.clone();
 
-        if let Err(e) = self.refresh_order(&snapshot) {
-            log::error!("Error updating order in cache: {e}");
+        let mut refresh_failure = None;
+        if let Err(error) = self.refresh_order_detailed(&snapshot, &mut refresh_failure) {
+            log::error!("Error updating order in cache: {error}");
+            refresh_failure.get_or_insert(error);
         }
-
-        Ok(snapshot)
+        Ok(OrderCacheUpdate {
+            order: snapshot,
+            refresh_failure,
+        })
     }
 
     fn refresh_order(&mut self, order: &OrderAny) -> anyhow::Result<()> {
+        self.refresh_order_detailed(order, &mut None)
+    }
+
+    fn refresh_order_detailed(
+        &mut self,
+        order: &OrderAny,
+        observed_failure: &mut Option<anyhow::Error>,
+    ) -> anyhow::Result<()> {
         let client_order_id = order.client_order_id();
 
         // Claim the venue order ID before mutating any other derived state. An updated event may
@@ -5348,6 +5379,7 @@ impl Cache {
                     return Err(e);
                 }
                 log::error!("Error indexing venue order ID in cache: {e}");
+                observed_failure.get_or_insert(e);
             }
         }
 
@@ -8486,4 +8518,88 @@ const POSITION_OMS_KEY_PREFIX: &str = "position_oms:";
 
 fn position_oms_key(position_id: PositionId) -> String {
     format!("{POSITION_OMS_KEY_PREFIX}{position_id}")
+}
+
+#[cfg(test)]
+mod report_refresh_tests {
+    use nautilus_model::{
+        enums::{OrderSide, OrderStatus, OrderType},
+        events::OrderEventAny,
+        identifiers::{AccountId, VenueOrderId},
+        instruments::{Instrument, InstrumentAny, stubs::audusd_sim},
+        orders::{Order, builder::OrderTestBuilder, stubs::TestOrderEventStubs},
+        types::{Price, Quantity},
+    };
+    use rstest::rstest;
+
+    use super::Cache;
+
+    #[rstest]
+    #[case("replace")]
+    #[case("update")]
+    #[case("detailed")]
+    fn report_refresh_observes_forward_index_error_without_changing_legacy_result(
+        #[case] entry: &str,
+    ) {
+        let mut cache = Cache::default();
+        let instrument: InstrumentAny = audusd_sim().into();
+        let mut order = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from(100_000))
+            .price(Price::from("1.00000"))
+            .build();
+        let id = order.client_order_id();
+        cache.add_order(order.clone(), None, None, false).unwrap();
+        let submitted = TestOrderEventStubs::submitted(&order, AccountId::from("SIM-001"));
+        order = cache.update_order(&submitted).unwrap();
+        let original = VenueOrderId::from("V-REFRESH-ORIGINAL");
+        let accepted = TestOrderEventStubs::accepted(&order, AccountId::from("SIM-001"), original);
+        order = cache.update_order(&accepted).unwrap();
+        let OrderEventAny::Filled(mut fill) = TestOrderEventStubs::filled(
+            &order,
+            &instrument,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ) else {
+            unreachable!()
+        };
+        let changed = VenueOrderId::from("V-REFRESH-UNOWNED");
+        fill.venue_order_id = changed;
+        let event = OrderEventAny::Filled(fill);
+        match entry {
+            "replace" => {
+                order.apply(event.clone()).unwrap();
+                assert!(
+                    cache.replace_order(&order).is_ok(),
+                    "legacy logged forward mismatch is not an Err"
+                );
+            }
+            "update" => {
+                assert!(cache.update_order(&event).is_ok());
+            }
+            "detailed" => {
+                let updated = cache.update_order_outcome(&event).unwrap();
+                assert!(
+                    updated.refresh_failure.is_some(),
+                    "actual report observer sees the refresh failure"
+                );
+                assert_eq!(updated.order.last_event(), &event);
+                assert_eq!(updated.order.status(), OrderStatus::Filled);
+            }
+            _ => unreachable!(),
+        }
+        let committed = cache.order(&id).unwrap();
+        assert_eq!(committed.status(), OrderStatus::Filled);
+        assert_eq!(committed.last_event(), &event);
+        assert_eq!(committed.venue_order_id(), Some(changed));
+        assert_eq!(cache.venue_order_id(&id), Some(&original));
+        assert_eq!(cache.client_order_id(&changed), None);
+    }
 }

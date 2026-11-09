@@ -2266,6 +2266,25 @@ mod tests {
         payload_types: &'static [&'static str],
     }
 
+    const ORDER_UPDATE_RECOVERY_PAYLOADS: &[&str] = &[
+        PAYLOAD_TYPE_ORDER_DENIED,
+        PAYLOAD_TYPE_ORDER_EMULATED,
+        PAYLOAD_TYPE_ORDER_RELEASED,
+        PAYLOAD_TYPE_ORDER_SUBMITTED,
+        PAYLOAD_TYPE_ORDER_ACCEPTED,
+        PAYLOAD_TYPE_ORDER_REJECTED,
+        PAYLOAD_TYPE_ORDER_CANCELED,
+        PAYLOAD_TYPE_ORDER_EXPIRED,
+        PAYLOAD_TYPE_ORDER_TRIGGERED,
+        PAYLOAD_TYPE_ORDER_PENDING_UPDATE,
+        PAYLOAD_TYPE_ORDER_PENDING_CANCEL,
+        PAYLOAD_TYPE_ORDER_MODIFY_REJECTED,
+        PAYLOAD_TYPE_ORDER_CANCEL_REJECTED,
+        PAYLOAD_TYPE_ORDER_UPDATED,
+        PAYLOAD_TYPE_ORDER_FILLED,
+        PAYLOAD_TYPE_ORDER_FILL_VOIDED,
+    ];
+
     const CACHE_MUTATION_COVERAGE: &[CacheMutationCoverage] = &[
         cache_mutation(
             // Startup configuration is reapplied during strategy registration, but runtime claim
@@ -2568,24 +2587,12 @@ mod tests {
         cache_mutation(
             "update_order",
             CacheMutationRecoveryClass::EventStoreCapturedAndReplayed,
-            &[
-                PAYLOAD_TYPE_ORDER_DENIED,
-                PAYLOAD_TYPE_ORDER_EMULATED,
-                PAYLOAD_TYPE_ORDER_RELEASED,
-                PAYLOAD_TYPE_ORDER_SUBMITTED,
-                PAYLOAD_TYPE_ORDER_ACCEPTED,
-                PAYLOAD_TYPE_ORDER_REJECTED,
-                PAYLOAD_TYPE_ORDER_CANCELED,
-                PAYLOAD_TYPE_ORDER_EXPIRED,
-                PAYLOAD_TYPE_ORDER_TRIGGERED,
-                PAYLOAD_TYPE_ORDER_PENDING_UPDATE,
-                PAYLOAD_TYPE_ORDER_PENDING_CANCEL,
-                PAYLOAD_TYPE_ORDER_MODIFY_REJECTED,
-                PAYLOAD_TYPE_ORDER_CANCEL_REJECTED,
-                PAYLOAD_TYPE_ORDER_UPDATED,
-                PAYLOAD_TYPE_ORDER_FILLED,
-                PAYLOAD_TYPE_ORDER_FILL_VOIDED,
-            ],
+            ORDER_UPDATE_RECOVERY_PAYLOADS,
+        ),
+        cache_mutation(
+            "update_order_outcome",
+            CacheMutationRecoveryClass::EventStoreCapturedAndReplayed,
+            ORDER_UPDATE_RECOVERY_PAYLOADS,
         ),
         cache_mutation(
             "update_order_pending_cancel_local",

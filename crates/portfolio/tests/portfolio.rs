@@ -23,7 +23,7 @@ use nautilus_common::{
 };
 use nautilus_core::{DurationNanos, UUID4, UnixNanos, approx_eq, datetime::NANOSECONDS_IN_DAY};
 use nautilus_model::{
-    accounts::{Account, AccountAny},
+    accounts::{Account, AccountAny, CashAccount, WalletAccount},
     data::{Bar, BarType, MarkPriceUpdate, QuoteTick},
     enums::{AccountType, LiquiditySide, OmsType, OrderSide, OrderType, PositionSide},
     events::{
@@ -10175,4 +10175,402 @@ fn test_deregister_statistics_clears_defaults(simple_cache: Cache, clock: TestCl
 
     assert!(portfolio.registered_statistics().is_empty());
     assert!(portfolio.statistics().general.is_empty());
+}
+
+struct CashVoidPortfolioFixture {
+    portfolio: Portfolio,
+    fill: OrderFilled,
+}
+
+impl CashVoidPortfolioFixture {
+    fn new(side: OrderSide, fee: Option<Money>, mode: &str, apply_balance: bool) -> Self {
+        Self::with_fill(
+            side,
+            fee,
+            mode,
+            apply_balance,
+            Quantity::from(100_000),
+            Price::from("1.00000"),
+        )
+    }
+
+    fn with_fill(
+        side: OrderSide,
+        fee: Option<Money>,
+        mode: &str,
+        apply_balance: bool,
+        quantity: Quantity,
+        price: Price,
+    ) -> Self {
+        *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        let mut portfolio =
+            Portfolio::new(Rc::new(RefCell::new(TestClock::new())), cache.clone(), None);
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let wallet = mode == "wallet";
+        let state = AccountState::new(
+            account_id(),
+            if wallet {
+                AccountType::Wallet
+            } else {
+                AccountType::Cash
+            },
+            vec![AccountBalance::new(
+                Money::from("1000000 USD"),
+                Money::from("0 USD"),
+                Money::from("1000000 USD"),
+            )],
+            vec![],
+            true,
+            UUID4::new(),
+            0.into(),
+            0.into(),
+            (!wallet).then_some(Currency::USD()),
+        );
+        let account = if wallet {
+            AccountAny::Wallet(WalletAccount::new_checked(state, false).unwrap())
+        } else {
+            AccountAny::Cash(CashAccount::new(state, mode == "derived", false))
+        };
+        cache.borrow_mut().add_account(account).unwrap();
+        let mut order = OrderTestBuilder::new(if wallet {
+            OrderType::Limit
+        } else {
+            OrderType::Market
+        })
+        .instrument_id(instrument.id())
+        .side(side)
+        .quantity(quantity)
+        .price(price)
+        .build();
+        order
+            .apply(OrderEventAny::Accepted(accept_order(&order)))
+            .unwrap();
+        let fill = build_order_filled(
+            order.trader_id(),
+            order.strategy_id(),
+            order.instrument_id(),
+            order.client_order_id(),
+            order.venue_order_id().unwrap(),
+            account_id(),
+            TradeId::from("CASH-VOID-FIXTURE-TRADE"),
+            side,
+            order.order_type(),
+            quantity,
+            price,
+            Currency::USD(),
+            LiquiditySide::Maker,
+            Some(PositionId::from("CASH-VOID-FIXTURE-POSITION")),
+            fee,
+        );
+        cache
+            .borrow_mut()
+            .add_order(order, None, None, true)
+            .unwrap();
+        let event = OrderEventAny::Filled(fill.clone());
+        cache.borrow_mut().update_order(&event).unwrap();
+        cache
+            .borrow_mut()
+            .add_position(&Position::new(&instrument, fill.clone()), OmsType::Netting)
+            .unwrap();
+        if apply_balance {
+            portfolio.update_order(&event);
+        }
+        Self { portfolio, fill }
+    }
+
+    fn account(&self) -> AccountAny {
+        self.portfolio
+            .cache()
+            .borrow()
+            .account_owned(&account_id())
+            .unwrap()
+    }
+
+    fn void(&mut self, qty: u64, fee: Option<Money>) -> OrderEventAny {
+        let fill = &self.fill;
+        let voided = OrderFillVoidedSpec::builder()
+            .trader_id(fill.trader_id)
+            .strategy_id(fill.strategy_id)
+            .instrument_id(fill.instrument_id)
+            .client_order_id(fill.client_order_id)
+            .venue_order_id(fill.venue_order_id)
+            .account_id(fill.account_id)
+            .trade_id(fill.trade_id)
+            .voided_qty(Quantity::from(qty))
+            .maybe_commission_voided(fee)
+            .order_side(fill.order_side)
+            .order_type(fill.order_type)
+            .last_px(fill.last_px)
+            .currency(fill.currency)
+            .liquidity_side(fill.liquidity_side)
+            .maybe_position_id(fill.position_id)
+            .is_reopened(true)
+            .build();
+        let event = OrderEventAny::FillVoided(voided.clone());
+        self.portfolio
+            .cache()
+            .borrow_mut()
+            .update_order(&event)
+            .unwrap();
+        let mut position = self
+            .portfolio
+            .cache()
+            .borrow()
+            .position_owned(&fill.position_id.unwrap())
+            .unwrap();
+        position
+            .apply_fill_void(voided, Quantity::from(qty), fee)
+            .unwrap();
+        self.portfolio
+            .cache()
+            .borrow_mut()
+            .update_position(&position)
+            .unwrap();
+        self.portfolio.update_order(&event);
+        event
+    }
+}
+
+#[rstest]
+#[case(OrderSide::Buy, Some("0.20 USD"))]
+#[case(OrderSide::Sell, Some("0.20 USD"))]
+#[case(OrderSide::Buy, None)]
+#[case(OrderSide::Sell, Some("0 USD"))]
+#[case(OrderSide::Buy, Some("-0.20 USD"))]
+#[case(OrderSide::Sell, Some("-0.20 USD"))]
+fn test_cash_fill_void_cumulative_exact_balances_and_commissions(
+    #[case] side: OrderSide,
+    #[case] fee: Option<&str>,
+) {
+    let fee = fee.map(Money::from);
+    let mut fixture = CashVoidPortfolioFixture::new(side, fee, "derived", true);
+    let sign = if side == OrderSide::Buy {
+        -Decimal::ONE
+    } else {
+        Decimal::ONE
+    };
+    let original_fee = fee.map_or(Decimal::ZERO, |money| money.as_decimal());
+    assert_eq!(
+        fixture.account().balance_total(None),
+        Some(
+            Money::from_decimal(
+                dec!(1000000) + sign * dec!(100000) - original_fee,
+                Currency::USD(),
+            )
+            .unwrap()
+        )
+    );
+    for (removed, fraction) in [
+        (25_000, dec!(0.25)),
+        (50_000, dec!(0.50)),
+        (100_000, Decimal::ONE),
+    ] {
+        let reversed_fee = fee
+            .map(|fee| Money::from_decimal(fee.as_decimal() * fraction, Currency::USD()).unwrap());
+        let event = fixture.void(removed, reversed_fee);
+        let effective_fee =
+            original_fee - reversed_fee.map_or(Decimal::ZERO, |money| money.as_decimal());
+        let expected = Money::from_decimal(
+            dec!(1000000) + sign * Decimal::from(100_000 - removed) - effective_fee,
+            Currency::USD(),
+        )
+        .unwrap();
+        let account = fixture.account();
+        assert_eq!(account.balance_total(None), Some(expected));
+        assert_eq!(account.balance_free(None), Some(expected));
+        assert_eq!(account.balance_locked(None), Some(Money::from("0 USD")));
+        let AccountAny::Cash(cash) = &account else {
+            unreachable!()
+        };
+        assert_eq!(
+            cash.commission(&Currency::USD())
+                .unwrap_or_else(|| Money::from("0 USD")),
+            Money::from_decimal(effective_fee, Currency::USD()).unwrap()
+        );
+        let before = cash.base.balances.clone();
+        assert!(
+            fixture
+                .portfolio
+                .cache()
+                .borrow_mut()
+                .update_order(&event)
+                .is_err(),
+            "the actual model rejects duplicate cumulative correction"
+        );
+        fixture.portfolio.update_order(&event);
+        let AccountAny::Cash(after) = fixture.account() else {
+            unreachable!()
+        };
+        assert_eq!(
+            after.base.balances, before,
+            "direct duplicate delivery cannot credit twice"
+        );
+        assert_eq!(after.commissions(), cash.commissions());
+    }
+}
+
+#[rstest]
+#[case("unapplied")]
+#[case("reset")]
+#[case("snapshot")]
+#[case("reported")]
+#[case("external")]
+fn test_cash_fill_void_requires_current_actual_apply_basis(#[case] boundary: &str) {
+    let mut fixture = CashVoidPortfolioFixture::new(
+        OrderSide::Buy,
+        Some(Money::from("0.20 USD")),
+        if boundary == "external" {
+            "external"
+        } else {
+            "derived"
+        },
+        boundary != "unapplied",
+    );
+    let mut expected = if matches!(boundary, "unapplied" | "external") {
+        Money::from("1000000 USD")
+    } else {
+        Money::from("899999.80 USD")
+    };
+    if boundary == "reset" {
+        fixture.portfolio.reset();
+    } else if boundary == "snapshot" {
+        let CashVoidPortfolioFixture { portfolio, fill } = fixture;
+        let cache = portfolio.cache().clone();
+        drop(portfolio);
+        fixture = CashVoidPortfolioFixture {
+            portfolio: Portfolio::new(Rc::new(RefCell::new(TestClock::new())), cache, None),
+            fill,
+        };
+    } else if boundary == "reported" {
+        expected = Money::from("777777.77 USD");
+        let state = AccountState::new(
+            account_id(),
+            AccountType::Cash,
+            vec![AccountBalance::new(
+                expected,
+                Money::from("0 USD"),
+                expected,
+            )],
+            vec![],
+            true,
+            UUID4::new(),
+            10.into(),
+            10.into(),
+            Some(Currency::USD()),
+        );
+        fixture.portfolio.update_account(&state);
+    }
+    fixture.void(50_000, Some(Money::from("0.10 USD")));
+    assert_eq!(fixture.account().balance_total(None), Some(expected));
+    assert_eq!(
+        fixture
+            .portfolio
+            .cache()
+            .borrow()
+            .order(&fixture.fill.client_order_id)
+            .unwrap()
+            .filled_qty(),
+        Quantity::from(50_000)
+    );
+}
+
+#[rstest]
+fn test_wallet_fill_void_keeps_observed_total_and_recalculates_reservations() {
+    let mut fixture = CashVoidPortfolioFixture::new(
+        OrderSide::Buy,
+        Some(Money::from("0.20 USD")),
+        "wallet",
+        true,
+    );
+    assert_eq!(
+        fixture.account().balance_total(Some(Currency::USD())),
+        Some(Money::from("1000000 USD"))
+    );
+    fixture.void(50_000, Some(Money::from("0.10 USD")));
+    let account = fixture.account();
+    assert_eq!(
+        account.balance_total(Some(Currency::USD())),
+        Some(Money::from("1000000 USD"))
+    );
+    assert_eq!(
+        account.balance_locked(Some(Currency::USD())),
+        Some(Money::from("50000 USD"))
+    );
+    assert_eq!(
+        account.balance_free(Some(Currency::USD())),
+        Some(Money::from("950000 USD"))
+    );
+}
+
+#[rstest]
+fn test_cash_fill_void_rounding_converges_to_the_original_booked_amount() {
+    let mut fixture = CashVoidPortfolioFixture::with_fill(
+        OrderSide::Buy,
+        Some(Money::from("0.03 USD")),
+        "derived",
+        true,
+        Quantity::from(3),
+        Price::from("0.00600"),
+    );
+    assert_eq!(
+        fixture.account().balance_total(None),
+        Some(Money::from("999999.95 USD"))
+    );
+    for (quantity, commission, total) in [
+        (1, "0.01 USD", "999999.97 USD"),
+        (2, "0.02 USD", "999999.98 USD"),
+        (3, "0.03 USD", "1000000 USD"),
+    ] {
+        fixture.void(quantity, Some(Money::from(commission)));
+        assert_eq!(
+            fixture.account().balance_total(None),
+            Some(Money::from(total))
+        );
+    }
+    let AccountAny::Cash(account) = fixture.account() else {
+        unreachable!()
+    };
+    assert_eq!(
+        account.commission(&Currency::USD()),
+        Some(Money::from("0 USD"))
+    );
+}
+
+#[rstest]
+fn test_cash_fill_void_reverses_only_explicit_cumulative_commission() {
+    let mut fixture = CashVoidPortfolioFixture::new(
+        OrderSide::Buy,
+        Some(Money::from("0.20 USD")),
+        "derived",
+        true,
+    );
+    fixture.void(25_000, None);
+    assert_eq!(
+        fixture.account().balance_total(None),
+        Some(Money::from("924999.80 USD"))
+    );
+    let AccountAny::Cash(first) = fixture.account() else {
+        unreachable!()
+    };
+    assert_eq!(
+        first.commission(&Currency::USD()),
+        Some(Money::from("0.20 USD"))
+    );
+    fixture.void(25_000, Some(Money::from("0.05 USD")));
+    assert_eq!(
+        fixture.account().balance_total(None),
+        Some(Money::from("924999.85 USD"))
+    );
+    let AccountAny::Cash(second) = fixture.account() else {
+        unreachable!()
+    };
+    assert_eq!(
+        second.commission(&Currency::USD()),
+        Some(Money::from("0.15 USD"))
+    );
 }

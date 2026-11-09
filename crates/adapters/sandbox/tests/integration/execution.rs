@@ -3161,6 +3161,2021 @@ asyncio.run(exercise())
         }
     }
 
+    struct LateCancelFixture {
+        orders: [OrderAny; 2],
+        mass: ExecutionMassStatus,
+    }
+
+    fn late_cancel_fixture(
+        main: &OrderAny,
+        account_id: AccountId,
+        client_id: ClientId,
+        cache: &Rc<RefCell<Cache>>,
+        now: UnixNanos,
+    ) -> LateCancelFixture {
+        let mut mass =
+            ExecutionMassStatus::new(client_id, account_id, main.instrument_id().venue, now, None);
+        let orders = ["C", "D"].map(|suffix| {
+            let id = ClientOrderId::new(format!("{}-LATE-{suffix}", main.client_order_id()));
+            let venue = VenueOrderId::new(format!("V-{id}"));
+            let price = Price::from(if suffix == "C" { "90.00" } else { "80.00" });
+            let mut order = OrderTestBuilder::new(OrderType::Limit)
+                .trader_id(main.trader_id())
+                .strategy_id(main.strategy_id())
+                .instrument_id(main.instrument_id())
+                .client_order_id(id)
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from("1.000"))
+                .price(price)
+                .build();
+            // Only inherited legal history is restored; this does not submit a new financial order.
+            order
+                .apply(
+                    nautilus_model::orders::stubs::TestOrderEventStubs::submitted(
+                        &order, account_id,
+                    ),
+                )
+                .unwrap();
+            order
+                .apply(
+                    nautilus_model::orders::stubs::TestOrderEventStubs::accepted(
+                        &order, account_id, venue,
+                    ),
+                )
+                .unwrap();
+            cache
+                .borrow_mut()
+                .add_order(order.clone(), None, Some(client_id), false)
+                .unwrap();
+            mass.add_order_reports(vec![
+                OrderStatusReport::new(
+                    account_id,
+                    main.instrument_id(),
+                    Some(id),
+                    venue,
+                    Some(OrderSide::Buy),
+                    OrderType::Limit,
+                    TimeInForce::Gtc,
+                    OrderStatus::Canceled,
+                    Quantity::from("1.000"),
+                    Quantity::from("0.000"),
+                    now,
+                    now,
+                    now,
+                    None,
+                )
+                .with_price(price),
+            ]);
+            order
+        });
+        LateCancelFixture { orders, mass }
+    }
+
+    #[rstest]
+    fn test_hosted_order_with_fills_report_releases_native_borrow() {
+        exercise_hosted_order_with_fills_report(None, false);
+    }
+
+    #[rstest]
+    #[case::current("positive")]
+    #[case::generation("generation")]
+    #[case::paused("paused")]
+    #[case::stopped("stopped")]
+    #[case::spec("spec")]
+    #[case::callback_error("callback")]
+    #[ignore = "requires explicit CUSTOS_SOURCE_ROOT and compatible Custos PYO3_PYTHON"]
+    // The policy uses USDC while this native fixture uses USDT: only signed Cancel contexts
+    // are exercised, never platform financial submission or account activation qualification.
+    fn test_cross_repo_report_child_keeps_original_signed_identity(#[case] scenario: &str) {
+        exercise_hosted_order_with_fills_report(Some(scenario), false);
+    }
+
+    #[rstest]
+    #[ignore = "requires explicit CUSTOS_SOURCE_ROOT and compatible Custos PYO3_PYTHON"]
+    fn test_cross_repo_report_fault_shutdown_keeps_late_mass_and_child() {
+        exercise_hosted_order_with_fills_report(Some("callback"), true);
+    }
+
+    #[rstest]
+    #[ignore = "requires explicit CUSTOS_SOURCE_ROOT and compatible Custos PYO3_PYTHON"]
+    fn test_cross_repo_control_callback_report_precedes_outer_report_resume() {
+        exercise_hosted_order_with_fills_report(Some("nested-positive"), false);
+    }
+
+    #[rstest]
+    #[ignore = "requires explicit CUSTOS_SOURCE_ROOT and compatible Custos PYO3_PYTHON"]
+    fn test_cross_repo_control_callback_report_rechecks_original_context_after_retirement() {
+        exercise_hosted_order_with_fills_report(Some("nested-retired"), false);
+    }
+
+    fn exercise_hosted_order_with_fills_report(signed_scenario: Option<&str>, late_shutdown: bool) {
+        use std::sync::Arc;
+
+        use nautilus_common::{
+            messages::ExecutionReport,
+            owner_delivery::{self, OwnerDeliveryError, OwnerExternalEvent},
+        };
+        use nautilus_model::{
+            enums::TriggerType, python::orders::order_any_to_pyobject,
+            reports::PositionStatusReport,
+        };
+        use nautilus_trading::python::strategy::PyStrategy;
+        use pyo3::types::PyTypeMethods;
+
+        type ReportRow = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            String,
+            String,
+        );
+
+        fn typed_value(event: &OwnerExternalEvent) -> serde_json::Value {
+            match event {
+                OwnerExternalEvent::Order(event) => serde_json::to_value(event).unwrap(),
+                OwnerExternalEvent::Position(PositionEvent::PositionOpened(event)) => {
+                    serde_json::to_value(event).unwrap()
+                }
+                OwnerExternalEvent::Position(PositionEvent::PositionChanged(event)) => {
+                    serde_json::to_value(event).unwrap()
+                }
+                other => panic!("unexpected report output {other:?}"),
+            }
+        }
+
+        type ObservedNestedReport = (
+            PositionStatusReport,
+            OrderStatus,
+            Quantity,
+            owner_delivery::OwnerReportCause,
+        );
+
+        struct ReportTap {
+            cache: Rc<RefCell<Cache>>,
+            before: Rc<RefCell<Option<(OrderAny, AccountAny, usize)>>>,
+            envelopes: Rc<RefCell<Vec<ExecutionReport>>>,
+            raw_orders: Rc<RefCell<Vec<OrderStatusReport>>>,
+            raw_fills: Rc<RefCell<Vec<FillReport>>>,
+            outputs: Rc<RefCell<Vec<OwnerExternalEvent>>>,
+            order_id: ClientOrderId,
+            account_id: AccountId,
+            owner: Rc<RefCell<Option<owner_delivery::OwnerObserver>>>,
+            root_ticket: Rc<Cell<Option<owner_delivery::OwnerReportTicket>>>,
+            nested: Rc<RefCell<Vec<ObservedNestedReport>>>,
+        }
+        impl BusTap for ReportTap {
+            fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+                if endpoint == MessagingSwitchboard::exec_engine_reconcile_execution_report()
+                    && let Some(report) = message.downcast_ref::<ExecutionReport>()
+                {
+                    let cache = self.cache.borrow();
+                    let first = self.before.borrow().is_none();
+                    if first {
+                        *self.before.borrow_mut() = Some((
+                            cache.order_owned(&self.order_id).unwrap(),
+                            cache.account_owned(&self.account_id).unwrap(),
+                            cache.positions_total_count(None, None, None, None, None),
+                        ));
+                    }
+                    self.envelopes.borrow_mut().push(report.clone());
+                    self.owner
+                        .borrow_mut()
+                        .get_or_insert_with(|| owner_delivery::current_observer().unwrap());
+                }
+            }
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn Any) {
+                if topic == MessagingSwitchboard::reconciliation_raw_order_status_report_topic()
+                    && let Some(report) = message.downcast_ref::<OrderStatusReport>()
+                {
+                    self.raw_orders.borrow_mut().push(report.clone());
+                    if self.root_ticket.get().is_none() {
+                        let owner = self.owner.borrow().clone().unwrap();
+                        let held = owner.retained_reports().unwrap();
+                        let ticket = held.iter().find_map(|held| {
+                            held.input.reports.iter().any(|input| matches!(input,
+                                ExecutionReport::OrderWithFills(order, _) if order.report_id == report.report_id
+                            )).then_some(held.ticket.unwrap())
+                        }).unwrap();
+                        self.root_ticket.set(Some(ticket));
+                    }
+                }
+                if topic == MessagingSwitchboard::reconciliation_raw_fill_report_topic()
+                    && let Some(report) = message.downcast_ref::<FillReport>()
+                {
+                    self.raw_fills.borrow_mut().push(report.clone());
+                }
+                if topic == MessagingSwitchboard::reconciliation_raw_position_status_report_topic()
+                    && let Some(report) = message.downcast_ref::<PositionStatusReport>()
+                {
+                    let cached = self.cache.borrow().order_owned(&self.order_id).unwrap();
+                    let owner = self.owner.borrow().clone().unwrap();
+                    let held = owner.retained_reports().unwrap();
+                    let cause = held.iter().find_map(|held| {
+                        held.input.reports.iter().any(|input| matches!(input,
+                            ExecutionReport::Position(position) if position.report_id == report.report_id
+                        )).then(|| held.cause.clone().unwrap())
+                    }).unwrap();
+                    self.nested.borrow_mut().push((
+                        report.clone(),
+                        cached.status(),
+                        cached.filled_qty(),
+                        cause,
+                    ));
+                }
+                if let Some(event @ OrderEventAny::Filled(_)) =
+                    message.downcast_ref::<OrderEventAny>()
+                    && event.client_order_id() == self.order_id
+                    && topic.as_str() == format!("events.order.{}", event.strategy_id())
+                {
+                    self.outputs
+                        .borrow_mut()
+                        .push(OwnerExternalEvent::Order(event.clone()));
+                }
+                if let Some(event) = message.downcast_ref::<PositionEvent>()
+                    && topic.as_str().starts_with("events.position.")
+                {
+                    self.outputs
+                        .borrow_mut()
+                        .push(OwnerExternalEvent::Position(event.clone()));
+                }
+            }
+        }
+
+        Python::initialize();
+        let signed_fixture =
+            signed_scenario.map(|_| super::hosted_control_cancel::CustosControlFixture::new(true));
+        let control_id = ClientOrderId::from("REPORT-SIGNED-CONTROL");
+        let trader_id = TraderId::from("REPORT-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("REPORT");
+        let order_id = ClientOrderId::from("REPORT-ORDER");
+        let node = LiveNodeBuilder::from_config(LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: Duration::from_secs(3),
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::ZERO,
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap()
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let clock = node.kernel().clock();
+        let mut perpetual = crypto_perpetual_ethusdt();
+        perpetual.id = InstrumentId::from("REPORT.SIM");
+        perpetual.maker_fee = Decimal::new(1, 3);
+        perpetual.taker_fee = Decimal::new(1, 3);
+        let instrument = InstrumentAny::CryptoPerpetual(perpetual);
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        let observer = Python::attach(|py| {
+            let module = PyModule::new(py, "hosted_order_with_fills_report_observer").unwrap();
+            module
+                .setattr("Strategy", py.get_type::<PyStrategy>())
+                .unwrap();
+            module
+                .setattr("client_id", client_id.into_py_any(py).unwrap())
+                .unwrap();
+            module
+                .setattr(
+                    "borrow_free",
+                    pyo3::Py::new(
+                        py,
+                        OrdinaryCallbackBorrowProbe {
+                            engine: engine.clone(),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            module
+                .setattr(
+                    "native_state",
+                    pyo3::Py::new(
+                        py,
+                        FlipCallbackStateProbe {
+                            engine: engine.clone(),
+                            cache: cache.clone(),
+                            account_id,
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            module.setattr("signed_scenario", signed_scenario).unwrap();
+            module.setattr("late_shutdown", late_shutdown).unwrap();
+            module.setattr("late_ids", Vec::<String>::new()).unwrap();
+            module
+                .setattr("control_id", control_id.into_py_any(py).unwrap())
+                .unwrap();
+            if let Some(fixture) = &signed_fixture {
+                module
+                    .setattr("signed_fixture", fixture.module.bind(py))
+                    .unwrap();
+            } else {
+                module.setattr("signed_fixture", py.None()).unwrap();
+            }
+            py.run(c_str!(r#"
+import asyncio
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = signed_fixture.outbox_database if signed_fixture is not None else Path(directory.name) / "report.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE deliveries(kind TEXT, event_id TEXT, outlet TEXT, status TEXT, filled TEXT, position_qty TEXT, borrow_free INTEGER, account_json TEXT, position_json TEXT)")
+records = []
+payloads = []
+errors = []
+accepted_event = None
+done = False
+stop_status = None
+control_at_start = None
+control_requests = []
+child_rows = []
+late_callbacks = []
+late_errors = []
+
+def observe(outlet, event):
+    try:
+        cached = strategy.cache.order(order.client_order_id)
+        position = strategy.cache.position(event.position_id)
+        available = borrow_free()
+        second_probe, account_json, position_json = native_state(event.position_id)
+        assert available == second_probe
+        row = (type(event).__name__, str(event.event_id), outlet, str(cached.status),
+               str(cached.filled_qty), str(position.quantity), available, account_json, position_json)
+        with sqlite3.connect(database, timeout=0) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("INSERT INTO deliveries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        records.append(row)
+        payloads.append((outlet, event))
+        if signed_fixture is not None and outlet == "specific" and type(event).__name__ == "OrderFilled" and not control_requests:
+            signed_fixture.install_order_gate(strategy, signed_fixture.gate)
+            strategy.cancel_order(control_id, client_id=client_id)
+            control_requests.append((str(event.event_id), str(strategy.cache.order(control_id).status)))
+            if signed_scenario == "callback":
+                raise ValueError("signed report callback:" + str(event.event_id))
+            if signed_scenario in ("generation", "stopped", "paused", "spec"):
+                lifecycle = "running" if signed_scenario == "generation" else "stopped" if signed_scenario == "stopped" else "paused"
+                signed_fixture.commit_new_desired(lifecycle, signed_scenario == "spec")
+    except Exception as error:
+        errors.append(repr(error))
+        raise
+
+class ReportStrategy(Strategy):
+    def on_start(self):
+        global control_at_start
+        if signed_fixture is not None:
+            self.submit_order(control_order, client_id=client_id)
+            control_at_start = str(self.cache.order(control_id).status)
+        self.submit_order(order, client_id=client_id)
+    def on_order_canceled(self, event):
+        if str(event.client_order_id) in late_ids:
+            late_callbacks.append(("specific", str(event.event_id)))
+        if signed_fixture is not None and event.client_order_id == control_id:
+            self.observe_child(event, "specific")
+    def observe_child(self, event, outlet):
+        current = self.cache.order(order.client_order_id)
+        assert str(current.status) == "PARTIALLY_FILLED" and str(current.filled_qty) == "0.750", (str(current.status), str(current.filled_qty))
+        assert borrow_free()
+        signed_fixture.record_cancellation(event)
+        child_rows.append((str(event.event_id), str(event.client_order_id), outlet, str(current.status), str(current.filled_qty)))
+        if signed_scenario in ("nested-positive", "nested-retired") and outlet == "specific":
+            send_nested_report(event.ts_event, self.clock.timestamp_ns())
+            if signed_scenario == "nested-retired":
+                signed_fixture.commit_new_desired("running", False)
+    def on_order_accepted(self, event):
+        global accepted_event
+        if event.client_order_id == order.client_order_id:
+            accepted_event = event
+    def on_order_filled(self, event): observe("specific", event)
+    def on_order_event(self, event):
+        if str(event.client_order_id) in late_ids:
+            late_callbacks.append(("aggregate", str(event.event_id)))
+        if signed_fixture is not None and event.client_order_id == control_id and type(event).__name__ == "OrderCanceled":
+            self.observe_child(event, "aggregate")
+        elif type(event).__name__ == "OrderFilled": observe("aggregate", event)
+    def on_position_opened(self, event): observe("specific", event)
+    def on_position_changed(self, event): observe("specific", event)
+    def on_position_event(self, event):
+        global done
+        observe("aggregate", event)
+        if type(event).__name__ == "PositionChanged": done = True
+    def on_stop(self):
+        global stop_status
+        stop_status = self._control_delivery_status()
+        if late_shutdown:
+            try: send_shutdown()
+            except BaseException as error:
+                late_errors.append(repr(error))
+                raise
+    def on_dispose(self): pass
+
+strategy = ReportStrategy()
+def mark_waiting(): pass
+def persisted():
+    with sqlite3.connect(database, timeout=0) as connection:
+        return [(a,b,c,d,e,f,bool(g),h,i) for a,b,c,d,e,f,g,h,i in connection.execute("SELECT * FROM deliveries ORDER BY rowid")]
+def cleanup(): directory.cleanup()
+"#), Some(&module.dict()), None).unwrap();
+            module.unbind()
+        });
+        let strategy = Python::attach(|py| observer.bind(py).getattr("strategy").unwrap().unbind());
+        let strategy_id = node
+            .kernel()
+            .trader()
+            .borrow_mut()
+            .add_python_strategy_instance(&strategy)
+            .unwrap();
+        let order = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(trader_id)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument.id())
+            .client_order_id(order_id)
+            .side(OrderSide::Buy)
+            .time_in_force(TimeInForce::Gtc)
+            .quantity(Quantity::from("2.000"))
+            .price(Price::from("100.00"))
+            .build();
+        Python::attach(|py| {
+            observer
+                .bind(py)
+                .setattr("order", order_any_to_pyobject(py, order.clone()).unwrap())
+                .unwrap();
+        });
+        if signed_fixture.is_some() {
+            let control = OrderTestBuilder::new(OrderType::StopLimit)
+                .trader_id(trader_id)
+                .strategy_id(strategy_id)
+                .instrument_id(instrument.id())
+                .client_order_id(control_id)
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from("1.000"))
+                .price(Price::from("201.00"))
+                .trigger_price(Price::from("200.00"))
+                .trigger_type(TriggerType::BidAsk)
+                .emulation_trigger(TriggerType::BidAsk)
+                .build();
+            Python::attach(|py| {
+                observer
+                    .bind(py)
+                    .setattr("control_order", order_any_to_pyobject(py, control).unwrap())
+                    .unwrap();
+            });
+        }
+        let late = late_shutdown.then(|| {
+            late_cancel_fixture(
+                &order,
+                account_id,
+                client_id,
+                &cache,
+                clock.borrow().timestamp_ns(),
+            )
+        });
+        if let Some(late) = &late {
+            let sender = nautilus_common::live::get_exec_event_sender();
+            let report = Mutex::new(Some(ExecutionReport::MassStatus(Box::new(
+                late.mass.clone(),
+            ))));
+            Python::attach(|py| {
+                observer
+                    .bind(py)
+                    .setattr(
+                        "late_ids",
+                        late.orders
+                            .each_ref()
+                            .map(|order| order.client_order_id().to_string())
+                            .to_vec(),
+                    )
+                    .unwrap();
+                let send = PyCFunction::new_closure(
+                    py,
+                    None,
+                    None,
+                    move |_args, _kwargs| -> pyo3::PyResult<()> {
+                        sender
+                            .send(ExecutionEvent::Report(
+                                report.lock().unwrap().take().unwrap(),
+                            ))
+                            .map_err(|error| {
+                                pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                            })
+                    },
+                )
+                .unwrap();
+                observer.bind(py).setattr("send_shutdown", send).unwrap();
+            });
+        }
+        let nested_expected = Arc::new(Mutex::new(None));
+        if matches!(signed_scenario, Some("nested-positive" | "nested-retired")) {
+            let storage = nested_expected.clone();
+            let instrument_id = instrument.id();
+            Python::attach(|py| {
+                let send = PyCFunction::new_closure(
+                    py,
+                    None,
+                    None,
+                    move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                        let report = PositionStatusReport::new(
+                            account_id,
+                            instrument_id,
+                            PositionSide::Long,
+                            Quantity::from("0.750"),
+                            UnixNanos::from(args.get_item(0)?.extract::<u64>()?),
+                            UnixNanos::from(args.get_item(1)?.extract::<u64>()?),
+                            Some(UUID4::new()),
+                            None,
+                            Some(Decimal::from(100)),
+                        );
+                        *storage.lock().unwrap() = Some(report.clone());
+                        msgbus::send_execution_report(
+                            MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+                            ExecutionReport::Position(Box::new(report)),
+                        );
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                observer
+                    .bind(py)
+                    .setattr("send_nested_report", send)
+                    .unwrap();
+            });
+        }
+        let config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            oms_type: OmsType::Netting,
+            account_type: AccountType::Margin,
+            base_currency: Some(Currency::USDT()),
+            starting_balances: vec![Money::from("1000000 USDT")],
+            ..Default::default()
+        };
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            config.venue,
+            config.oms_type,
+            account_id,
+            config.account_type,
+            config.base_currency,
+            cache.clone(),
+        );
+        let inner = SandboxExecutionClient::new(core, config, clock.clone(), cache.clone());
+        let capture = inner.account_capture_probe().unwrap();
+        let stopped = Rc::new(Cell::new(0));
+        engine
+            .borrow_mut()
+            .register_client(ready_hosted_sandbox_client(
+                inner,
+                Python::attach(|py| observer.bind(py).getattr("mark_waiting").unwrap().unbind()),
+                stopped.clone(),
+            ))
+            .unwrap();
+        let before = Rc::new(RefCell::new(None));
+        let envelopes = Rc::new(RefCell::new(Vec::new()));
+        let raw_orders = Rc::new(RefCell::new(Vec::new()));
+        let raw_fills = Rc::new(RefCell::new(Vec::new()));
+        let outputs = Rc::new(RefCell::new(Vec::new()));
+        let observed_owner = Rc::new(RefCell::new(None));
+        let nested = Rc::new(RefCell::new(Vec::new()));
+        let root_ticket = Rc::new(Cell::new(None));
+        msgbus::set_bus_tap(Rc::new(ReportTap {
+            cache: cache.clone(),
+            before: before.clone(),
+            envelopes: envelopes.clone(),
+            raw_orders: raw_orders.clone(),
+            raw_fills: raw_fills.clone(),
+            outputs: outputs.clone(),
+            order_id,
+            account_id,
+            owner: observed_owner.clone(),
+            nested: nested.clone(),
+            root_ticket: root_ticket.clone(),
+        }));
+        let expected_report = Arc::new(Mutex::new(None));
+        let report_sender = nautilus_common::live::get_exec_event_sender();
+        let report_storage = expected_report.clone();
+        let instrument_id = instrument.id();
+        let commission_rate = instrument.maker_fee();
+        let report_ids = [UUID4::new(), UUID4::new(), UUID4::new()];
+        Python::attach(|py| {
+            let send_report = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |args: &pyo3::Bound<'_, PyTuple>, _| -> pyo3::PyResult<()> {
+                    let venue_order_id = args.get_item(0)?.extract::<VenueOrderId>()?;
+                    let actual_account_id = args.get_item(1)?.extract::<AccountId>()?;
+                    assert_eq!(actual_account_id, account_id);
+                    let accepted = UnixNanos::from(args.get_item(2)?.extract::<u64>()?);
+                    let now = args.get_item(3)?.extract::<u64>()?;
+                    let mut status = OrderStatusReport::new(
+                        account_id,
+                        instrument_id,
+                        Some(order_id),
+                        venue_order_id,
+                        Some(OrderSide::Buy),
+                        OrderType::Limit,
+                        TimeInForce::Gtc,
+                        OrderStatus::Filled,
+                        Quantity::from("2.000"),
+                        Quantity::from("2.000"),
+                        accepted,
+                        UnixNanos::from(now + 1),
+                        UnixNanos::from(now + 1),
+                        Some(report_ids[0]),
+                    );
+                    status.price = Some(Price::from("100.00"));
+                    status.avg_px = Some(Decimal::from(100));
+                    let fills = ["0.750", "1.250"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, qty)| {
+                            let qty = Quantity::from(qty);
+                            let price = Price::from("100.00");
+                            FillReport::new(
+                                account_id,
+                                instrument_id,
+                                venue_order_id,
+                                TradeId::new(format!("REPORT-TRADE-{i}")),
+                                OrderSide::Buy,
+                                qty,
+                                price,
+                                Money::from_decimal(
+                                    qty.as_decimal() * price.as_decimal() * commission_rate,
+                                    Currency::USDT(),
+                                )
+                                .unwrap(),
+                                LiquiditySide::Maker,
+                                Some(order_id),
+                                None,
+                                UnixNanos::from(now + i as u64),
+                                UnixNanos::from(now + i as u64),
+                                Some(report_ids[i + 1]),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let report = ExecutionReport::OrderWithFills(Box::new(status), fills);
+                    *report_storage.lock().unwrap() = Some(report.clone());
+                    report_sender
+                        .send(ExecutionEvent::Report(report))
+                        .map_err(|error| {
+                            pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                        })?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            observer
+                .bind(py)
+                .setattr("send_report", send_report)
+                .unwrap();
+        });
+        let now = clock.borrow().timestamp_ns();
+        nautilus_common::live::get_data_event_sender()
+            .send(nautilus_common::messages::DataEvent::Data(Data::Quote(
+                QuoteTick::new(
+                    instrument.id(),
+                    Price::from("100.00"),
+                    Price::from("100.02"),
+                    Quantity::from("100.000"),
+                    Quantity::from("100.000"),
+                    now,
+                    now,
+                ),
+            )))
+            .unwrap();
+        let (py_node, result) = Python::attach(|py| {
+            let node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &node).unwrap();
+            globals.set_item("observer", observer.bind(py)).unwrap();
+            let result = py.run(c_str!(r#"
+import asyncio
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    async def wait_for_flag(predicate):
+        while not predicate():
+            if task.done():
+                await task
+                raise AssertionError("node exited before report observations")
+            await asyncio.sleep(0)
+    try:
+        await asyncio.wait_for(wait_for_flag(lambda: observer.accepted_event is not None), timeout=3)
+        event = observer.accepted_event
+        cached = observer.strategy.cache.order(observer.order.client_order_id)
+        assert str(cached.status) == "ACCEPTED" and str(cached.filled_qty) == "0.000"
+        observer.send_report(event.venue_order_id, event.account_id, event.ts_event,
+                             observer.strategy.clock.timestamp_ns())
+        await asyncio.wait_for(wait_for_flag(lambda: observer.done), timeout=3)
+    finally:
+        node.handle().stop()
+        if not task.done():
+            await asyncio.wait_for(task, timeout=3)
+        else:
+            await task
+asyncio.run(exercise())
+"#), Some(&globals), None);
+            (node, result)
+        });
+        msgbus::clear_bus_tap();
+        let cached = cache.borrow().order_owned(&order_id).unwrap();
+        let account = cache.borrow().account_owned(&account_id).unwrap();
+        let position_id = PositionId::new(format!("{}-{strategy_id}", instrument.id()));
+        let position = cache.borrow().position_owned(&position_id);
+        let control = signed_scenario.map(|_| cache.borrow().order_owned(&control_id).unwrap());
+        let late_orders = late.as_ref().map(|late| {
+            late.orders.each_ref().map(|order| {
+                cache
+                    .borrow()
+                    .order_owned(&order.client_order_id())
+                    .unwrap()
+            })
+        });
+        let owner = observed_owner.borrow().clone().unwrap();
+        let owner_status = owner.status().unwrap().unwrap();
+        let retained_reports = owner.retained_reports().unwrap();
+        let retained_work = owner.retained_command_work().unwrap();
+        let queued_work = owner.queued_command_work().unwrap();
+        let (requests, child_rows, control_at_start) = Python::attach(|py| {
+            let module = observer.bind(py);
+            let requests: Vec<(String, String)> = module
+                .getattr("control_requests")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let children: Vec<(String, String, String, String, String)> =
+                module.getattr("child_rows").unwrap().extract().unwrap();
+            let started: Option<String> = module
+                .getattr("control_at_start")
+                .unwrap()
+                .extract()
+                .unwrap();
+            if signed_fixture.is_some() {
+                py.run(c_str!(r#"
+assert signed_fixture.outbox_identity == signed_fixture.observer_identity
+assert signed_fixture.source_audit()
+with sqlite3.connect(signed_fixture.observer_database, timeout=0) as connection:
+    assert list(connection.execute("SELECT event_id, client_order_id FROM callback_observations ORDER BY rowid")) == signed_fixture.callback_rows
+"#), Some(&module.dict()), None).unwrap();
+            }
+            (requests, children, started)
+        });
+        let (rows, persisted, payloads, errors, state, stop_status) = Python::attach(|py| {
+            let module = observer.bind(py);
+            let rows: Vec<ReportRow> = module.getattr("records").unwrap().extract().unwrap();
+            let persisted: Vec<ReportRow> =
+                module.call_method0("persisted").unwrap().extract().unwrap();
+            let values: Vec<(String, pyo3::Py<pyo3::PyAny>)> =
+                module.getattr("payloads").unwrap().extract().unwrap();
+            let payloads = values
+                .into_iter()
+                .map(|(outlet, event)| {
+                    let kind = event.bind(py).get_type().name().unwrap().to_string();
+                    let value = match kind.as_str() {
+                        "OrderFilled" => OwnerExternalEvent::Order(OrderEventAny::Filled(
+                            event.bind(py).extract::<OrderFilled>().unwrap(),
+                        )),
+                        "PositionOpened" => {
+                            OwnerExternalEvent::Position(PositionEvent::PositionOpened(
+                                event
+                                    .bind(py)
+                                    .extract::<nautilus_model::events::PositionOpened>()
+                                    .unwrap(),
+                            ))
+                        }
+                        "PositionChanged" => {
+                            OwnerExternalEvent::Position(PositionEvent::PositionChanged(
+                                event
+                                    .bind(py)
+                                    .extract::<nautilus_model::events::PositionChanged>()
+                                    .unwrap(),
+                            ))
+                        }
+                        other => panic!("unexpected report callback {other}"),
+                    };
+                    (outlet, value)
+                })
+                .collect::<Vec<_>>();
+            let errors: Vec<String> = module.getattr("errors").unwrap().extract().unwrap();
+            let state = py_node
+                .call_method0(py, "handle")
+                .unwrap()
+                .getattr(py, "state")
+                .unwrap()
+                .extract::<NodeState>(py)
+                .unwrap();
+            let stop_status: (bool, Option<(usize, Option<String>)>) =
+                module.getattr("stop_status").unwrap().extract().unwrap();
+            py_node.call_method0(py, "dispose").unwrap();
+            module.call_method0("cleanup").unwrap();
+            (rows, persisted, payloads, errors, state, stop_status)
+        });
+        if let Some(scenario) = signed_scenario {
+            let control = control.unwrap();
+            assert_eq!(control_at_start.as_deref(), Some("EMULATED"));
+            assert_eq!(requests.len(), 1);
+            let parent = match &outputs.borrow()[0] {
+                OwnerExternalEvent::Order(OrderEventAny::Filled(fill)) => fill.clone(),
+                other => panic!("actual report A fill {other:?}"),
+            };
+            assert_eq!(
+                requests[0],
+                (parent.event_id.to_string(), "EMULATED".to_string())
+            );
+            assert_eq!(state, NodeState::Stopped);
+            assert!(stopped.get() > 0);
+            assert_eq!(
+                capture.capture().unwrap_err(),
+                nautilus_common::clients::ExecutionAccountCaptureError::Retired
+            );
+            if scenario == "nested-retired" {
+                assert!(
+                    result.is_err(),
+                    "retired nested report must fail actual node"
+                );
+                assert_eq!(owner_status.1, Some(OwnerDeliveryError::ControlEnter));
+                assert!(owner_status.0 > 0);
+                assert!(stop_status.0);
+                assert_eq!(
+                    stop_status.1.as_ref().unwrap().1,
+                    Some(OwnerDeliveryError::ControlEnter.to_string())
+                );
+                assert_eq!(control.status(), OrderStatus::Canceled);
+                assert_eq!(control.filled_qty(), Quantity::from("0.000"));
+                let cancel = match control.last_event() {
+                    OrderEventAny::Canceled(event) => event,
+                    other => panic!("actual completed Cancel {other:?}"),
+                };
+                assert_eq!(child_rows.len(), 2);
+                for (row, outlet) in child_rows.iter().zip(["specific", "aggregate"]) {
+                    assert_eq!(
+                        row,
+                        &(
+                            cancel.event_id.to_string(),
+                            control_id.to_string(),
+                            outlet.to_string(),
+                            "PARTIALLY_FILLED".to_string(),
+                            "0.750".to_string()
+                        )
+                    );
+                }
+                assert!(
+                    nested.borrow().is_empty(),
+                    "no retired report raw/native effect"
+                );
+                assert!(errors.is_empty());
+                assert!(
+                    retained_work.is_empty(),
+                    "completed Cancel is not failed retained command work"
+                );
+                assert!(
+                    queued_work.is_empty(),
+                    "queued Report native work is not a command ingress"
+                );
+                assert_eq!(cached.status(), OrderStatus::PartiallyFilled);
+                assert_eq!(cached.filled_qty(), Quantity::from("0.750"));
+                assert_eq!(cached.trade_ids().len(), 1);
+                let position = position.as_ref().unwrap();
+                assert_eq!(position.quantity, Quantity::from("0.750"));
+                let a_fee = Money::from("0.075 USDT");
+                assert_eq!(position.commissions(), vec![a_fee]);
+                assert_eq!(
+                    position.realized_pnl,
+                    Some(Money::zero(Currency::USDT()) - a_fee)
+                );
+                assert_eq!(cached.commissions().get(&Currency::USDT()), Some(&a_fee));
+                assert_eq!(
+                    account.balance_total(None),
+                    Some(Money::from("1000000 USDT") - a_fee)
+                );
+                assert_eq!(rows, persisted);
+                assert_eq!(rows.len(), 4);
+                assert!(rows.iter().all(|row| row.6));
+                assert_eq!(outputs.borrow().len(), 2);
+                assert_eq!(payloads.len(), 4);
+                for (index, output) in outputs.borrow().iter().enumerate() {
+                    for (offset, outlet) in ["specific", "aggregate"].into_iter().enumerate() {
+                        assert_eq!(payloads[index * 2 + offset].0, outlet);
+                        assert_eq!(
+                            typed_value(&payloads[index * 2 + offset].1),
+                            typed_value(output)
+                        );
+                    }
+                }
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&rows[3].7).unwrap(),
+                    serde_json::to_value(&account).unwrap()
+                );
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&rows[3].8).unwrap(),
+                    serde_json::to_value(position).unwrap()
+                );
+                assert_eq!(retained_reports.len(), 2);
+                let root = &retained_reports[0];
+                assert_eq!(
+                    root.cause.as_ref().unwrap().canonical_event_id,
+                    Some(parent.event_id)
+                );
+                let input = expected_report.lock().unwrap();
+                let ExecutionReport::OrderWithFills(original_status, original_fills) =
+                    input.as_ref().unwrap()
+                else {
+                    unreachable!()
+                };
+                let ExecutionReport::OrderWithFills(held_status, held_fills) =
+                    &root.input.reports[0]
+                else {
+                    panic!("original outer report");
+                };
+                assert_eq!(held_status, original_status);
+                assert_eq!(held_fills, original_fills);
+                assert_eq!(
+                    raw_orders.borrow().as_slice(),
+                    &[original_status.as_ref().clone()]
+                );
+                assert_eq!(*raw_fills.borrow(), *original_fills);
+                let held = &retained_reports[1];
+                assert_eq!(
+                    held.stage,
+                    owner_delivery::OwnerReportDispatchStage::Prepared
+                );
+                assert_eq!(held.error, OwnerDeliveryError::ControlEnter);
+                let ExecutionReport::Position(actual) = &held.input.reports[0] else {
+                    panic!("original nested Position report");
+                };
+                assert_eq!(
+                    Some(actual.as_ref().clone()),
+                    *nested_expected.lock().unwrap()
+                );
+                let cause = held.cause.as_ref().unwrap();
+                assert_eq!(cause.parent_report_ticket, root.ticket);
+                assert_eq!(cause.parent_event_id, Some(cancel.event_id));
+                assert_eq!(cause.incarnation, root.cause.as_ref().unwrap().incarnation);
+                let origin = cause.control_origin.as_ref().unwrap();
+                assert_eq!(origin.parent_event_id, Some(cancel.event_id));
+                assert_ne!(origin.command_id.as_bytes(), [0; 16]);
+                assert_eq!(origin.incarnation, cause.incarnation);
+                assert!(cause.sequence > origin.sequence);
+                assert_eq!(envelopes.borrow().len(), 2);
+                return;
+            }
+            if scenario == "nested-positive" {
+                let nested_rows = nested.borrow();
+                assert_eq!(
+                    nested_rows.len(),
+                    1,
+                    "actual nested raw publication: {nested_rows:?}; runtime={result:?}"
+                );
+                let (actual, status, filled, cause) = &nested_rows[0];
+                assert_eq!(Some(actual.clone()), *nested_expected.lock().unwrap());
+                // A Control callback's report must finish before the outer report advances to B.
+                assert_eq!(
+                    (*status, *filled),
+                    (OrderStatus::PartiallyFilled, Quantity::from("0.750")),
+                    "Control callback report must precede outer B: {nested_rows:?}"
+                );
+                let cancel = match control.last_event() {
+                    OrderEventAny::Canceled(event) => event,
+                    other => panic!("actual Cancel {other:?}"),
+                };
+                assert_eq!(cause.parent_event_id, Some(cancel.event_id));
+                let origin = cause
+                    .control_origin
+                    .as_ref()
+                    .expect("original signed Control cause");
+                assert_eq!(origin.parent_event_id, Some(cancel.event_id));
+                assert_eq!(origin.incarnation, cause.incarnation);
+                assert!(cause.sequence > origin.sequence);
+                assert_eq!(
+                    cause.parent_report_ticket,
+                    root_ticket.get(),
+                    "actual report ancestry: {cause:?}"
+                );
+                assert!(root_ticket.get().is_some());
+            }
+            if matches!(scenario, "positive" | "nested-positive") {
+                assert_eq!(control.status(), OrderStatus::Canceled);
+                assert_eq!(control.filled_qty(), Quantity::from("0.000"));
+                assert_eq!(child_rows.len(), 2);
+                let cancel = match control.last_event() {
+                    OrderEventAny::Canceled(event) => event,
+                    other => panic!("actual canceled control {other:?}"),
+                };
+                for (row, outlet) in child_rows.iter().zip(["specific", "aggregate"]) {
+                    assert_eq!(
+                        row,
+                        &(
+                            cancel.event_id.to_string(),
+                            control_id.to_string(),
+                            outlet.to_string(),
+                            "PARTIALLY_FILLED".to_string(),
+                            "0.750".to_string()
+                        )
+                    );
+                }
+                assert!(retained_reports.is_empty());
+                assert!(retained_work.is_empty());
+                assert!(queued_work.is_empty());
+                assert_eq!(owner_status, (0, None));
+            } else {
+                let expected_error = if scenario == "callback" {
+                    OwnerDeliveryError::ExternalCallback
+                } else {
+                    OwnerDeliveryError::ControlEnter
+                };
+                assert!(
+                    result.is_err(),
+                    "failed report child must fail actual node: {result:?}"
+                );
+                assert_eq!(owner_status.1, Some(expected_error));
+                assert!(owner_status.0 > 0);
+                assert!(stop_status.0);
+                assert_eq!(
+                    stop_status.1.as_ref().unwrap().1,
+                    Some(expected_error.to_string())
+                );
+                assert_eq!(control.status(), OrderStatus::Emulated);
+                assert_eq!(control.filled_qty(), Quantity::from("0.000"));
+                assert!(child_rows.is_empty());
+                assert_eq!(cached.status(), OrderStatus::PartiallyFilled);
+                assert_eq!(cached.filled_qty(), Quantity::from("0.750"));
+                assert_eq!(cached.trade_ids().len(), 1);
+                assert_eq!(position.as_ref().unwrap().quantity, Quantity::from("0.750"));
+                let original_work = if scenario == "callback" {
+                    assert!(queued_work.is_empty());
+                    &retained_work
+                } else {
+                    assert!(retained_work.is_empty());
+                    &queued_work
+                };
+                assert_eq!(original_work.len(), 1);
+                let retained = &original_work[0];
+                assert_eq!(retained.cause.parent_event_id, Some(parent.event_id));
+                assert_ne!(retained.cause.command_id.as_bytes(), [0; 16]);
+                let TradingCommand::CancelOrder(command) = &retained.command else {
+                    panic!("original captured Cancel child")
+                };
+                assert_eq!(command.client_order_id, control_id);
+                assert_eq!(command.trader_id, trader_id);
+                assert_eq!(command.strategy_id, strategy_id);
+                assert_eq!(command.instrument_id, instrument.id());
+                assert_eq!(command.client_id, Some(client_id));
+                assert!(command.ts_init.as_u64() > 0);
+                assert_eq!(command.command_id, retained.cause.command_id);
+                assert_eq!(
+                    retained.endpoint,
+                    MessagingSwitchboard::order_emulator_execute()
+                );
+                assert_eq!(retained_reports.len(), if late_shutdown { 2 } else { 1 });
+                if let Some(late) = &late {
+                    let late_errors: Vec<String> = Python::attach(|py| {
+                        observer
+                            .bind(py)
+                            .getattr("late_errors")
+                            .unwrap()
+                            .extract()
+                            .unwrap()
+                    });
+                    assert!(
+                        late_errors.is_empty(),
+                        "late report send failed: {late_errors:?}"
+                    );
+                    let originals = late_orders.as_ref().unwrap();
+                    for (actual, original) in originals.iter().zip(&late.orders) {
+                        assert_eq!(
+                            actual, original,
+                            "late report cannot create effects under the failed owner"
+                        );
+                    }
+                    let held = &retained_reports[1];
+                    assert!(held.ticket.is_none());
+                    assert!(held.cause.is_none());
+                    assert_eq!(held.error, expected_error);
+                    let ExecutionReport::MassStatus(original) = &held.input.reports[0] else {
+                        panic!("actual owner holds late MassStatus")
+                    };
+                    assert_eq!(
+                        serde_json::to_value(&**original).unwrap(),
+                        serde_json::to_value(&late.mass).unwrap()
+                    );
+                    assert_eq!(envelopes.borrow().len(), 2);
+                    let late_callbacks: Vec<(String, String)> = Python::attach(|py| {
+                        observer
+                            .bind(py)
+                            .getattr("late_callbacks")
+                            .unwrap()
+                            .extract()
+                            .unwrap()
+                    });
+                    assert!(late_callbacks.is_empty());
+                }
+                assert_eq!(
+                    retained_reports[0]
+                        .cause
+                        .as_ref()
+                        .unwrap()
+                        .canonical_event_id,
+                    Some(parent.event_id)
+                );
+                assert_eq!(
+                    retained_reports[0].cause.as_ref().unwrap().incarnation,
+                    retained.cause.incarnation
+                );
+                assert!(
+                    retained.cause.sequence > retained_reports[0].cause.as_ref().unwrap().sequence
+                );
+                assert_eq!(rows, persisted);
+                assert!(rows.iter().all(|row| row.6));
+                assert_eq!(
+                    rows.len(),
+                    4,
+                    "complete A Fill keeps its Order and Position output groups"
+                );
+                assert_eq!(outputs.borrow().len(), 2);
+                assert_eq!(payloads.len(), 4);
+                for (index, output) in outputs.borrow().iter().enumerate() {
+                    for (offset, outlet) in ["specific", "aggregate"].into_iter().enumerate() {
+                        assert_eq!(payloads[index * 2 + offset].0, outlet);
+                        assert_eq!(
+                            typed_value(&payloads[index * 2 + offset].1),
+                            typed_value(output)
+                        );
+                    }
+                }
+                let a_fee = Money::from("0.075 USDT");
+                let position = position.as_ref().unwrap();
+                assert_eq!(position.commissions(), vec![a_fee]);
+                assert_eq!(
+                    position.realized_pnl,
+                    Some(Money::zero(Currency::USDT()) - a_fee)
+                );
+                assert_eq!(cached.commissions().get(&Currency::USDT()), Some(&a_fee));
+                assert_eq!(
+                    account.balance_total(None),
+                    Some(Money::from("1000000 USDT") - a_fee)
+                );
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&rows[3].7).unwrap(),
+                    serde_json::to_value(&account).unwrap()
+                );
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&rows[3].8).unwrap(),
+                    serde_json::to_value(position).unwrap()
+                );
+                let input = expected_report.lock().unwrap();
+                let ExecutionReport::OrderWithFills(original_status, original_fills) =
+                    input.as_ref().unwrap()
+                else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    raw_orders.borrow().as_slice(),
+                    &[original_status.as_ref().clone()]
+                );
+                assert_eq!(*raw_fills.borrow(), *original_fills);
+                let ExecutionReport::OrderWithFills(retained_status, retained_fills) =
+                    &retained_reports[0].input.reports[0]
+                else {
+                    panic!("owned original report input")
+                };
+                assert_eq!(retained_status, original_status);
+                assert_eq!(retained_fills, original_fills);
+                if scenario == "callback" {
+                    assert_eq!(errors.len(), 1);
+                    assert!(errors[0].contains(&parent.event_id.to_string()));
+                    assert_eq!(rows[0].2, "specific");
+                    assert_eq!(rows[1].2, "aggregate");
+                } else {
+                    assert!(errors.is_empty());
+                }
+                return;
+            }
+        }
+        assert!(
+            result.is_ok(),
+            "report runtime {result:?}; rows={rows:?}; errors={errors:?}"
+        );
+        assert!(errors.is_empty(), "report callback errors {errors:?}");
+        assert_eq!(state, NodeState::Stopped);
+        assert!(stopped.get() > 0);
+        assert_eq!(
+            capture.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        if signed_scenario.is_none() {
+            assert_eq!(stop_status, (false, Some((0, None))));
+        } else {
+            assert_eq!(stop_status, (true, Some((0, None))));
+        }
+        let (accepted, accepted_account, positions_before) = before.borrow().clone().unwrap();
+        assert_eq!(accepted.status(), OrderStatus::Accepted);
+        assert_eq!(accepted.filled_qty(), Quantity::from("0.000"));
+        assert!(accepted.venue_order_id().is_some());
+        assert_eq!(accepted.account_id(), Some(account_id));
+        assert_eq!(positions_before, 0);
+        assert_eq!(
+            accepted_account.balance_total(None),
+            Some(Money::from("1000000 USDT"))
+        );
+        assert!(accepted_account.calculated_account_state());
+        let expected = expected_report.lock().unwrap().clone().unwrap();
+        let ExecutionReport::OrderWithFills(report, fills) = &expected else {
+            unreachable!()
+        };
+        assert_eq!(
+            envelopes.borrow().len(),
+            if signed_scenario == Some("nested-positive") {
+                2
+            } else {
+                1
+            }
+        );
+        let ExecutionReport::OrderWithFills(actual_report, actual_fills) = &envelopes.borrow()[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(actual_report, report);
+        assert_eq!(actual_fills, fills);
+        assert_eq!(raw_orders.borrow().as_slice(), &[report.as_ref().clone()]);
+        assert_eq!(raw_fills.borrow().as_slice(), fills);
+        for (i, id) in report_ids.iter().enumerate() {
+            assert_ne!(id.to_string(), "00000000-0000-0000-0000-000000000000");
+            assert_eq!(
+                *id,
+                if i == 0 {
+                    report.report_id
+                } else {
+                    fills[i - 1].report_id
+                }
+            );
+        }
+        assert_eq!(report.venue_order_id, accepted.venue_order_id().unwrap());
+        assert_eq!(cached.status(), OrderStatus::Filled);
+        assert_eq!(cached.filled_qty(), Quantity::from("2.000"));
+        assert_eq!(cached.quantity(), Quantity::from("2.000"));
+        assert_eq!(rows, persisted);
+        assert_eq!(rows.len(), 8);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.0.as_str(), row.2.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("OrderFilled", "specific"),
+                ("OrderFilled", "aggregate"),
+                ("PositionOpened", "specific"),
+                ("PositionOpened", "aggregate"),
+                ("OrderFilled", "specific"),
+                ("OrderFilled", "aggregate"),
+                ("PositionChanged", "specific"),
+                ("PositionChanged", "aggregate")
+            ]
+        );
+        let mut fees = Money::zero(Currency::USDT());
+        let canonical = cached
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                OrderEventAny::Filled(fill) => Some(fill.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(canonical.len(), 2);
+        for (i, (actual, source)) in canonical.iter().zip(fills).enumerate() {
+            assert_eq!(actual.client_order_id, order_id);
+            assert_eq!(actual.account_id, account_id);
+            assert_eq!(actual.instrument_id, instrument.id());
+            assert_eq!(actual.strategy_id, strategy_id);
+            assert_eq!(actual.venue_order_id, report.venue_order_id);
+            assert_eq!(actual.position_id, Some(position_id));
+            assert_eq!(actual.trade_id, source.trade_id);
+            assert_eq!(actual.last_qty, source.last_qty);
+            assert_eq!(actual.last_px, source.last_px);
+            assert_eq!(actual.liquidity_side, LiquiditySide::Maker);
+            assert_eq!(actual.commission, Some(source.commission));
+            assert_eq!(actual.ts_event, source.ts_event);
+            assert!(actual.reconciliation);
+            fees = fees + source.commission;
+            for row in &rows[i * 4..i * 4 + 4] {
+                assert_eq!(row.3, if i == 0 { "PARTIALLY_FILLED" } else { "FILLED" });
+                assert_eq!(row.4, if i == 0 { "0.750" } else { "2.000" });
+                assert_eq!(row.5, if i == 0 { "0.750" } else { "2.000" });
+                let observed_account: AccountAny = serde_json::from_str(&row.7).unwrap();
+                let observed_position: Position = serde_json::from_str(&row.8).unwrap();
+                assert_eq!(observed_account.id(), account_id);
+                assert!(observed_account.calculated_account_state());
+                // Report fills use the Engine -> Portfolio AccountsManager path, not a
+                // Sandbox matching balance update or a fabricated account-state report.
+                assert_eq!(
+                    observed_account.balance_total(None).unwrap(),
+                    accepted_account.balance_total(None).unwrap() - fees
+                );
+                assert_eq!(
+                    observed_account.balance_free(None).unwrap()
+                        + observed_account.balance_locked(None).unwrap(),
+                    observed_account.balance_total(None).unwrap()
+                );
+                assert_eq!(observed_position.id, position_id);
+                assert_eq!(observed_position.quantity, Quantity::from(row.5.as_str()));
+                assert_eq!(observed_position.side, PositionSide::Long);
+                assert_eq!(
+                    observed_position.realized_pnl,
+                    Some(Money::zero(Currency::USDT()) - fees)
+                );
+            }
+        }
+        assert_ne!(fills[0].trade_id, fills[1].trade_id);
+        assert_eq!(outputs.borrow().len(), 4);
+        assert_eq!(payloads.len(), 8);
+        for ((outlet, payload), (expected_outlet, expected)) in payloads.iter().zip(
+            outputs
+                .borrow()
+                .iter()
+                .flat_map(|event| [("specific", event), ("aggregate", event)]),
+        ) {
+            assert_eq!(outlet, expected_outlet);
+            assert_eq!(typed_value(payload), typed_value(expected));
+        }
+        let events = outputs.borrow();
+        let OwnerExternalEvent::Order(OrderEventAny::Filled(first)) = &events[0] else {
+            panic!("first report fill")
+        };
+        let OwnerExternalEvent::Position(PositionEvent::PositionOpened(opened)) = &events[1] else {
+            panic!("first position opened")
+        };
+        let OwnerExternalEvent::Order(OrderEventAny::Filled(second)) = &events[2] else {
+            panic!("second report fill")
+        };
+        let OwnerExternalEvent::Position(PositionEvent::PositionChanged(changed)) = &events[3]
+        else {
+            panic!("second position changed")
+        };
+        assert_eq!(first, &canonical[0]);
+        assert_eq!(second, &canonical[1]);
+        assert_eq!(opened.quantity, Quantity::from("0.750"));
+        assert_eq!(changed.quantity, Quantity::from("2.000"));
+        for (i, expected) in events.iter().enumerate() {
+            let event_id = match expected {
+                OwnerExternalEvent::Order(event) => event.clone().into_boxed().id(),
+                OwnerExternalEvent::Position(PositionEvent::PositionOpened(event)) => {
+                    event.event_id
+                }
+                OwnerExternalEvent::Position(PositionEvent::PositionChanged(event)) => {
+                    event.event_id
+                }
+                other => panic!("unexpected report event {other:?}"),
+            };
+            assert_eq!(rows[i * 2].1, event_id.to_string());
+            assert_eq!(rows[i * 2 + 1].1, event_id.to_string());
+        }
+        let position = position.unwrap();
+        assert_eq!(position.quantity, Quantity::from("2.000"));
+        assert_eq!(position.events, canonical);
+        assert_eq!(position.commissions(), vec![fees]);
+        assert_eq!(cached.commissions().get(&Currency::USDT()), Some(&fees));
+        assert_eq!(
+            position.realized_pnl,
+            Some(Money::zero(Currency::USDT()) - fees)
+        );
+        assert_eq!(
+            account.balance_total(None).unwrap(),
+            accepted_account.balance_total(None).unwrap() - fees
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[7].7).unwrap(),
+            serde_json::to_value(&account).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[7].8).unwrap(),
+            serde_json::to_value(&position).unwrap()
+        );
+        assert_eq!(
+            engine.borrow().report_count(),
+            if signed_scenario == Some("nested-positive") {
+                2
+            } else {
+                1
+            }
+        );
+        eprintln!(
+            "report independent assertions passed; borrow rows={rows:?}; original report={expected:?}"
+        );
+        // Keep this target boundary assertion last: earlier failures are not the borrow RED.
+        assert!(
+            rows.iter().all(|row| row.6),
+            "report specific/aggregate callbacks must be outside the native borrow: {rows:?}"
+        );
+    }
+
+    #[rstest]
+    #[case::connected("normal")]
+    #[case::connection_timeout("timeout")]
+    #[case::connection_cancel("cancel")]
+    #[case::shutdown_late_mass("shutdown")]
+    fn test_run_async_owns_report_received_during_real_connect(#[case] outcome: &str) {
+        use nautilus_common::{messages::ExecutionReport, owner_delivery};
+        use nautilus_trading::python::strategy::PyStrategy;
+
+        struct LifecycleReportTap {
+            envelopes: Rc<RefCell<Vec<ExecutionReport>>>,
+            fills: Rc<RefCell<Vec<OrderFilled>>>,
+            observer: Rc<RefCell<Option<owner_delivery::OwnerObserver>>>,
+            late: Rc<RefCell<Vec<OrderEventAny>>>,
+        }
+        impl BusTap for LifecycleReportTap {
+            fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+                if endpoint == MessagingSwitchboard::exec_engine_reconcile_execution_report()
+                    && let Some(report) = message.downcast_ref::<ExecutionReport>()
+                {
+                    self.envelopes.borrow_mut().push(report.clone());
+                    self.observer
+                        .borrow_mut()
+                        .get_or_insert_with(|| owner_delivery::current_observer().unwrap());
+                }
+            }
+            fn on_publish(&self, topic: MStr<Topic>, message: &dyn Any) {
+                if let Some(event @ OrderEventAny::Canceled(_)) =
+                    message.downcast_ref::<OrderEventAny>()
+                    && event.client_order_id().as_str().contains("-LATE-")
+                    && topic.as_str() == format!("events.order.{}", event.strategy_id())
+                {
+                    self.late.borrow_mut().push(event.clone());
+                }
+                if let Some(OrderEventAny::Filled(fill)) = message.downcast_ref::<OrderEventAny>()
+                    && topic.as_str() == format!("events.order.{}", fill.strategy_id)
+                {
+                    self.fills.borrow_mut().push(fill.clone());
+                }
+            }
+        }
+
+        Python::initialize();
+        let trader_id = TraderId::from("PENDING-REPORT-001");
+        let account_id = AccountId::from("SIM-001");
+        let client_id = ClientId::from("PENDING-REPORT");
+        let node = LiveNodeBuilder::from_config(LiveNodeConfig {
+            trader_id,
+            environment: Environment::Sandbox,
+            timeout_connection: if outcome == "timeout" {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(3)
+            },
+            timeout_disconnection: Duration::from_millis(500),
+            delay_post_stop: Duration::ZERO,
+            timeout_shutdown: Duration::from_millis(500),
+            exec_engine: LiveExecutionEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap()
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+        let cache = node.kernel().cache();
+        let engine = node.kernel().exec_engine().clone();
+        let clock = node.kernel().clock();
+        let now = clock.borrow().timestamp_ns();
+        let mut perpetual = crypto_perpetual_ethusdt();
+        perpetual.id = InstrumentId::from("PENDING-REPORT.SIM");
+        perpetual.maker_fee = Decimal::new(1, 3);
+        let instrument = InstrumentAny::CryptoPerpetual(perpetual);
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone())
+            .unwrap();
+        cache
+            .borrow_mut()
+            .add_quote(QuoteTick::new(
+                instrument.id(),
+                Price::from("100.00"),
+                Price::from("100.02"),
+                Quantity::from("100.000"),
+                Quantity::from("100.000"),
+                now,
+                now,
+            ))
+            .unwrap();
+        let initial_account = AccountState::new(
+            account_id,
+            AccountType::Margin,
+            vec![AccountBalance::new(
+                Money::from("1000000 USDT"),
+                Money::zero(Currency::USDT()),
+                Money::from("1000000 USDT"),
+            )],
+            vec![],
+            true,
+            UUID4::new(),
+            now,
+            now,
+            Some(Currency::USDT()),
+        );
+        cache
+            .borrow_mut()
+            .add_account(MarginAccount::new(initial_account, true).into())
+            .unwrap();
+        let module = Python::attach(|py| {
+            let module = PyModule::new(py, "pending_report_observer").unwrap();
+            module
+                .setattr("Strategy", py.get_type::<PyStrategy>())
+                .unwrap();
+            module
+                .setattr("shutdown_mode", outcome == "shutdown")
+                .unwrap();
+            py.run(c_str!(r#"
+import asyncio
+callbacks = []
+started = []
+waiting = False
+stopped_status = None
+late_errors = []
+class PendingReportStrategy(Strategy):
+    def on_start(self):
+        cached = self.cache.order(order_id)
+        started.append((str(cached.status), str(cached.filled_qty)))
+    def on_order_filled(self, event): callbacks.append(("specific", str(event.event_id)))
+    def on_order_event(self, event): callbacks.append(("aggregate", str(event.event_id)))
+    def on_position_opened(self, event): callbacks.append(("specific-position", str(event.event_id)))
+    def on_position_changed(self, event): callbacks.append(("specific-position", str(event.event_id)))
+    def on_position_event(self, event): callbacks.append(("aggregate-position", str(event.event_id)))
+    def on_stop(self):
+        global stopped_status
+        stopped_status = self._control_delivery_status()
+        if shutdown_mode:
+            try: send_shutdown()
+            except BaseException as error:
+                late_errors.append(repr(error))
+                raise
+    def on_dispose(self): pass
+strategy = PendingReportStrategy()
+def mark_waiting():
+    global waiting
+    waiting = True
+"#), Some(&module.dict()), None).unwrap();
+            module.unbind()
+        });
+        let strategy = Python::attach(|py| module.bind(py).getattr("strategy").unwrap().unbind());
+        let strategy_id = node
+            .kernel()
+            .trader()
+            .borrow_mut()
+            .add_python_strategy_instance(&strategy)
+            .unwrap();
+        let order_id = ClientOrderId::from("PENDING-REPORT-A");
+        let order = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(trader_id)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument.id())
+            .client_order_id(order_id)
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("2.000"))
+            .price(Price::from("100.00"))
+            .build();
+        // A real restored cache prefix precedes connect; no financial submission is manufactured.
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, Some(client_id), false)
+            .unwrap();
+        engine.borrow_mut().process(
+            &nautilus_model::orders::stubs::TestOrderEventStubs::submitted(&order, account_id),
+        );
+        let venue_id = VenueOrderId::from("V-PENDING-REPORT-A");
+        engine.borrow_mut().process(
+            &nautilus_model::orders::stubs::TestOrderEventStubs::accepted(
+                &order, account_id, venue_id,
+            ),
+        );
+        let prefix = cache.borrow().order_owned(&order_id).unwrap();
+        let late = (outcome == "shutdown")
+            .then(|| late_cancel_fixture(&order, account_id, client_id, &cache, now));
+        assert_eq!(prefix.status(), OrderStatus::Accepted);
+        let mut status = OrderStatusReport::new(
+            account_id,
+            instrument.id(),
+            Some(order_id),
+            venue_id,
+            Some(OrderSide::Buy),
+            OrderType::Limit,
+            TimeInForce::Gtc,
+            OrderStatus::Filled,
+            Quantity::from("2.000"),
+            Quantity::from("2.000"),
+            now,
+            now,
+            now,
+            None,
+        )
+        .with_price(Price::from("100.00"));
+        status.avg_px = Some(Decimal::from(100));
+        let fills: Vec<_> = ["PENDING-REPORT-T-A", "PENDING-REPORT-T-B"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, trade)| {
+                let (qty, fee) = if i == 0 {
+                    ("0.750", "0.075 USDT")
+                } else {
+                    ("1.250", "0.125 USDT")
+                };
+                FillReport::new(
+                    account_id,
+                    instrument.id(),
+                    venue_id,
+                    TradeId::from(trade),
+                    OrderSide::Buy,
+                    Quantity::from(qty),
+                    Price::from("100.00"),
+                    Money::from(fee),
+                    LiquiditySide::Maker,
+                    Some(order_id),
+                    None,
+                    now,
+                    now,
+                    None,
+                )
+            })
+            .collect();
+        let report = ExecutionReport::OrderWithFills(Box::new(status.clone()), fills.clone());
+        let sender = nautilus_common::live::get_exec_event_sender();
+        let pending_report = Mutex::new(Some(report));
+        let (release, waiting) = oneshot::channel();
+        let release = Mutex::new(Some(release));
+        Python::attach(|py| {
+            let send_report = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                move |_args, _kwargs| -> pyo3::PyResult<()> {
+                    sender
+                        .send(ExecutionEvent::Report(
+                            pending_report.lock().unwrap().take().unwrap(),
+                        ))
+                        .map_err(|error| {
+                            pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                        })
+                },
+            )
+            .unwrap();
+            module.bind(py).setattr("send_report", send_report).unwrap();
+            let finish = PyCFunction::new_closure(py, None, None, move |_args, _kwargs| -> bool {
+                release
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .is_some_and(|sender| sender.send(()).is_ok())
+            })
+            .unwrap();
+            module.bind(py).setattr("finish_connect", finish).unwrap();
+            module
+                .bind(py)
+                .setattr("order_id", order_id.into_py_any(py).unwrap())
+                .unwrap();
+        });
+        if let Some(late) = &late {
+            let sender = nautilus_common::live::get_exec_event_sender();
+            let report = Mutex::new(Some(ExecutionReport::MassStatus(Box::new(
+                late.mass.clone(),
+            ))));
+            Python::attach(|py| {
+                let send = PyCFunction::new_closure(
+                    py,
+                    None,
+                    None,
+                    move |_args, _kwargs| -> pyo3::PyResult<()> {
+                        sender
+                            .send(ExecutionEvent::Report(
+                                report.lock().unwrap().take().unwrap(),
+                            ))
+                            .map_err(|error| {
+                                pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                            })
+                    },
+                )
+                .unwrap();
+                module.bind(py).setattr("send_shutdown", send).unwrap();
+            });
+        }
+        let config = SandboxExecutionClientConfig {
+            account_id,
+            venue: Venue::from("SIM"),
+            oms_type: OmsType::Netting,
+            account_type: AccountType::Margin,
+            base_currency: Some(Currency::USDT()),
+            starting_balances: vec![Money::from("1000000 USDT")],
+            ..Default::default()
+        };
+        let core = ExecutionClientCore::new(
+            trader_id,
+            client_id,
+            config.venue,
+            config.oms_type,
+            account_id,
+            config.account_type,
+            config.base_currency,
+            cache.clone(),
+        );
+        let inner = SandboxExecutionClient::new(core, config, clock, cache.clone());
+        let capture = inner.account_capture_probe().unwrap();
+        let phase = Rc::new(Cell::new(ConnectPhase::Before));
+        let stopped = Rc::new(Cell::new(0));
+        engine
+            .borrow_mut()
+            .register_client(Box::new(HeldSandboxConnect {
+                inner,
+                finish: Some(waiting),
+                phase: phase.clone(),
+                waiting_callback: Python::attach(|py| {
+                    module.bind(py).getattr("mark_waiting").unwrap().unbind()
+                }),
+                queries: Rc::new(RefCell::new(Vec::new())),
+                stopped: stopped.clone(),
+                completed_query_callback: None,
+            }))
+            .unwrap();
+        let envelopes = Rc::new(RefCell::new(Vec::new()));
+        let canonical_fills = Rc::new(RefCell::new(Vec::new()));
+        let observed_owner = Rc::new(RefCell::new(None));
+        let late_events = Rc::new(RefCell::new(Vec::new()));
+        msgbus::set_bus_tap(Rc::new(LifecycleReportTap {
+            envelopes: envelopes.clone(),
+            fills: canonical_fills.clone(),
+            observer: observed_owner.clone(),
+            late: late_events.clone(),
+        }));
+        let (py_node, result) = Python::attach(|py| {
+            let py_node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("node", &py_node).unwrap();
+            globals.set_item("observer", module.bind(py)).unwrap();
+            globals.set_item("outcome", outcome).unwrap();
+            let result = py.run(
+                c_str!(
+                    r#"
+import asyncio
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    handle = node.handle()
+    try:
+        async def until(predicate):
+            while not predicate():
+                if task.done():
+                    await task
+                    raise AssertionError("native run ended before expected lifecycle boundary")
+                await asyncio.sleep(0)
+        await asyncio.wait_for(until(lambda: observer.waiting), timeout=2)
+        observer.send_report()
+        for _ in range(8): await asyncio.sleep(0)
+        cached = observer.strategy.cache.order(observer.order_id)
+        assert str(cached.status) == "ACCEPTED" and str(cached.filled_qty) == "0.000"
+        assert observer.callbacks == [] and observer.started == []
+        if outcome in ("normal", "shutdown"):
+            assert observer.finish_connect()
+            await asyncio.wait_for(until(lambda: bool(observer.started)), timeout=3)
+            assert handle.is_running
+            handle.stop()
+            await asyncio.wait_for(task, timeout=3)
+        elif outcome == "cancel":
+            task.cancel()
+            checkpoint = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().call_soon(checkpoint.set_result, None)
+            await checkpoint
+            assert handle.is_stopping and not task.done()
+            assert observer.finish_connect()
+            try: await asyncio.wait_for(task, timeout=3)
+            except asyncio.CancelledError: pass
+            else: raise AssertionError("native cleanup did not propagate cancellation")
+        else:
+            try: await asyncio.wait_for(task, timeout=3)
+            except RuntimeError as error: assert "exec-connect" in str(error), str(error)
+            else: raise AssertionError("real held native connect did not time out")
+        assert not handle.is_running
+    finally:
+        if not task.done():
+            observer.finish_connect()
+            handle.stop()
+            try: await asyncio.wait_for(task, timeout=3)
+            except (asyncio.CancelledError, RuntimeError): pass
+asyncio.run(exercise())
+"#
+                ),
+                Some(&globals),
+                None,
+            );
+            (py_node, result)
+        });
+        msgbus::clear_bus_tap();
+        let canonical = cache.borrow().order_owned(&order_id).unwrap();
+        let late_orders = late.as_ref().map(|late| {
+            late.orders.each_ref().map(|order| {
+                cache
+                    .borrow()
+                    .order_owned(&order.client_order_id())
+                    .unwrap()
+            })
+        });
+        let account = cache.borrow().account_owned(&account_id).unwrap();
+        let position_id = PositionId::new(format!("{}-{strategy_id}", instrument.id()));
+        let position = cache.borrow().position_owned(&position_id);
+        let actual_owner = observed_owner.borrow().clone();
+        let owner_status = actual_owner
+            .as_ref()
+            .and_then(|owner| owner.status().unwrap());
+        let retained = actual_owner
+            .as_ref()
+            .map(|owner| owner.retained_reports().unwrap())
+            .unwrap_or_default();
+        let (callbacks, started, state) = Python::attach(|py| {
+            let callbacks: Vec<(String, String)> = module
+                .bind(py)
+                .getattr("callbacks")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let started: Vec<(String, String)> = module
+                .bind(py)
+                .getattr("started")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let state: NodeState = py_node
+                .call_method0(py, "handle")
+                .unwrap()
+                .getattr(py, "state")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            py_node.call_method0(py, "dispose").unwrap();
+            (callbacks, started, state)
+        });
+        assert!(
+            result.is_ok(),
+            "actual {outcome} lifecycle failed: {result:?}; canonical={canonical:?}; retained={retained:?}"
+        );
+        assert_eq!(state, NodeState::Stopped);
+        assert!(stopped.get() > 0);
+        assert_eq!(
+            capture.capture().unwrap_err(),
+            nautilus_common::clients::ExecutionAccountCaptureError::Retired
+        );
+        assert!(
+            callbacks.is_empty(),
+            "Starting/Stopped does not bypass the existing Running gate"
+        );
+        assert_eq!(
+            phase.get(),
+            if outcome == "timeout" {
+                ConnectPhase::Dropped
+            } else {
+                ConnectPhase::Returned
+            }
+        );
+        eprintln!(
+            "REPORT_CONNECT_BOUNDARY outcome={outcome} phase={:?} canonical={:?} envelopes={} fills={} retained={} owner={owner_status:?} callbacks={} started={started:?}",
+            phase.get(),
+            canonical.status(),
+            envelopes.borrow().len(),
+            canonical_fills.borrow().len(),
+            retained.len(),
+            callbacks.len()
+        );
+        if canonical.status() == OrderStatus::Filled {
+            assert!(retained.is_empty());
+            assert_eq!(canonical.filled_qty(), Quantity::from("2.000"));
+            assert_eq!(
+                canonical.trade_ids(),
+                vec![&fills[0].trade_id, &fills[1].trade_id]
+            );
+            assert_eq!(canonical_fills.borrow().len(), 2);
+            for (canonical, original) in canonical_fills.borrow().iter().zip(&fills) {
+                assert_eq!(canonical.trade_id, original.trade_id);
+                assert_eq!(canonical.client_order_id, order_id);
+                assert_eq!(canonical.last_qty, original.last_qty);
+                assert_eq!(canonical.last_px, original.last_px);
+                assert_eq!(canonical.commission, Some(original.commission));
+            }
+            assert_eq!(position.as_ref().unwrap().quantity, Quantity::from("2.000"));
+            assert_eq!(
+                position.as_ref().unwrap().commissions(),
+                vec![Money::from("0.20 USDT")]
+            );
+            assert_eq!(
+                account.balance_total(None),
+                Some(Money::from("999999.80 USDT"))
+            );
+            assert_eq!(owner_status, Some((0, None)));
+        } else {
+            assert_ne!(
+                outcome, "normal",
+                "successful connect must finish buffered report before start"
+            );
+            assert_eq!(canonical.status(), OrderStatus::Accepted);
+            assert_eq!(canonical.events(), prefix.events());
+            assert!(canonical_fills.borrow().is_empty());
+            assert!(position.is_none());
+            assert_eq!(
+                account.balance_total(None),
+                Some(Money::from("1000000 USDT"))
+            );
+            assert_eq!(
+                retained.len(),
+                1,
+                "unapplied report must remain owned after real native cleanup"
+            );
+            let ExecutionReport::OrderWithFills(held, held_fills) = &retained[0].input.reports[0]
+            else {
+                panic!("original report retained")
+            };
+            assert_eq!(held.as_ref(), &status);
+            assert_eq!(held_fills, &fills);
+            assert!(owner_status.unwrap().0 > 0);
+        }
+        if matches!(outcome, "normal" | "shutdown") {
+            assert_eq!(started, vec![("FILLED".to_string(), "2.000".to_string())]);
+        }
+        assert_eq!(
+            envelopes.borrow().len(),
+            if late.is_some() { 2 } else { 1 },
+            "each original envelope reaches owner admission or dispatch exactly once"
+        );
+        let ExecutionReport::OrderWithFills(actual_status, actual_fills) = &envelopes.borrow()[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(actual_status.as_ref(), &status);
+        assert_eq!(actual_fills, &fills);
+        if let Some(late) = late {
+            let late_errors: Vec<String> = Python::attach(|py| {
+                module
+                    .bind(py)
+                    .getattr("late_errors")
+                    .unwrap()
+                    .extract()
+                    .unwrap()
+            });
+            assert!(
+                late_errors.is_empty(),
+                "late report send failed: {late_errors:?}"
+            );
+            let originals = late_orders.unwrap();
+            let expected_publications: Vec<_> = originals
+                .iter()
+                .map(|order| order.last_event().clone())
+                .collect();
+            assert_eq!(*late_events.borrow(), expected_publications);
+            for (actual, prefix) in originals.iter().zip(&late.orders) {
+                assert_eq!(actual.status(), OrderStatus::Canceled);
+                assert_eq!(actual.filled_qty(), Quantity::from("0.000"));
+                assert!(actual.commissions().is_empty());
+                assert_eq!(actual.events().len(), prefix.events().len() + 1);
+                assert_eq!(
+                    &actual.events()[..prefix.events().len()],
+                    prefix.events().as_slice()
+                );
+                let OrderEventAny::Canceled(event) = actual.last_event() else {
+                    panic!("late canonical cancel")
+                };
+                assert!(event.reconciliation);
+                assert_eq!(event.client_order_id, prefix.client_order_id());
+                assert_eq!(event.venue_order_id, prefix.venue_order_id());
+            }
+            let ExecutionReport::MassStatus(actual) = &envelopes.borrow()[1] else {
+                panic!("actual late wrapper")
+            };
+            assert_eq!(
+                serde_json::to_value(&**actual).unwrap(),
+                serde_json::to_value(&late.mass).unwrap()
+            );
+            assert_eq!(engine.borrow().report_count(), 2);
+        } else {
+            assert!(late_events.borrow().is_empty());
+        }
+    }
+
     #[rstest]
     #[case::long_to_short(true)]
     #[case::short_to_long(false)]
@@ -4020,7 +6035,7 @@ assert not fixture.canceled_callbacks
                 retained_outputs[0].error,
                 Some(OwnerDeliveryError::ExternalCallback)
             );
-            let OwnerDeliveryCause::Incoming(cause) = retained_outputs[0].cause else {
+            let OwnerDeliveryCause::Incoming(cause) = &retained_outputs[0].cause else {
                 panic!("real original Incoming cause required")
             };
             assert_eq!(cause.event_id, original_fills[1].event_id);
@@ -6730,7 +8745,7 @@ asyncio.run(exercise())
             );
             assert_eq!(retained_outputs.len(), 1);
             let retained = &retained_outputs[0];
-            let OwnerDeliveryCause::Incoming(cause) = retained.cause else {
+            let OwnerDeliveryCause::Incoming(cause) = &retained.cause else {
                 panic!("normal ingress cannot acquire a synthetic control cause");
             };
             assert_eq!(cause.event_id, terminal_id);
@@ -6742,7 +8757,7 @@ asyncio.run(exercise())
             };
             assert_eq!(*original, terminal);
             assert_eq!(retained_inputs.len(), 1);
-            assert_eq!(retained_inputs[0].cause, Some(cause));
+            assert_eq!(retained_inputs[0].cause, Some(*cause));
             assert_eq!(
                 retained_inputs[0].stage,
                 OwnerIncomingStage::DispatchReturned

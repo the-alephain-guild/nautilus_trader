@@ -620,6 +620,7 @@ impl AsyncRunner {
             crate::node::account_capture::dispatch_guard(crate::node::account_capture::EXEC_EVENTS);
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_execution_report(endpoint, report);
+        drain_owner_delivery();
     }
 }
 

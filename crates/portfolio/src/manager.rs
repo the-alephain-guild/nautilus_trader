@@ -18,14 +18,21 @@
 use std::{cell::RefCell, cmp::Ordering, fmt::Debug, rc::Rc};
 
 use ahash::{AHashMap, AHashSet};
-use nautilus_common::{cache::Cache, clock::Clock};
+use nautilus_common::{
+    cache::Cache,
+    clock::Clock,
+    owner_delivery::{
+        PortfolioFailureStage, PortfolioNativeFailure, PortfolioPendingReason,
+        ReportPortfolioOutcome,
+    },
+};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     accounts::{
         Account, AccountAny, BaseAccount, BettingAccount, CashAccount, MarginAccount, WalletAccount,
     },
     enums::{AccountType, OrderSide, OrderType, PriceType},
-    events::{AccountState, OrderFilled},
+    events::{AccountState, OrderFillVoided, OrderFilled},
     identifiers::InstrumentId,
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
@@ -37,6 +44,234 @@ use nautilus_model::{
     },
 };
 use rust_decimal::Decimal;
+
+pub(crate) struct AccountCalculation<T> {
+    pub value: T,
+    pub outcome: ReportPortfolioOutcome,
+}
+
+/// Evidence of a balance mutation performed by this Portfolio instance, not a venue receipt.
+#[derive(Clone)]
+pub(crate) struct AppliedCashFill {
+    pub original: OrderFilled,
+    reported_state: Option<UUID4>,
+    booked_principal: Money,
+    booked_commission: Money,
+    reversed_qty: Quantity,
+    reversed_principal: Money,
+    reversed_commission: Money,
+}
+
+pub(crate) struct CashFillBalanceBefore {
+    total: Money,
+    commission: Money,
+    expected_principal: Money,
+    reported_state: Option<UUID4>,
+}
+
+fn latest_reported_cash_state(cash: &CashAccount) -> Option<UUID4> {
+    cash.events
+        .iter()
+        .rev()
+        .find(|event| event.is_reported)
+        .map(|event| event.event_id)
+}
+
+impl AppliedCashFill {
+    pub(crate) fn observe_before(
+        account: &AccountAny,
+        instrument: &InstrumentAny,
+        fill: &OrderFilled,
+    ) -> Option<CashFillBalanceBefore> {
+        let AccountAny::Cash(cash) = account else {
+            return None;
+        };
+        let InstrumentAny::CurrencyPair(_) = instrument else {
+            return None;
+        };
+        let currency = instrument.quote_currency();
+        if !cash.calculate_account_state
+            || instrument.is_inverse()
+            || instrument.is_quanto()
+            || cash.base_currency != Some(currency)
+            || instrument.settlement_currency() != currency
+            || fill.currency != currency
+            || fill.commission.is_some_and(|fee| fee.currency != currency)
+        {
+            return None;
+        }
+        let notional = instrument
+            .try_calculate_notional_value(fill.last_qty, fill.last_px, None)
+            .ok()?;
+        let expected_principal = if fill.order_side == OrderSide::Buy {
+            -notional
+        } else {
+            notional
+        };
+        Some(CashFillBalanceBefore {
+            total: cash.balance_total(None)?,
+            commission: cash
+                .commission(&currency)
+                .unwrap_or_else(|| Money::zero(currency)),
+            expected_principal,
+            reported_state: latest_reported_cash_state(cash),
+        })
+    }
+
+    /// Call only after the returned working account has actually been installed in the cache.
+    pub(crate) fn from_applied(
+        before: &CashFillBalanceBefore,
+        account: &AccountAny,
+        fill: &OrderFilled,
+    ) -> anyhow::Result<Self> {
+        let AccountAny::Cash(cash) = account else {
+            anyhow::bail!("Cash apply account changed type");
+        };
+        let currency = before.total.currency;
+        let total = cash
+            .balance_total(None)
+            .ok_or_else(|| anyhow::anyhow!("Cash applied balance is missing"))?;
+        let commission = cash
+            .commission(&currency)
+            .unwrap_or_else(|| Money::zero(currency))
+            .checked_sub(before.commission)
+            .ok_or_else(|| anyhow::anyhow!("Cash commission delta overflow"))?;
+        anyhow::ensure!(
+            commission == fill.commission.unwrap_or_else(|| Money::zero(currency)),
+            "Cash applied commission differs from original fill"
+        );
+        let principal = total
+            .checked_sub(before.total)
+            .and_then(|delta| delta.checked_add(commission))
+            .ok_or_else(|| anyhow::anyhow!("Cash principal delta overflow"))?;
+        anyhow::ensure!(
+            principal == before.expected_principal,
+            "Cash actual principal differs from the original fill calculation"
+        );
+        Ok(Self {
+            original: fill.clone(),
+            reported_state: before.reported_state,
+            booked_principal: principal,
+            booked_commission: commission,
+            reversed_qty: Quantity::zero(fill.last_qty.precision),
+            reversed_principal: Money::zero(currency),
+            reversed_commission: Money::zero(currency),
+        })
+    }
+
+    pub(crate) fn prepare_correction(
+        &self,
+        account: &mut AccountAny,
+        instrument: &InstrumentAny,
+        voided: &OrderFillVoided,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            Self::observe_before(account, instrument, &self.original).is_some(),
+            "Cash correction requires a supported locally calculated single-currency account"
+        );
+        let AccountAny::Cash(cash) = account else {
+            anyhow::bail!("Cash correction account changed type");
+        };
+        anyhow::ensure!(
+            latest_reported_cash_state(cash) == self.reported_state,
+            "Cash correction basis was superseded by a reported account state"
+        );
+        let fill = &self.original;
+        anyhow::ensure!(
+            fill.account_id == voided.account_id
+                && fill.trader_id == voided.trader_id
+                && fill.strategy_id == voided.strategy_id
+                && fill.instrument_id == voided.instrument_id
+                && fill.client_order_id == voided.client_order_id
+                && fill.trade_id == voided.trade_id
+                && fill.venue_order_id == voided.venue_order_id
+                && fill.order_side == voided.order_side
+                && fill.order_type == voided.order_type
+                && fill.currency == voided.currency
+                && fill.position_id == voided.position_id
+                && fill.liquidity_side == voided.liquidity_side
+                && fill.last_px == voided.last_px,
+            "Cash correction identity differs from the actually applied fill"
+        );
+        anyhow::ensure!(
+            voided.voided_qty >= self.reversed_qty && voided.voided_qty <= fill.last_qty,
+            "Cash correction quantity is stale or excessive"
+        );
+        let currency = self.booked_principal.currency;
+        let commission = voided
+            .commission_voided
+            .unwrap_or_else(|| Money::zero(currency));
+        anyhow::ensure!(
+            commission.currency == currency
+                && commission.abs() >= self.reversed_commission.abs()
+                && commission.abs() <= self.booked_commission.abs()
+                && (commission.is_zero()
+                    || (commission.is_positive() == self.booked_commission.is_positive()
+                        && commission.is_negative() == self.booked_commission.is_negative())),
+            "Cash correction commission is stale or differs from the applied commission"
+        );
+        let remaining = fill.last_qty - voided.voided_qty;
+        let notional = instrument.try_calculate_notional_value(remaining, fill.last_px, None)?;
+        anyhow::ensure!(
+            notional.currency == currency,
+            "Cash correction changed principal currency"
+        );
+        let remaining_principal = if fill.order_side == OrderSide::Buy {
+            -notional
+        } else {
+            notional
+        };
+        let reversed_principal = self
+            .booked_principal
+            .checked_sub(remaining_principal)
+            .ok_or_else(|| anyhow::anyhow!("Cash cumulative principal overflow"))?;
+        let principal_delta = reversed_principal
+            .checked_sub(self.reversed_principal)
+            .ok_or_else(|| anyhow::anyhow!("Cash principal reversal delta overflow"))?;
+        let commission_delta = commission
+            .checked_sub(self.reversed_commission)
+            .ok_or_else(|| anyhow::anyhow!("Cash commission reversal delta overflow"))?;
+        let balance = cash
+            .base_balance(None)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("Cash correction balance is missing"))?;
+        let total = balance
+            .total
+            .checked_sub(principal_delta)
+            .and_then(|total| total.checked_add(commission_delta))
+            .ok_or_else(|| anyhow::anyhow!("Cash corrected total overflow"))?;
+        let locked = balance
+            .locked
+            .as_decimal()
+            .min(total.as_decimal().max(Decimal::ZERO));
+        let balance = AccountBalance::from_total_and_locked(total.as_decimal(), locked, currency)?;
+        // Corrections are infrequent. Keep the original owned account intact on any arithmetic error.
+        let mut corrected = cash.clone();
+        corrected.update_balances(&[balance])?;
+        corrected.try_update_commissions(-commission_delta)?;
+        *cash = corrected;
+        let mut applied = self.clone();
+        applied.reversed_qty = voided.voided_qty;
+        applied.reversed_principal = reversed_principal;
+        applied.reversed_commission = commission;
+        Ok(applied)
+    }
+}
+
+fn reservation_failure(outcome: &mut ReportPortfolioOutcome) {
+    if matches!(outcome, ReportPortfolioOutcome::Complete) {
+        *outcome = ReportPortfolioOutcome::Unobserved;
+    }
+}
+
+fn calculation_rejected(outcome: &mut ReportPortfolioOutcome, message: &(impl ToString + ?Sized)) {
+    if matches!(outcome, ReportPortfolioOutcome::Complete) {
+        *outcome = ReportPortfolioOutcome::Failed(PortfolioNativeFailure {
+            stage: PortfolioFailureStage::ReservationCalculation,
+            message: message.to_string(),
+        });
+    }
+}
 
 /// Manages account balance updates and calculations for portfolio management.
 ///
@@ -70,10 +305,21 @@ impl AccountsManager {
     #[must_use]
     pub fn update_balances(
         &self,
-        mut account: AccountAny,
+        account: AccountAny,
         instrument: &InstrumentAny,
         fill: &OrderFilled,
     ) -> (AccountAny, AccountState) {
+        self.update_balances_outcome(account, instrument, fill)
+            .value
+    }
+
+    pub(crate) fn update_balances_outcome(
+        &self,
+        mut account: AccountAny,
+        instrument: &InstrumentAny,
+        fill: &OrderFilled,
+    ) -> AccountCalculation<(AccountAny, AccountState)> {
+        let mut outcome = ReportPortfolioOutcome::Complete;
         // Snapshot only what the balance update can mutate: cloning the account would
         // deep-copy its event log, which grows by one entry per fill.
         let base = base_account(&account);
@@ -110,7 +356,13 @@ impl AccountsManager {
                     fill.trade_id
                 );
                 let state = self.generate_account_state(&account, fill.ts_event);
-                return (account, state);
+                return AccountCalculation {
+                    value: (account, state),
+                    outcome: ReportPortfolioOutcome::Failed(PortfolioNativeFailure {
+                        stage: PortfolioFailureStage::BalanceCalculation,
+                        message: e.to_string(),
+                    }),
+                };
             }
         };
 
@@ -122,11 +374,16 @@ impl AccountsManager {
                     .copied()
                     .unwrap_or_else(|| Money::zero(base_currency));
 
-                self.update_balance_single_currency(&mut account, fill, pnl)
+                self.update_balance_single_currency_outcome(&mut account, fill, pnl, &mut outcome)
             }
             None => {
                 let mut pnl_list = pnls;
-                self.update_balance_multi_currency(&mut account, fill, &mut pnl_list)
+                self.update_balance_multi_currency_outcome(
+                    &mut account,
+                    fill,
+                    &mut pnl_list,
+                    &mut outcome,
+                )
             }
         };
 
@@ -135,12 +392,31 @@ impl AccountsManager {
             base.balances = original_balances;
             base.commissions = original_commissions;
 
+            if let ReportPortfolioOutcome::Failed(failure) = &mut outcome {
+                // The shared arithmetic helpers also serve reservations; this call updates balances.
+                failure.stage = PortfolioFailureStage::BalanceCalculation;
+            }
+
             let state = self.generate_account_state(&account, fill.ts_event);
-            return (account, state);
+            if matches!(outcome, ReportPortfolioOutcome::Complete) {
+                outcome = ReportPortfolioOutcome::Failed(PortfolioNativeFailure {
+                    stage: PortfolioFailureStage::BalanceCalculation,
+                    message:
+                        "Balance update failed and original balances/commissions were restored"
+                            .to_string(),
+                });
+            }
+            return AccountCalculation {
+                value: (account, state),
+                outcome,
+            };
         }
 
         let state = self.generate_account_state(&account, fill.ts_event);
-        (account, state)
+        AccountCalculation {
+            value: (account, state),
+            outcome,
+        }
     }
 
     /// Updates account balances based on open orders.
@@ -172,23 +448,52 @@ impl AccountsManager {
         orders_open: &[&OrderAny],
         ts_event: UnixNanos,
     ) -> Option<AccountState> {
-        match account {
-            AccountAny::Margin(margin_account) => {
-                self.update_margin_init(margin_account, instrument, orders_open, ts_event)
-            }
-            AccountAny::Cash(cash_account) => {
-                self.update_balance_locked(cash_account, instrument, orders_open, ts_event)
-            }
-            AccountAny::Betting(betting_account) => self.update_balance_locked_betting(
+        self.update_orders_outcome(account, instrument, orders_open, ts_event)
+            .value
+    }
+
+    pub(crate) fn update_orders_outcome(
+        &self,
+        account: &mut AccountAny,
+        instrument: &InstrumentAny,
+        orders_open: &[&OrderAny],
+        ts_event: UnixNanos,
+    ) -> AccountCalculation<Option<AccountState>> {
+        let mut outcome = ReportPortfolioOutcome::Complete;
+        let value = match account {
+            AccountAny::Margin(margin_account) => self.update_margin_init_outcome(
+                margin_account,
+                instrument,
+                orders_open,
+                ts_event,
+                &mut outcome,
+            ),
+            AccountAny::Cash(cash_account) => self.update_balance_locked_outcome(
+                cash_account,
+                instrument,
+                orders_open,
+                ts_event,
+                &mut outcome,
+            ),
+            AccountAny::Betting(betting_account) => self.update_balance_locked_betting_outcome(
                 betting_account,
                 instrument,
                 orders_open,
                 ts_event,
+                &mut outcome,
             ),
-            AccountAny::Wallet(wallet_account) => {
-                self.update_balance_locked_wallet(wallet_account, instrument, orders_open, ts_event)
-            }
+            AccountAny::Wallet(wallet_account) => self.update_balance_locked_wallet_outcome(
+                wallet_account,
+                instrument,
+                orders_open,
+                ts_event,
+                &mut outcome,
+            ),
+        };
+        if value.is_none() {
+            reservation_failure(&mut outcome);
         }
+        AccountCalculation { value, outcome }
     }
 
     /// Updates the account based on current open positions.
@@ -226,6 +531,34 @@ impl AccountsManager {
         positions: Vec<&Position>,
         ts_event: UnixNanos,
     ) -> Option<AccountState> {
+        self.update_positions_outcome(account, instrument, positions, ts_event)
+            .value
+    }
+
+    pub(crate) fn update_positions_outcome(
+        &self,
+        account: &mut MarginAccount,
+        instrument: &InstrumentAny,
+        positions: Vec<&Position>,
+        ts_event: UnixNanos,
+    ) -> AccountCalculation<Option<AccountState>> {
+        let mut outcome = ReportPortfolioOutcome::Complete;
+        let value =
+            self.update_positions_core(account, instrument, positions, ts_event, &mut outcome);
+        if value.is_none() {
+            reservation_failure(&mut outcome);
+        }
+        AccountCalculation { value, outcome }
+    }
+
+    fn update_positions_core(
+        &self,
+        account: &mut MarginAccount,
+        instrument: &InstrumentAny,
+        positions: Vec<&Position>,
+        ts_event: UnixNanos,
+        outcome: &mut ReportPortfolioOutcome,
+    ) -> Option<AccountState> {
         let mut ordered: Vec<&Position> = positions;
         ordered.sort_by_key(|p| (p.ts_opened, p.id));
 
@@ -259,17 +592,21 @@ impl AccountsManager {
                 Ok(q) if q.is_zero() => None,
                 Ok(q) => Some(q),
                 Err(e) => {
+                    calculation_rejected(outcome, &e);
                     log::error!(
                         "Cannot calculate maintenance (position) margin: net quantity \
                      conversion failed for {}: {e}",
                         instrument.id()
                     );
+                    calculation_rejected(outcome, "update_positions_core: calculation rejected");
                     return None;
                 }
             };
 
         if let Some(quantity) = net_qty {
-            let price = Price::from_decimal_dp(net_avg_px, instrument.price_precision()).ok()?;
+            let price = Price::from_decimal_dp(net_avg_px, instrument.price_precision())
+                .map_err(|error| calculation_rejected(outcome, &error))
+                .ok()?;
             let net_entry = if net_signed_qty > Decimal::ZERO {
                 OrderSide::Buy
             } else {
@@ -279,57 +616,75 @@ impl AccountsManager {
             let margin_maint = match instrument {
                 InstrumentAny::Betting(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::BinaryOption(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::Cfd(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::Commodity(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoFuture(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoFuturesSpread(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoOption(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoOptionSpread(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoPerpetual(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CurrencyPair(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::Equity(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::FuturesContract(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::FuturesSpread(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::IndexInstrument(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::OptionContract(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::OptionSpread(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::PerpetualContract(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::TokenizedAsset(i) => account
                     .calculate_maintenance_margin(i, quantity, price, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
             };
 
@@ -348,6 +703,10 @@ impl AccountsManager {
                     log::debug!(
                         "Cannot calculate maintenance (position) margin: insufficient data for {source_currency}/{base_currency}"
                     );
+                    *outcome = ReportPortfolioOutcome::Pending(
+                        PortfolioPendingReason::MissingExchangeRate,
+                    );
+                    calculation_rejected(outcome, "update_positions_core: calculation rejected");
                     return None;
                 }
             } else {
@@ -355,7 +714,9 @@ impl AccountsManager {
             }
         }
 
-        let margin_maint = Money::from_decimal(total_margin_maint, currency).ok()?;
+        let margin_maint = Money::from_decimal(total_margin_maint, currency)
+            .map_err(|error| calculation_rejected(outcome, &error))
+            .ok()?;
         if total_margin_maint.is_zero() {
             account.clear_maintenance_margin(instrument.id());
         } else {
@@ -368,6 +729,7 @@ impl AccountsManager {
                     existing.currency,
                     margin_maint.currency
                 );
+                calculation_rejected(outcome, "update_positions_core: calculation rejected");
                 return None;
             }
             account.update_maintenance_margin(instrument.id(), margin_maint);
@@ -378,12 +740,13 @@ impl AccountsManager {
         Some(self.generate_margin_account_state(account, ts_event))
     }
 
-    fn update_balance_locked(
+    fn update_balance_locked_outcome(
         &self,
         account: &mut CashAccount,
         instrument: &InstrumentAny,
         orders_open: &[&OrderAny],
         ts_event: UnixNanos,
+        outcome: &mut ReportPortfolioOutcome,
     ) -> Option<AccountState> {
         if orders_open.is_empty() {
             account.clear_balance_locked(instrument.id());
@@ -424,7 +787,12 @@ impl AccountsManager {
             ) {
                 Ok(locked) => locked,
                 Err(e) => {
+                    calculation_rejected(outcome, &e);
                     log::error!("Cannot calculate balance locked: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_outcome: calculation rejected",
+                    );
                     return None;
                 }
             };
@@ -439,7 +807,12 @@ impl AccountsManager {
                     locked = match Money::from_decimal(locked.as_decimal() * xrate, base_curr) {
                         Ok(money) => money,
                         Err(e) => {
+                            calculation_rejected(outcome, &e);
                             log::error!("Cannot calculate balance locked: {e}");
+                            calculation_rejected(
+                                outcome,
+                                "update_balance_locked_outcome: calculation rejected",
+                            );
                             return None;
                         }
                     };
@@ -448,6 +821,13 @@ impl AccountsManager {
                         "Cannot calculate balance locked: insufficient data for {}/{}",
                         locked.currency,
                         base_curr
+                    );
+                    *outcome = ReportPortfolioOutcome::Pending(
+                        PortfolioPendingReason::MissingExchangeRate,
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_outcome: calculation rejected",
                     );
                     return None;
                 }
@@ -458,6 +838,10 @@ impl AccountsManager {
                     log::error!(
                         "Cannot calculate balance locked: {} total exceeds Money bounds",
                         locked.currency
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_outcome: calculation rejected",
                     );
                     return None;
                 };
@@ -473,6 +857,10 @@ impl AccountsManager {
         }
 
         if !reservation_precisions_match(account, &total_locked) {
+            calculation_rejected(
+                outcome,
+                "update_balance_locked_outcome: calculation rejected",
+            );
             return None;
         }
 
@@ -487,6 +875,10 @@ impl AccountsManager {
                 log::error!("Cannot update balance locked: {e}");
                 account.base.balances = balances_before;
                 account.balances_locked = locks_before;
+                calculation_rejected(
+                    outcome,
+                    "update_balance_locked_outcome: calculation rejected",
+                );
                 return None;
             }
             log::info!("{} balance_locked={balance_locked}", instrument.id());
@@ -495,12 +887,13 @@ impl AccountsManager {
         Some(self.generate_unleveraged_account_state(account, ts_event))
     }
 
-    fn update_balance_locked_wallet(
+    fn update_balance_locked_wallet_outcome(
         &self,
         account: &mut WalletAccount,
         instrument: &InstrumentAny,
         orders: &[&OrderAny],
         ts_event: UnixNanos,
+        outcome: &mut ReportPortfolioOutcome,
     ) -> Option<AccountState> {
         let mut total_locked: AHashMap<Currency, Money> = AHashMap::new();
         let mut fully_locked = AHashSet::new();
@@ -512,6 +905,10 @@ impl AccountsManager {
                     order.client_order_id(),
                     order.instrument_id(),
                     instrument.id()
+                );
+                calculation_rejected(
+                    outcome,
+                    "update_balance_locked_wallet_outcome: calculation rejected",
                 );
                 return None;
             }
@@ -531,6 +928,10 @@ impl AccountsManager {
                     log::error!(
                         "Cannot calculate wallet balance locked: no observed balance for {source_currency}"
                     );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_wallet_outcome: calculation rejected",
+                    );
                     return None;
                 };
                 total_locked.insert(total.currency, total);
@@ -549,6 +950,10 @@ impl AccountsManager {
                         "Cannot calculate wallet balance locked for quote-denominated SELL order {}",
                         order.client_order_id()
                     );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_wallet_outcome: calculation rejected",
+                    );
                     return None;
                 }
                 OrderSide::Sell => {
@@ -559,13 +964,22 @@ impl AccountsManager {
                         log::error!(
                             "Cannot calculate wallet balance locked: no observed balance for {source_currency}"
                         );
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_locked_wallet_outcome: calculation rejected",
+                        );
                         return None;
                     };
 
                     match wallet_money_from_quantity(quantity, total.currency) {
                         Ok(locked) => locked,
                         Err(e) => {
+                            calculation_rejected(outcome, &e);
                             log::error!("Cannot calculate wallet balance locked: {e}");
+                            calculation_rejected(
+                                outcome,
+                                "update_balance_locked_wallet_outcome: calculation rejected",
+                            );
                             return None;
                         }
                     }
@@ -576,13 +990,22 @@ impl AccountsManager {
                         log::error!(
                             "Cannot calculate wallet balance locked: no observed balance for {source_currency}"
                         );
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_locked_wallet_outcome: calculation rejected",
+                        );
                         return None;
                     };
 
                     match wallet_money_from_quantity(quantity, total.currency) {
                         Ok(locked) => locked,
                         Err(e) => {
+                            calculation_rejected(outcome, &e);
                             log::error!("Cannot calculate wallet balance locked: {e}");
+                            calculation_rejected(
+                                outcome,
+                                "update_balance_locked_wallet_outcome: calculation rejected",
+                            );
                             return None;
                         }
                     }
@@ -592,6 +1015,10 @@ impl AccountsManager {
                         log::error!(
                             "Cannot calculate wallet balance locked for order {} without a price",
                             order.client_order_id()
+                        );
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_locked_wallet_outcome: calculation rejected",
                         );
                         return None;
                     };
@@ -605,7 +1032,12 @@ impl AccountsManager {
                     ) {
                         Ok(locked) => locked,
                         Err(e) => {
+                            calculation_rejected(outcome, &e);
                             log::error!("Cannot calculate wallet balance locked: {e}");
+                            calculation_rejected(
+                                outcome,
+                                "update_balance_locked_wallet_outcome: calculation rejected",
+                            );
                             return None;
                         }
                     }
@@ -616,6 +1048,10 @@ impl AccountsManager {
                 log::error!(
                     "Cannot calculate wallet balance locked: no observed balance for {}",
                     locked.currency
+                );
+                calculation_rejected(
+                    outcome,
+                    "update_balance_locked_wallet_outcome: calculation rejected",
                 );
                 return None;
             }
@@ -629,6 +1065,10 @@ impl AccountsManager {
                     log::error!(
                         "Cannot calculate wallet balance locked: {} total exceeds Money bounds",
                         locked.currency
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_wallet_outcome: calculation rejected",
                     );
                     return None;
                 };
@@ -652,6 +1092,10 @@ impl AccountsManager {
             );
             account.base.balances = balances_before;
             account.balances_locked = locks_before;
+            calculation_rejected(
+                outcome,
+                "update_balance_locked_wallet_outcome: calculation rejected",
+            );
             return None;
         }
 
@@ -660,6 +1104,10 @@ impl AccountsManager {
                 log::error!("Cannot update wallet balance locked: {e}");
                 account.base.balances = balances_before;
                 account.balances_locked = locks_before;
+                calculation_rejected(
+                    outcome,
+                    "update_balance_locked_wallet_outcome: calculation rejected",
+                );
                 return None;
             }
             log::info!("{} balance_locked={balance_locked}", instrument.id());
@@ -668,12 +1116,30 @@ impl AccountsManager {
         Some(self.generate_unleveraged_account_state(account, ts_event))
     }
 
+    #[cfg(test)]
     fn update_margin_init(
         &self,
         account: &mut MarginAccount,
         instrument: &InstrumentAny,
         orders_open: &[&OrderAny],
         ts_event: UnixNanos,
+    ) -> Option<AccountState> {
+        self.update_margin_init_outcome(
+            account,
+            instrument,
+            orders_open,
+            ts_event,
+            &mut ReportPortfolioOutcome::Complete,
+        )
+    }
+
+    fn update_margin_init_outcome(
+        &self,
+        account: &mut MarginAccount,
+        instrument: &InstrumentAny,
+        orders_open: &[&OrderAny],
+        ts_event: UnixNanos,
+        outcome: &mut ReportPortfolioOutcome,
     ) -> Option<AccountState> {
         let mut total_margin_init = Decimal::ZERO;
         let mut currency = instrument.settlement_currency();
@@ -704,57 +1170,75 @@ impl AccountsManager {
             let margin_init = match instrument {
                 InstrumentAny::Betting(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::BinaryOption(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::Cfd(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::Commodity(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoFuture(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoFuturesSpread(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoOption(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoOptionSpread(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CryptoPerpetual(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::CurrencyPair(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::Equity(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::FuturesContract(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::FuturesSpread(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::IndexInstrument(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::OptionContract(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::OptionSpread(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::PerpetualContract(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
                 InstrumentAny::TokenizedAsset(i) => account
                     .calculate_initial_margin(i, order.quantity(), price?, None)
+                    .map_err(|error| calculation_rejected(outcome, &error))
                     .ok()?,
             };
 
@@ -774,12 +1258,23 @@ impl AccountsManager {
                     log::debug!(
                         "Cannot calculate initial margin: insufficient data for {margin_currency}/{base_currency}"
                     );
+                    *outcome = ReportPortfolioOutcome::Pending(
+                        PortfolioPendingReason::MissingExchangeRate,
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_margin_init_outcome: calculation rejected",
+                    );
                     return None;
                 }
             } else if let Some(source_currency) = source_currency {
                 if source_currency != margin_currency {
                     log::error!(
                         "Cannot calculate initial margin: mixed currencies {source_currency} and {margin_currency}"
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_margin_init_outcome: calculation rejected",
                     );
                     return None;
                 }
@@ -794,7 +1289,9 @@ impl AccountsManager {
         let money = match Money::from_decimal(total_margin_init, currency) {
             Ok(money) => money,
             Err(e) => {
+                calculation_rejected(outcome, &e);
                 log::error!("Cannot calculate initial margin: {e}");
+                calculation_rejected(outcome, "update_margin_init_outcome: calculation rejected");
                 return None;
             }
         };
@@ -811,6 +1308,7 @@ impl AccountsManager {
                     existing.currency,
                     money.currency
                 );
+                calculation_rejected(outcome, "update_margin_init_outcome: calculation rejected");
                 return None;
             }
             account.update_initial_margin(instrument.id(), money);
@@ -822,12 +1320,13 @@ impl AccountsManager {
         Some(self.generate_margin_account_state(account, ts_event))
     }
 
-    fn update_balance_locked_betting(
+    fn update_balance_locked_betting_outcome(
         &self,
         account: &mut BettingAccount,
         instrument: &InstrumentAny,
         orders_open: &[&OrderAny],
         ts_event: UnixNanos,
+        outcome: &mut ReportPortfolioOutcome,
     ) -> Option<AccountState> {
         if orders_open.is_empty() {
             account.clear_balance_locked(instrument.id());
@@ -868,7 +1367,12 @@ impl AccountsManager {
             ) {
                 Ok(locked) => locked,
                 Err(e) => {
+                    calculation_rejected(outcome, &e);
                     log::error!("Cannot calculate betting balance locked: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_betting_outcome: calculation rejected",
+                    );
                     return None;
                 }
             };
@@ -883,7 +1387,12 @@ impl AccountsManager {
                     locked = match Money::from_decimal(locked.as_decimal() * xrate, base_curr) {
                         Ok(money) => money,
                         Err(e) => {
+                            calculation_rejected(outcome, &e);
                             log::error!("Cannot calculate balance locked: {e}");
+                            calculation_rejected(
+                                outcome,
+                                "update_balance_locked_betting_outcome: calculation rejected",
+                            );
                             return None;
                         }
                     };
@@ -892,6 +1401,13 @@ impl AccountsManager {
                         "Cannot calculate balance locked: insufficient data for {}/{}",
                         locked.currency,
                         base_curr
+                    );
+                    *outcome = ReportPortfolioOutcome::Pending(
+                        PortfolioPendingReason::MissingExchangeRate,
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_betting_outcome: calculation rejected",
                     );
                     return None;
                 }
@@ -902,6 +1418,10 @@ impl AccountsManager {
                     log::error!(
                         "Cannot calculate betting balance locked: {} total exceeds Money bounds",
                         locked.currency
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_locked_betting_outcome: calculation rejected",
                     );
                     return None;
                 };
@@ -917,6 +1437,10 @@ impl AccountsManager {
         }
 
         if !reservation_precisions_match(account, &total_locked) {
+            calculation_rejected(
+                outcome,
+                "update_balance_locked_betting_outcome: calculation rejected",
+            );
             return None;
         }
 
@@ -930,6 +1454,10 @@ impl AccountsManager {
                 log::error!("Cannot update betting balance locked: {e}");
                 account.base.balances = balances_before;
                 account.balances_locked = locks_before;
+                calculation_rejected(
+                    outcome,
+                    "update_balance_locked_betting_outcome: calculation rejected",
+                );
                 return None;
             }
             log::info!("{} balance_locked={balance_locked}", instrument.id());
@@ -938,16 +1466,21 @@ impl AccountsManager {
         Some(self.generate_betting_account_state(account, ts_event))
     }
 
-    fn update_balance_single_currency(
+    fn update_balance_single_currency_outcome(
         &self,
         account: &mut AccountAny,
         fill: &OrderFilled,
         mut pnl: Money,
+        outcome: &mut ReportPortfolioOutcome,
     ) -> bool {
         let base_currency = if let Some(currency) = account.base_currency() {
             currency
         } else {
             log::error!("Account has no base currency set");
+            calculation_rejected(
+                outcome,
+                "update_balance_single_currency_outcome: calculation rejected",
+            );
             return false;
         };
 
@@ -971,12 +1504,21 @@ impl AccountsManager {
             if let Some(xrate) = xrate {
                 let Some(converted) = comm.as_decimal().checked_mul(xrate) else {
                     log::error!("Cannot calculate account state: commission conversion overflow");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 };
                 *comm = match Money::from_decimal(converted, base_currency) {
                     Ok(money) => money,
                     Err(e) => {
+                        calculation_rejected(outcome, &e);
                         log::error!("Cannot calculate account state: {e}");
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_single_currency_outcome: calculation rejected",
+                        );
                         return false;
                     }
                 };
@@ -985,6 +1527,12 @@ impl AccountsManager {
                     "Cannot calculate account state: insufficient data for {}/{}",
                     comm.currency,
                     base_currency
+                );
+                *outcome =
+                    ReportPortfolioOutcome::Pending(PortfolioPendingReason::MissingExchangeRate);
+                calculation_rejected(
+                    outcome,
+                    "update_balance_single_currency_outcome: calculation rejected",
                 );
                 return false;
             }
@@ -1005,12 +1553,21 @@ impl AccountsManager {
             if let Some(xrate) = xrate {
                 let Some(converted) = pnl.as_decimal().checked_mul(xrate) else {
                     log::error!("Cannot calculate account state: PnL conversion overflow");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 };
                 pnl = match Money::from_decimal(converted, base_currency) {
                     Ok(money) => money,
                     Err(e) => {
+                        calculation_rejected(outcome, &e);
                         log::error!("Cannot calculate account state: {e}");
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_single_currency_outcome: calculation rejected",
+                        );
                         return false;
                     }
                 };
@@ -1020,6 +1577,12 @@ impl AccountsManager {
                     pnl.currency,
                     base_currency
                 );
+                *outcome =
+                    ReportPortfolioOutcome::Pending(PortfolioPendingReason::MissingExchangeRate);
+                calculation_rejected(
+                    outcome,
+                    "update_balance_single_currency_outcome: calculation rejected",
+                );
                 return false;
             }
         }
@@ -1027,6 +1590,10 @@ impl AccountsManager {
         if let Some(comm) = commission {
             let Some(net_pnl) = pnl.checked_sub(comm) else {
                 log::error!("Cannot calculate account state: net PnL exceeds Money bounds");
+                calculation_rejected(
+                    outcome,
+                    "update_balance_single_currency_outcome: calculation rejected",
+                );
                 return false;
             };
             pnl = net_pnl;
@@ -1044,11 +1611,19 @@ impl AccountsManager {
                 "Cannot complete transaction: no balance for {}",
                 pnl.currency
             );
+            calculation_rejected(
+                outcome,
+                "update_balance_single_currency_outcome: calculation rejected",
+            );
             return false;
         };
 
         let Some(new_total) = balance.total.as_decimal().checked_add(pnl.as_decimal()) else {
             log::error!("Cannot update {} balance: total overflow", pnl.currency);
+            calculation_rejected(
+                outcome,
+                "update_balance_single_currency_outcome: calculation rejected",
+            );
             return false;
         };
 
@@ -1059,7 +1634,12 @@ impl AccountsManager {
         ) {
             Ok(new_balance) => new_balance,
             Err(e) => {
+                calculation_rejected(outcome, &e);
                 log::error!("Cannot update {} balance: {e}", pnl.currency);
+                calculation_rejected(
+                    outcome,
+                    "update_balance_single_currency_outcome: calculation rejected",
+                );
                 return false;
             }
         };
@@ -1074,12 +1654,20 @@ impl AccountsManager {
                     && let Err(e) = margin.try_update_commissions(comm)
                 {
                     log::error!("Cannot update margin account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
             AccountAny::Cash(cash) => {
                 if let Err(e) = cash.update_balances(&balances) {
                     log::error!("Cannot update cash account balance: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
 
@@ -1087,12 +1675,20 @@ impl AccountsManager {
                     && let Err(e) = cash.try_update_commissions(comm)
                 {
                     log::error!("Cannot update cash account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
             AccountAny::Betting(betting) => {
                 if let Err(e) = betting.update_balances(&balances) {
                     log::error!("Cannot update betting account balance: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
 
@@ -1100,12 +1696,20 @@ impl AccountsManager {
                     && let Err(e) = betting.try_update_commissions(comm)
                 {
                     log::error!("Cannot update betting account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
             AccountAny::Wallet(wallet) => {
                 if let Err(e) = wallet.update_balances(&balances) {
                     log::error!("Cannot update wallet account balance: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
 
@@ -1113,6 +1717,10 @@ impl AccountsManager {
                     && let Err(e) = wallet.try_update_commissions(comm)
                 {
                     log::error!("Cannot update wallet account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_single_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
@@ -1120,11 +1728,27 @@ impl AccountsManager {
         true
     }
 
+    #[cfg(test)]
     fn update_balance_multi_currency(
         &self,
         account: &mut AccountAny,
         fill: &OrderFilled,
         pnls: &mut [Money],
+    ) -> bool {
+        self.update_balance_multi_currency_outcome(
+            account,
+            fill,
+            pnls,
+            &mut ReportPortfolioOutcome::Complete,
+        )
+    }
+
+    fn update_balance_multi_currency_outcome(
+        &self,
+        account: &mut AccountAny,
+        fill: &OrderFilled,
+        pnls: &mut [Money],
+        outcome: &mut ReportPortfolioOutcome,
     ) -> bool {
         let mut new_balances = Vec::new();
         let commission = fill.commission;
@@ -1134,6 +1758,10 @@ impl AccountsManager {
             if apply_commission && pnl.currency == commission.unwrap().currency {
                 let Some(net_pnl) = pnl.checked_sub(commission.unwrap()) else {
                     log::error!("Cannot calculate account state: net PnL exceeds Money bounds");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 };
                 *pnl = net_pnl;
@@ -1151,6 +1779,10 @@ impl AccountsManager {
                 let Some(new_total) = balance.total.as_decimal().checked_add(pnl.as_decimal())
                 else {
                     log::error!("Cannot update {currency} balance: total overflow");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 };
                 let mut new_locked = balance.locked.as_decimal();
@@ -1161,6 +1793,10 @@ impl AccountsManager {
                 {
                     let Some(updated_locked) = new_locked.checked_add(pnl.as_decimal()) else {
                         log::error!("Cannot update {currency} balance: locked amount overflow");
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_multi_currency_outcome: calculation rejected",
+                        );
                         return false;
                     };
                     new_locked = updated_locked;
@@ -1173,7 +1809,12 @@ impl AccountsManager {
                 match AccountBalance::from_total_and_locked(new_total, new_locked, currency) {
                     Ok(new_balance) => new_balance,
                     Err(e) => {
+                        calculation_rejected(outcome, &e);
                         log::error!("Cannot update {currency} balance: {e}");
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_multi_currency_outcome: calculation rejected",
+                        );
                         return false;
                     }
                 }
@@ -1188,6 +1829,10 @@ impl AccountsManager {
                 if pnl.as_decimal() < Decimal::ZERO {
                     log::error!(
                         "Cannot complete transaction: no {currency} to deduct a {pnl} realized PnL from"
+                    );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
                     );
                     return false;
                 }
@@ -1209,6 +1854,10 @@ impl AccountsManager {
                     .checked_sub(commission.as_decimal())
                 else {
                     log::error!("Cannot deduct {currency} commission: total overflow");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 };
 
@@ -1219,7 +1868,12 @@ impl AccountsManager {
                 ) {
                     Ok(commission_balance) => commission_balance,
                     Err(e) => {
+                        calculation_rejected(outcome, &e);
                         log::error!("Cannot deduct {currency} commission: {e}");
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_multi_currency_outcome: calculation rejected",
+                        );
                         return false;
                     }
                 }
@@ -1228,13 +1882,22 @@ impl AccountsManager {
                     log::error!(
                         "Cannot complete transaction: no {currency} balance to deduct a {commission} commission from"
                     );
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
                 let rebate = -commission.as_decimal();
                 match AccountBalance::from_total_and_locked(rebate, Decimal::ZERO, currency) {
                     Ok(commission_balance) => commission_balance,
                     Err(e) => {
+                        calculation_rejected(outcome, &e);
                         log::error!("Cannot credit {currency} commission rebate: {e}");
+                        calculation_rejected(
+                            outcome,
+                            "update_balance_multi_currency_outcome: calculation rejected",
+                        );
                         return false;
                     }
                 }
@@ -1254,12 +1917,20 @@ impl AccountsManager {
                     && let Err(e) = margin.try_update_commissions(commission)
                 {
                     log::error!("Cannot update margin account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
             AccountAny::Cash(cash) => {
                 if let Err(e) = cash.update_balances(&new_balances) {
                     log::error!("Cannot update cash account balance: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
 
@@ -1267,12 +1938,20 @@ impl AccountsManager {
                     && let Err(e) = cash.try_update_commissions(commission)
                 {
                     log::error!("Cannot update cash account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
             AccountAny::Betting(betting) => {
                 if let Err(e) = betting.update_balances(&new_balances) {
                     log::error!("Cannot update betting account balance: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
 
@@ -1280,12 +1959,20 @@ impl AccountsManager {
                     && let Err(e) = betting.try_update_commissions(commission)
                 {
                     log::error!("Cannot update betting account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
             AccountAny::Wallet(wallet) => {
                 if let Err(e) = wallet.update_balances(&new_balances) {
                     log::error!("Cannot update wallet account balance: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
 
@@ -1293,6 +1980,10 @@ impl AccountsManager {
                     && let Err(e) = wallet.try_update_commissions(commission)
                 {
                     log::error!("Cannot update wallet account commissions: {e}");
+                    calculation_rejected(
+                        outcome,
+                        "update_balance_multi_currency_outcome: calculation rejected",
+                    );
                     return false;
                 }
             }
@@ -5251,5 +5942,175 @@ mod tests {
             .ts_init(0.into())
             .build()
             .unwrap()
+    }
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn test_detailed_margin_missing_xrate_keeps_original_pending_state(#[case] positions: bool) {
+        let eur = Currency::EUR();
+        let state = AccountState::new(
+            AccountId::from("SIM-001"),
+            AccountType::Margin,
+            vec![AccountBalance::new(
+                Money::from("1000000 EUR"),
+                Money::zero(eur),
+                Money::from("1000000 EUR"),
+            )],
+            vec![],
+            true,
+            UUID4::new(),
+            0.into(),
+            0.into(),
+            Some(eur),
+        );
+        let mut account = MarginAccount::new(state, true);
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        let prior = Money::from("10 EUR");
+        account.update_initial_margin(instrument.id(), prior);
+        account.update_maintenance_margin(instrument.id(), prior);
+        account.set_leverage(instrument.id(), Decimal::ONE);
+        let manager = AccountsManager::new(
+            Rc::new(RefCell::new(TestClock::new())),
+            Rc::new(RefCell::new(Cache::default())),
+        );
+        let calculated = if positions {
+            let position =
+                build_hedging_position(&instrument, OrderSide::Buy, "100", "1.00000", "PENDING");
+            manager.update_positions_outcome(&mut account, &instrument, vec![&position], 0.into())
+        } else {
+            let mut order = OrderTestBuilder::new(OrderType::Limit)
+                .instrument_id(instrument.id())
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from(100_000))
+                .price(Price::from("1.00000"))
+                .build();
+            order
+                .apply(OrderEventAny::Submitted(order_submitted_for(&order)))
+                .unwrap();
+            order
+                .apply(OrderEventAny::Accepted(order_accepted_for(
+                    &order,
+                    VenueOrderId::from("V-PENDING"),
+                )))
+                .unwrap();
+            let mut any = AccountAny::Margin(account);
+            let calculated =
+                manager.update_orders_outcome(&mut any, &instrument, &[&order], 0.into());
+            let AccountAny::Margin(restored) = any else {
+                panic!("original margin type");
+            };
+            account = restored;
+            calculated
+        };
+        assert!(calculated.value.is_none());
+        assert!(matches!(
+            calculated.outcome,
+            ReportPortfolioOutcome::Pending(PortfolioPendingReason::MissingExchangeRate)
+        ));
+        assert_eq!(account.initial_margin(instrument.id()), prior);
+        assert_eq!(account.maintenance_margin(instrument.id()), prior);
+    }
+
+    #[rstest]
+    fn test_detailed_cash_reservation_overflow_reports_failure_and_preserves_balances() {
+        let usd = Currency::USD();
+        let state = AccountState::new(
+            AccountId::from("SIM-001"),
+            AccountType::Cash,
+            vec![AccountBalance::new(
+                Money::from("1000 USD"),
+                Money::zero(usd),
+                Money::from("1000 USD"),
+            )],
+            vec![],
+            true,
+            UUID4::new(),
+            0.into(),
+            0.into(),
+            None,
+        );
+        let mut account = AccountAny::Cash(CashAccount::new(state, true, false));
+        let before = account.balances();
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        let mut order = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .side(OrderSide::Sell)
+            .quantity(Quantity::new(MONEY_MAX + 1.0, 0))
+            .price(Price::from("1.00000"))
+            .build();
+        order
+            .apply(OrderEventAny::Submitted(order_submitted_for(&order)))
+            .unwrap();
+        order
+            .apply(OrderEventAny::Accepted(order_accepted_for(
+                &order,
+                VenueOrderId::from("V-OVERFLOW"),
+            )))
+            .unwrap();
+        let manager = AccountsManager::new(
+            Rc::new(RefCell::new(TestClock::new())),
+            Rc::new(RefCell::new(Cache::default())),
+        );
+        let calculated =
+            manager.update_orders_outcome(&mut account, &instrument, &[&order], 0.into());
+        assert!(calculated.value.is_none());
+        let ReportPortfolioOutcome::Failed(failure) = calculated.outcome else {
+            panic!("actual numeric error, not market pending");
+        };
+        assert_eq!(failure.stage, PortfolioFailureStage::ReservationCalculation);
+        assert!(!failure.message.is_empty());
+        assert_eq!(account.balances(), before);
+    }
+
+    #[rstest]
+    fn test_detailed_balance_rejection_reports_balance_stage_and_rolls_back() {
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        let position = build_hedging_position(
+            &instrument,
+            OrderSide::Buy,
+            "2000",
+            "1.00000",
+            "BALANCE-FAULT",
+        );
+        let mut fill = position.events[0].clone();
+        fill.position_id = Some(position.id);
+        fill.commission = Some(Money::zero(Currency::USD()));
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        cache
+            .borrow_mut()
+            .add_position_without_order(&position, OmsType::Hedging)
+            .unwrap();
+        let state = AccountState::new(
+            fill.account_id,
+            AccountType::Cash,
+            vec![AccountBalance::new(
+                Money::from("1000 USD"),
+                Money::from("0 USD"),
+                Money::from("1000 USD"),
+            )],
+            vec![],
+            true,
+            UUID4::new(),
+            0.into(),
+            0.into(),
+            Some(Currency::USD()),
+        );
+        let account = AccountAny::Cash(CashAccount::new(state, true, false));
+        let before_balances = account.balances();
+        let before_commissions = base_account(&account).commissions.clone();
+        let before_events = base_account(&account).events.clone();
+        let manager = AccountsManager::new(Rc::new(RefCell::new(TestClock::new())), cache);
+        let calculated = manager.update_balances_outcome(account, &instrument, &fill);
+        let ReportPortfolioOutcome::Failed(failure) = calculated.outcome else {
+            panic!("actual account balance rejection must be a failure");
+        };
+        assert_eq!(failure.stage, PortfolioFailureStage::BalanceCalculation);
+        assert!(!failure.message.is_empty());
+        assert_eq!(calculated.value.0.balances(), before_balances);
+        assert_eq!(
+            base_account(&calculated.value.0).commissions,
+            before_commissions
+        );
+        assert_eq!(base_account(&calculated.value.0).events, before_events);
     }
 }

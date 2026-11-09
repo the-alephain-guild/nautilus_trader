@@ -9465,4 +9465,223 @@ mod tests {
             self.closed.store(true, Ordering::Relaxed);
         }
     }
+    #[rstest]
+    #[tokio::test]
+    async fn test_pending_report_buffer_preserves_typed_fifo_before_owner_admission() {
+        use std::task::Poll;
+
+        use nautilus_common::owner_delivery::{self, OwnerExternalAction, OwnerExternalEvent};
+        use nautilus_model::{accounts::CashAccount, reports::OrderStatusReport};
+
+        struct BufferedReportDelivery {
+            event: OrderEventAny,
+            engine: Rc<RefCell<ExecutionEngine>>,
+            cache: Rc<RefCell<Cache>>,
+            second: ClientOrderId,
+            observed: Rc<RefCell<Vec<(OrderEventAny, OrderStatus)>>>,
+        }
+        impl OwnerExternalAction for BufferedReportDelivery {
+            fn original_event(&self) -> OwnerExternalEvent {
+                OwnerExternalEvent::Order(self.event.clone())
+            }
+            #[expect(
+                clippy::panic_in_result_fn,
+                reason = "the test checks that external report delivery releases the engine borrow"
+            )]
+            fn deliver(&mut self) -> Result<(), owner_delivery::OwnerDeliveryError> {
+                let borrowed = self.engine.try_borrow_mut();
+                assert!(borrowed.is_ok());
+                drop(borrowed);
+                self.observed.borrow_mut().push((
+                    self.event.clone(),
+                    self.cache.borrow().order(&self.second).unwrap().status(),
+                ));
+                Ok(())
+            }
+        }
+        let trader_id = TraderId::from("BUFFERED-REPORT-001");
+        let mut node = LiveNode::builder(trader_id, Environment::Sandbox)
+            .unwrap()
+            .with_logging(nautilus_common::logging::logger::LoggerConfig {
+                bypass_logging: true,
+                ..Default::default()
+            })
+            .with_reconciliation(false)
+            .build()
+            .unwrap();
+        let engine = node.kernel().exec_engine().clone();
+        let cache = node.kernel().cache();
+        let instrument = nautilus_model::instruments::stubs::audusd_sim();
+        cache
+            .borrow_mut()
+            .add_instrument(instrument.clone().into())
+            .unwrap();
+        cache
+            .borrow_mut()
+            .add_account(CashAccount::default().into())
+            .unwrap();
+        let ids = [
+            ClientOrderId::from("BUFFERED-REPORT-A"),
+            ClientOrderId::from("BUFFERED-REPORT-B"),
+        ];
+        let reports: Vec<_> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let order = OrderTestBuilder::new(OrderType::Limit)
+                    .trader_id(trader_id)
+                    .instrument_id(instrument.id())
+                    .client_order_id(*id)
+                    .side(OrderSide::Buy)
+                    .quantity(Quantity::from(100_000))
+                    .price(Price::from("1.00000"))
+                    .build();
+                cache
+                    .borrow_mut()
+                    .add_order(order.clone(), None, None, false)
+                    .unwrap();
+                engine.borrow_mut().process(&TestOrderEventStubs::submitted(
+                    &order,
+                    AccountId::from("SIM-001"),
+                ));
+                OrderStatusReport::new(
+                    AccountId::from("SIM-001"),
+                    instrument.id(),
+                    Some(*id),
+                    VenueOrderId::new(format!("V-BUFFERED-{index}")),
+                    Some(OrderSide::Buy),
+                    OrderType::Limit,
+                    TimeInForce::Gtc,
+                    OrderStatus::Accepted,
+                    Quantity::from(100_000),
+                    Quantity::from(0),
+                    10.into(),
+                    10.into(),
+                    10.into(),
+                    None,
+                )
+                .with_price(Price::from("1.00000"))
+            })
+            .collect();
+        let binding = node.owner_delivery.bind().unwrap();
+        let observer = owner_delivery::current_observer().unwrap();
+        let runner = node.runner.take().unwrap();
+        runner.bind_senders();
+        let AsyncRunnerChannels {
+            mut time_evt_rx,
+            mut system_evt_rx,
+            mut system_cmd_rx,
+            mut exec_evt_rx,
+            mut exec_cmd_rx,
+            mut data_evt_rx,
+            mut data_cmd_rx,
+        } = runner.take_channels();
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let handler = TypedHandler::from({
+            let engine = engine.clone();
+            let cache = cache.clone();
+            let observed = observed.clone();
+            move |event: &OrderEventAny| {
+                assert!(matches!(event, OrderEventAny::Accepted(_)));
+                assert!(
+                    owner_delivery::capture_external(
+                        event.clone().into_boxed().id(),
+                        Box::new(BufferedReportDelivery {
+                            event: event.clone(),
+                            engine: engine.clone(),
+                            cache: cache.clone(),
+                            second: ids[1],
+                            observed: observed.clone(),
+                        })
+                    )
+                    .unwrap()
+                    .is_none()
+                );
+            }
+        });
+        msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+        for report in &reports {
+            get_exec_event_sender()
+                .send(ExecutionEvent::Report(ExecutionReport::Order(Box::new(
+                    report.clone(),
+                ))))
+                .unwrap();
+        }
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let mut pending = PendingEvents::default();
+        let mut driven = Box::pin(drive_with_event_buffering(
+            hold_engine_connect_return(engine.clone(), waiting),
+            &mut pending,
+            &mut time_evt_rx,
+            &mut system_evt_rx,
+            &mut system_cmd_rx,
+            &mut exec_evt_rx,
+            &mut exec_cmd_rx,
+            &mut data_evt_rx,
+            &mut data_cmd_rx,
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(driven.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert!(engine.try_borrow_mut().is_err());
+        assert!(observed.borrow().is_empty());
+        assert_eq!(observer.status().unwrap(), Some((0, None)));
+        assert!(observer.retained_reports().unwrap().is_empty());
+        for id in ids {
+            assert_eq!(
+                cache.borrow().order(&id).unwrap().status(),
+                OrderStatus::Submitted
+            );
+        }
+        release.send(()).unwrap();
+        driven.await;
+        // The biased ready-future branch consumes no further channel item. These exact values
+        // therefore entered PendingEvents during the actual preceding Pending poll.
+        assert_eq!(pending.exec_reports.len(), 2);
+        for (buffered, original) in pending.exec_reports.iter().zip(&reports) {
+            let ExecutionReport::Order(buffered) = buffered else {
+                panic!("original typed report")
+            };
+            assert_eq!(buffered.as_ref(), original);
+        }
+        assert!(exec_evt_rx.is_empty());
+        assert!(engine.try_borrow_mut().is_ok());
+        assert_eq!(
+            observer.status().unwrap(),
+            Some((0, None)),
+            "buffer ownership is not owner admission"
+        );
+        assert!(observed.borrow().is_empty());
+        pending.drain();
+        assert!(pending.is_empty());
+        let observed = observed.borrow();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].0.client_order_id(), ids[0]);
+        assert_eq!(observed[0].1, OrderStatus::Submitted);
+        assert_eq!(observed[1].0.client_order_id(), ids[1]);
+        assert_eq!(observed[1].1, OrderStatus::Accepted);
+        for (id, (event, _)) in ids.iter().zip(observed.iter()) {
+            let order = cache.borrow().order_owned(id).unwrap();
+            assert_eq!(order.last_event(), event);
+            assert_eq!(order.status(), OrderStatus::Accepted);
+            assert_eq!(
+                order
+                    .events()
+                    .into_iter()
+                    .map(|candidate| OrderEventAny::clone(candidate).into_boxed().id())
+                    .filter(|candidate_id| *candidate_id == event.clone().into_boxed().id())
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(observer.status().unwrap(), Some((0, None)));
+        assert!(observer.retained_reports().unwrap().is_empty());
+        assert_eq!(node.owner_delivery.retire(), Ok(()));
+        msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+        drop(observed);
+        drop(binding);
+        node.dispose();
+    }
 }

@@ -35,6 +35,10 @@ use nautilus_common::{
     clock::Clock,
     enums::LogColor,
     msgbus::{self, MessagingSwitchboard, TypedHandler, TypedIntoHandler},
+    owner_delivery::{
+        PortfolioFailureStage, PortfolioNativeFailure, PortfolioPendingReason, PortfolioSkipReason,
+        ReportPortfolioBranch, ReportPortfolioOutcome, ReportPortfolioReceiver,
+    },
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{DurationNanos, UUID4, UnixNanos, WeakCell};
@@ -42,8 +46,10 @@ use nautilus_model::{
     accounts::{Account, AccountAny},
     data::{Bar, MarkPriceUpdate, QuoteTick},
     enums::{OmsType, OrderType, PositionSide, PriceType},
-    events::{AccountState, OrderEventAny, PortfolioSnapshot, position::PositionEvent},
-    identifiers::{AccountId, InstrumentId, PositionId, Venue},
+    events::{
+        AccountState, OrderEventAny, OrderFillVoided, PortfolioSnapshot, position::PositionEvent,
+    },
+    identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, TradeId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     position::Position,
@@ -51,12 +57,26 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use crate::{config::PortfolioConfig, manager::AccountsManager};
+use crate::{
+    config::PortfolioConfig,
+    manager::{AccountCalculation, AccountsManager, AppliedCashFill},
+};
 
 // Sized for post-run backtest analysis (e.g. ~11 days at 1s cadence, or years
 // at per-minute cadence), long-lived live deployments should consume snapshots
 // via the message bus instead of relying on this buffer.
 const SNAPSHOT_BUFFER_CAP: usize = 1_000_000;
+
+type CashFillKey = (AccountId, Venue, ClientOrderId, TradeId);
+
+fn cash_fill_key(
+    account: AccountId,
+    instrument: InstrumentId,
+    order: ClientOrderId,
+    trade: TradeId,
+) -> CashFillKey {
+    (account, instrument.venue, order, trade)
+}
 
 struct PortfolioState {
     accounts: AccountsManager,
@@ -87,6 +107,8 @@ struct PortfolioState {
     equity_curve_finalized: bool,
     portfolio_snapshots: AHashMap<AccountId, VecDeque<PortfolioSnapshot>>,
     pre_position_fill_events: AHashSet<UUID4>,
+    applied_cash_fills: AHashMap<CashFillKey, AppliedCashFill>,
+    cash_void_mirrors: AHashMap<UUID4, AccountState>,
 }
 
 #[derive(Clone, Copy)]
@@ -102,7 +124,7 @@ enum MarkValueMode {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum UnrealizedPnlError {
+enum PnlCalculationError {
     MissingInput,
     Invalid,
 }
@@ -147,6 +169,8 @@ impl PortfolioState {
             equity_curve_finalized: false,
             portfolio_snapshots: AHashMap::new(),
             pre_position_fill_events: AHashSet::new(),
+            applied_cash_fills: AHashMap::new(),
+            cash_void_mirrors: AHashMap::new(),
         }
     }
 
@@ -176,6 +200,8 @@ impl PortfolioState {
         self.equity_curve_finalized = false;
         self.portfolio_snapshots.clear();
         self.pre_position_fill_events.clear();
+        self.applied_cash_fills.clear();
+        self.cash_void_mirrors.clear();
         self.analyzer.reset();
         self.initialized = false;
         log::debug!("READY");
@@ -239,17 +265,33 @@ impl Portfolio {
         config: PortfolioConfig,
     ) {
         let inner_weak = WeakCell::from(Rc::downgrade(inner));
+        let report_receiver = ReportPortfolioReceiver::register(inner);
 
         // Typed handlers for subscriptions
         let update_account_handler = {
             let cache = Rc::clone(cache);
             let clock = Rc::clone(clock);
             let inner = WeakCell::clone(&inner_weak);
+            let report_receiver = report_receiver.clone();
 
             TypedHandler::from(move |event: &AccountState| {
                 if let Some(inner_rc) = inner.upgrade() {
                     let inner_rc: Rc<RefCell<PortfolioState>> = inner_rc.into();
-                    update_account(&clock, &cache, &inner_rc, config, event);
+                    let entered = match report_receiver
+                        .begin_update(event.event_id, ReportPortfolioBranch::AccountState)
+                    {
+                        Ok(entered) => entered,
+                        Err(error) => {
+                            log::error!("Refusing mismatched Portfolio account receiver: {error}");
+                            return;
+                        }
+                    };
+                    let outcome = update_account_outcome(&clock, &cache, &inner_rc, config, event);
+                    if let Some(entered) = entered
+                        && let Err(error) = entered.finish(outcome)
+                    {
+                        log::error!("Cannot reply to report AccountState publication: {error}");
+                    }
                 }
             })
         };
@@ -258,10 +300,33 @@ impl Portfolio {
             let cache = Rc::clone(cache);
             let clock = Rc::clone(clock);
             let inner = WeakCell::clone(&inner_weak);
+            let report_receiver = report_receiver.clone();
             TypedHandler::from(move |event: &PositionEvent| {
                 if let Some(inner_rc) = inner.upgrade() {
                     let inner_rc: Rc<RefCell<PortfolioState>> = inner_rc.into();
-                    update_position(&cache, &clock, &inner_rc, config, event);
+                    let entered = match report_receiver
+                        .begin_update(position_event_id(event), ReportPortfolioBranch::Position)
+                    {
+                        Ok(entered) => entered,
+                        Err(error) => {
+                            log::error!(
+                                "Refusing mismatched Portfolio publication receiver: {error}"
+                            );
+                            return;
+                        }
+                    };
+                    let processed =
+                        update_position_outcome(&cache, &clock, &inner_rc, config, event);
+                    match entered {
+                        Some(entered) => {
+                            if let Err(error) = entered.finish(processed.outcome) {
+                                log::error!(
+                                    "Cannot reply to report Portfolio publication: {error}"
+                                );
+                            }
+                        }
+                        None => processed.finish_legacy(),
+                    }
                 }
             })
         };
@@ -311,10 +376,28 @@ impl Portfolio {
         let update_order_handler = {
             let cache = Rc::clone(cache);
             let inner = WeakCell::clone(&inner_weak);
+            let report_receiver = report_receiver.clone();
             TypedHandler::from(move |event: &OrderEventAny| {
                 if let Some(inner_rc) = inner.upgrade() {
                     let inner_rc: Rc<RefCell<PortfolioState>> = inner_rc.into();
-                    on_order_event(&cache, &inner_rc, event);
+                    let entered = match report_receiver.begin_update(
+                        event.clone().into_boxed().id(),
+                        ReportPortfolioBranch::Order,
+                    ) {
+                        Ok(entered) => entered,
+                        Err(error) => {
+                            log::error!(
+                                "Refusing mismatched Portfolio order mirror receiver: {error}"
+                            );
+                            return;
+                        }
+                    };
+                    let outcome = on_order_event(&cache, &inner_rc, event);
+                    if let Some(entered) = entered
+                        && let Err(error) = entered.finish(outcome)
+                    {
+                        log::error!("Cannot reply to report order mirror publication: {error}");
+                    }
                 }
             })
         };
@@ -329,7 +412,17 @@ impl Portfolio {
             TypedIntoHandler::from(move |event: OrderEventAny| {
                 if let Some(inner_rc) = inner.upgrade() {
                     let inner_rc: Rc<RefCell<PortfolioState>> = inner_rc.into();
-                    update_order(
+                    let entered = match report_receiver.begin_update(
+                        event.clone().into_boxed().id(),
+                        ReportPortfolioBranch::Order,
+                    ) {
+                        Ok(entered) => entered,
+                        Err(error) => {
+                            log::error!("Refusing mismatched Portfolio order receiver: {error}");
+                            return;
+                        }
+                    };
+                    let outcome = update_order_outcome(
                         &cache,
                         &clock,
                         &inner_rc,
@@ -337,6 +430,11 @@ impl Portfolio {
                         &event,
                         OrderUpdateSource::Endpoint,
                     );
+                    if let Some(entered) = entered
+                        && let Err(error) = entered.finish(outcome)
+                    {
+                        log::error!("Cannot reply to report Portfolio endpoint: {error}");
+                    }
                 }
             })
         };
@@ -534,10 +632,10 @@ impl Portfolio {
                         checked_add_money_map(&mut unrealized_pnls, pnl, "unrealized PnLs")?;
                     }
                 }
-                Err(UnrealizedPnlError::MissingInput) => {
+                Err(PnlCalculationError::MissingInput) => {
                     unpriced.insert(instrument_id);
                 }
-                Err(UnrealizedPnlError::Invalid) => return None,
+                Err(PnlCalculationError::Invalid) => return None,
             }
         }
 
@@ -2113,19 +2211,19 @@ impl Portfolio {
         price: Option<Price>,
         account_id: Option<&AccountId>,
         target_currency: Option<Currency>,
-    ) -> Result<Money, UnrealizedPnlError> {
+    ) -> Result<Money, PnlCalculationError> {
         let pnls =
             self.unrealized_pnls_by_account(instrument_id, price, account_id, target_currency)?;
         let mut total: Option<Money> = None;
         for pnl in pnls {
             total = Some(match total {
                 Some(total) => checked_add_money(total, pnl, "PnL aggregation")
-                    .ok_or(UnrealizedPnlError::Invalid)?,
+                    .ok_or(PnlCalculationError::Invalid)?,
                 None => pnl,
             });
         }
 
-        total.ok_or(UnrealizedPnlError::Invalid)
+        total.ok_or(PnlCalculationError::Invalid)
     }
 
     fn unrealized_pnls_by_account(
@@ -2134,7 +2232,7 @@ impl Portfolio {
         price: Option<Price>,
         account_id: Option<&AccountId>,
         target_currency: Option<Currency>,
-    ) -> Result<Vec<Money>, UnrealizedPnlError> {
+    ) -> Result<Vec<Money>, PnlCalculationError> {
         let mut account_ids = if let Some(account_id) = account_id {
             vec![*account_id]
         } else {
@@ -2157,7 +2255,7 @@ impl Portfolio {
                     .account_for_venue(&instrument_id.venue)
                     .map(|account| account.id())
             }
-            .ok_or(UnrealizedPnlError::Invalid)?;
+            .ok_or(PnlCalculationError::Invalid)?;
             account_ids.push(account_id);
         }
 
@@ -2263,7 +2361,7 @@ impl Portfolio {
         price: Option<Price>,
         account_id: Option<&AccountId>,
         target_currency: Option<Currency>,
-    ) -> Result<Money, UnrealizedPnlError> {
+    ) -> Result<Money, PnlCalculationError> {
         let cache = self.cache.borrow();
         let account = resolve_account_for_instrument(&cache, instrument_id, account_id);
         let account = if let Some(account) = account {
@@ -2273,14 +2371,14 @@ impl Portfolio {
                 "Cannot calculate unrealized PnL: no account for {} / {account_id:?}",
                 instrument_id.venue,
             );
-            return Err(UnrealizedPnlError::Invalid);
+            return Err(PnlCalculationError::Invalid);
         };
 
         let instrument = if let Some(instrument) = cache.instrument(instrument_id) {
             instrument
         } else {
             log::error!("Cannot calculate unrealized PnL: no instrument for {instrument_id}");
-            return Err(UnrealizedPnlError::Invalid);
+            return Err(PnlCalculationError::Invalid);
         };
 
         let conversion_currency =
@@ -2313,7 +2411,7 @@ impl Portfolio {
             } else {
                 log::debug!("Cannot calculate unrealized PnL: no prices for {instrument_id}");
                 self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                return Err(UnrealizedPnlError::MissingInput);
+                return Err(PnlCalculationError::MissingInput);
             };
 
             let position_pnl = match position.try_unrealized_pnl(price) {
@@ -2324,7 +2422,7 @@ impl Portfolio {
                         position.instrument_id
                     );
                     self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                    return Err(UnrealizedPnlError::Invalid);
+                    return Err(PnlCalculationError::Invalid);
                 }
             };
             let source_currency = position_pnl.currency;
@@ -2336,7 +2434,7 @@ impl Portfolio {
                         "Cannot calculate unrealized PnL: positions have different output \
                         currencies ({first} vs {currency})"
                     );
-                    return Err(UnrealizedPnlError::Invalid);
+                    return Err(PnlCalculationError::Invalid);
                 }
                 _ => {}
             }
@@ -2358,13 +2456,13 @@ impl Portfolio {
                         {source_currency}/{conversion_currency}"
                     );
                     self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                    return Err(UnrealizedPnlError::MissingInput);
+                    return Err(PnlCalculationError::MissingInput);
                 };
 
                 let Some(converted) = pnl.checked_mul(xrate) else {
                     log::error!("Cannot calculate unrealized PnL: currency conversion overflow");
                     self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                    return Err(UnrealizedPnlError::Invalid);
+                    return Err(PnlCalculationError::Invalid);
                 };
                 pnl = converted.round_dp(u32::from(currency.precision));
             }
@@ -2372,7 +2470,7 @@ impl Portfolio {
             let Some(updated_total) = total_pnl.checked_add(pnl) else {
                 log::error!("Cannot calculate unrealized PnL: total overflow");
                 self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                return Err(UnrealizedPnlError::Invalid);
+                return Err(PnlCalculationError::Invalid);
             };
             total_pnl = updated_total;
         }
@@ -2382,7 +2480,7 @@ impl Portfolio {
             Ok(money) => Ok(money),
             Err(e) => {
                 log::error!("Cannot calculate unrealized PnL: {e}");
-                Err(UnrealizedPnlError::Invalid)
+                Err(PnlCalculationError::Invalid)
             }
         }
     }
@@ -2627,6 +2725,16 @@ impl Portfolio {
         account_id: Option<&AccountId>,
         target_currency: Option<Currency>,
     ) -> Option<Money> {
+        self.calculate_realized_pnl_result(instrument_id, account_id, target_currency)
+            .ok()
+    }
+
+    fn calculate_realized_pnl_result(
+        &self,
+        instrument_id: &InstrumentId,
+        account_id: Option<&AccountId>,
+        target_currency: Option<Currency>,
+    ) -> Result<Money, PnlCalculationError> {
         // Ensure snapshot PnLs are cached for this instrument
         self.ensure_snapshot_pnls_cached_for(instrument_id);
 
@@ -2639,14 +2747,14 @@ impl Portfolio {
                 "Cannot calculate realized PnL: no account for {} / {account_id:?}",
                 instrument_id.venue,
             );
-            return None;
+            return Err(PnlCalculationError::Invalid);
         };
 
         let instrument = if let Some(instrument) = cache.instrument(instrument_id) {
             instrument
         } else {
             log::error!("Cannot calculate realized PnL: no instrument for {instrument_id}");
-            return None;
+            return Err(PnlCalculationError::Invalid);
         };
 
         let positions = cache.positions(None, Some(instrument_id), None, account_id, None);
@@ -2685,7 +2793,7 @@ impl Portfolio {
                 "Cannot calculate realized PnL: snapshots for {instrument_id} contain mixed \
                 cost currencies"
             );
-            return None;
+            return Err(PnlCalculationError::Invalid);
         }
 
         if snapshot_position_ids.iter().any(|position_id| {
@@ -2697,7 +2805,7 @@ impl Portfolio {
             log::error!(
                 "Cannot calculate realized PnL: snapshot aggregation for {instrument_id} exceeds Money bounds"
             );
-            return None;
+            return Err(PnlCalculationError::Invalid);
         }
 
         let conversion_currency =
@@ -2761,7 +2869,7 @@ impl Portfolio {
                                     log::error!(
                                         "Cannot calculate realized PnL: snapshot adjustment exceeds Money bounds"
                                     );
-                                    return None;
+                                    return Err(PnlCalculationError::Invalid);
                                 }
                             }
                         }
@@ -2774,7 +2882,7 @@ impl Portfolio {
                 if let Some(sum_pnl) = sum_pnl {
                     if !pnl_currency_is_compatible(conversion_currency, currency, sum_pnl.currency)
                     {
-                        return None;
+                        return Err(PnlCalculationError::Invalid);
                     }
 
                     let mut pnl = sum_pnl.as_decimal();
@@ -2794,18 +2902,17 @@ impl Portfolio {
                                 conversion_currency
                             );
                             self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                            return None;
+                            return Err(PnlCalculationError::MissingInput);
                         };
 
-                        pnl = self.checked_convert_realized_pnl(
-                            pnl,
-                            xrate,
-                            currency,
-                            *instrument_id,
-                        )?;
+                        pnl = self
+                            .checked_convert_realized_pnl(pnl, xrate, currency, *instrument_id)
+                            .ok_or(PnlCalculationError::Invalid)?;
                     }
 
-                    total_pnl = self.checked_add_realized_pnl(total_pnl, pnl, *instrument_id)?;
+                    total_pnl = self
+                        .checked_add_realized_pnl(total_pnl, pnl, *instrument_id)
+                        .ok_or(PnlCalculationError::Invalid)?;
                 }
             }
 
@@ -2821,7 +2928,7 @@ impl Portfolio {
                         currency,
                         realized_pnl.currency,
                     ) {
-                        return None;
+                        return Err(PnlCalculationError::Invalid);
                     }
 
                     let mut pnl = realized_pnl.as_decimal();
@@ -2841,18 +2948,17 @@ impl Portfolio {
                                 conversion_currency
                             );
                             self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                            return None;
+                            return Err(PnlCalculationError::MissingInput);
                         };
 
-                        pnl = self.checked_convert_realized_pnl(
-                            pnl,
-                            xrate,
-                            currency,
-                            *instrument_id,
-                        )?;
+                        pnl = self
+                            .checked_convert_realized_pnl(pnl, xrate, currency, *instrument_id)
+                            .ok_or(PnlCalculationError::Invalid)?;
                     }
 
-                    total_pnl = self.checked_add_realized_pnl(total_pnl, pnl, *instrument_id)?;
+                    total_pnl = self
+                        .checked_add_realized_pnl(total_pnl, pnl, *instrument_id)
+                        .ok_or(PnlCalculationError::Invalid)?;
                 }
             }
         } else {
@@ -2869,7 +2975,7 @@ impl Portfolio {
                 if let Some(sum_pnl) = sum_pnl {
                     if !pnl_currency_is_compatible(conversion_currency, currency, sum_pnl.currency)
                     {
-                        return None;
+                        return Err(PnlCalculationError::Invalid);
                     }
 
                     let mut pnl = sum_pnl.as_decimal();
@@ -2889,18 +2995,17 @@ impl Portfolio {
                                 conversion_currency
                             );
                             self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                            return None;
+                            return Err(PnlCalculationError::MissingInput);
                         };
 
-                        pnl = self.checked_convert_realized_pnl(
-                            pnl,
-                            xrate,
-                            currency,
-                            *instrument_id,
-                        )?;
+                        pnl = self
+                            .checked_convert_realized_pnl(pnl, xrate, currency, *instrument_id)
+                            .ok_or(PnlCalculationError::Invalid)?;
                     }
 
-                    total_pnl = self.checked_add_realized_pnl(total_pnl, pnl, *instrument_id)?;
+                    total_pnl = self
+                        .checked_add_realized_pnl(total_pnl, pnl, *instrument_id)
+                        .ok_or(PnlCalculationError::Invalid)?;
                 }
             }
 
@@ -2916,7 +3021,7 @@ impl Portfolio {
                         currency,
                         realized_pnl.currency,
                     ) {
-                        return None;
+                        return Err(PnlCalculationError::Invalid);
                     }
 
                     let mut pnl = realized_pnl.as_decimal();
@@ -2936,27 +3041,26 @@ impl Portfolio {
                                 conversion_currency
                             );
                             self.inner.borrow_mut().pending_calcs.insert(*instrument_id);
-                            return None;
+                            return Err(PnlCalculationError::MissingInput);
                         };
 
-                        pnl = self.checked_convert_realized_pnl(
-                            pnl,
-                            xrate,
-                            currency,
-                            *instrument_id,
-                        )?;
+                        pnl = self
+                            .checked_convert_realized_pnl(pnl, xrate, currency, *instrument_id)
+                            .ok_or(PnlCalculationError::Invalid)?;
                     }
 
-                    total_pnl = self.checked_add_realized_pnl(total_pnl, pnl, *instrument_id)?;
+                    total_pnl = self
+                        .checked_add_realized_pnl(total_pnl, pnl, *instrument_id)
+                        .ok_or(PnlCalculationError::Invalid)?;
                 }
             }
         }
 
         match Money::from_decimal(total_pnl, currency) {
-            Ok(money) => Some(money),
+            Ok(money) => Ok(money),
             Err(e) => {
                 log::error!("Cannot calculate realized PnL: {e}");
-                None
+                Err(PnlCalculationError::Invalid)
             }
         }
     }
@@ -3383,6 +3487,71 @@ fn update_instrument_id(
     }
 }
 
+fn valuation_outcome(error: PnlCalculationError) -> ReportPortfolioOutcome {
+    match error {
+        PnlCalculationError::MissingInput => {
+            ReportPortfolioOutcome::Pending(PortfolioPendingReason::MissingValuationInput)
+        }
+        PnlCalculationError::Invalid => portfolio_failure(
+            PortfolioFailureStage::BalanceCalculation,
+            "Portfolio valuation rejected invalid inputs or arithmetic",
+        ),
+    }
+}
+
+fn publish_account_state_outcome(
+    topic: msgbus::MStr<msgbus::Topic>,
+    event: &AccountState,
+) -> Option<ReportPortfolioOutcome> {
+    let receipt = nautilus_common::owner_delivery::begin_report_portfolio_update(
+        event.event_id,
+        ReportPortfolioBranch::AccountState,
+    );
+    msgbus::publish_account_state(topic, event);
+    match receipt {
+        Ok(Some(receipt)) => Some(receipt.finish()),
+        Ok(None) => None,
+        Err(error) => {
+            log::error!("Cannot observe report AccountState publication: {error}");
+            Some(ReportPortfolioOutcome::Unobserved)
+        }
+    }
+}
+
+fn portfolio_failure(
+    stage: PortfolioFailureStage,
+    message: &(impl ToString + ?Sized),
+) -> ReportPortfolioOutcome {
+    ReportPortfolioOutcome::Failed(PortfolioNativeFailure {
+        stage,
+        message: message.to_string(),
+    })
+}
+
+fn merge_portfolio_outcome(current: &mut ReportPortfolioOutcome, next: ReportPortfolioOutcome) {
+    if matches!(
+        current,
+        ReportPortfolioOutcome::Failed(_) | ReportPortfolioOutcome::Unobserved
+    ) {
+        return;
+    }
+    if !matches!(
+        next,
+        ReportPortfolioOutcome::Complete | ReportPortfolioOutcome::Skipped(_)
+    ) {
+        *current = next;
+    }
+}
+
+fn position_event_id(event: &PositionEvent) -> UUID4 {
+    match event {
+        PositionEvent::PositionOpened(event) => event.event_id,
+        PositionEvent::PositionChanged(event) => event.event_id,
+        PositionEvent::PositionClosed(event) => event.event_id,
+        PositionEvent::PositionAdjusted(event) => event.event_id,
+    }
+}
+
 fn update_order(
     cache: &Rc<RefCell<Cache>>,
     clock: &Rc<RefCell<dyn Clock>>,
@@ -3391,6 +3560,18 @@ fn update_order(
     event: &OrderEventAny,
     source: OrderUpdateSource,
 ) {
+    let _ = update_order_outcome(cache, clock, inner, config, event, source);
+}
+
+fn update_order_outcome(
+    cache: &Rc<RefCell<Cache>>,
+    clock: &Rc<RefCell<dyn Clock>>,
+    inner: &Rc<RefCell<PortfolioState>>,
+    config: PortfolioConfig,
+    event: &OrderEventAny,
+    source: OrderUpdateSource,
+) -> ReportPortfolioOutcome {
+    let mut outcome = ReportPortfolioOutcome::Complete;
     let mut mark_pre_position_fill_event = None;
 
     if let OrderEventAny::Filled(order_filled) = event {
@@ -3404,7 +3585,9 @@ fn update_order(
                     .pre_position_fill_events
                     .remove(&order_filled.event_id)
                 {
-                    return;
+                    return ReportPortfolioOutcome::Skipped(
+                        PortfolioSkipReason::EventNotApplicable,
+                    );
                 }
             }
         }
@@ -3413,7 +3596,7 @@ fn update_order(
     let account_id = match event.account_id() {
         Some(account_id) => account_id,
         None => {
-            return; // No Account Assigned
+            return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::NoAccountAssigned);
         }
     };
 
@@ -3425,7 +3608,7 @@ fn update_order(
             Ok(account) => account,
             Err(e) => {
                 log::error!("Cannot update order: {e}");
-                return;
+                return portfolio_failure(PortfolioFailureStage::Lookup, &e);
             }
         };
 
@@ -3443,7 +3626,9 @@ fn update_order(
         };
 
         if !calculate_account_state && !is_wallet {
-            return;
+            return ReportPortfolioOutcome::Skipped(
+                PortfolioSkipReason::AccountCalculationDisabled,
+            );
         }
 
         match event {
@@ -3461,7 +3646,7 @@ fn update_order(
             | OrderEventAny::Filled(_)
             | OrderEventAny::FillVoided(_) => {}
             _ => {
-                return;
+                return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::EventNotApplicable);
             }
         }
 
@@ -3471,14 +3656,14 @@ fn update_order(
                 "Cannot update order: {} not found in the cache",
                 event.client_order_id()
             );
-            return; // No Order Found
+            return portfolio_failure(PortfolioFailureStage::Lookup, "Canonical order is missing");
         }
 
         if !is_wallet
             && matches!(event, OrderEventAny::Rejected(_))
             && order.is_some_and(|order| order.order_type() != OrderType::StopLimit)
         {
-            return; // No change to account state
+            return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::EventNotApplicable);
         }
 
         let instrument = if let Some(instrument) = cache_ref.instrument(&event.instrument_id()) {
@@ -3488,7 +3673,7 @@ fn update_order(
                 "Cannot update order: no instrument found for {}",
                 event.instrument_id()
             );
-            return;
+            return portfolio_failure(PortfolioFailureStage::Lookup, "Instrument is missing");
         };
 
         let orders_open = if is_wallet {
@@ -3518,23 +3703,74 @@ fn update_order(
                 "Cannot update order: {}",
                 AccountLookupError::not_found(account_id)
             );
-            return;
+            return portfolio_failure(PortfolioFailureStage::Lookup, "Working account is missing");
         }
     };
 
     if let OrderEventAny::Filled(order_filled) = event
         && calculate_account_state
     {
+        let cash_before =
+            AppliedCashFill::observe_before(&working_account, &instrument, order_filled);
+        if cash_before.is_some()
+            && inner
+                .borrow()
+                .applied_cash_fills
+                .contains_key(&cash_fill_key(
+                    account_id,
+                    order_filled.instrument_id,
+                    order_filled.client_order_id,
+                    order_filled.trade_id,
+                ))
+        {
+            cache.borrow_mut().cache_account_owned(working_account);
+            return portfolio_failure(
+                PortfolioFailureStage::BalanceCalculation,
+                "Fill already has a local Cash apply basis",
+            );
+        }
+        let mut balance_applied = false;
         if !instrument.is_spread() {
-            let (post_balance, _state) =
-                inner
-                    .borrow()
-                    .accounts
-                    .update_balances(working_account, &instrument, order_filled);
-            working_account = post_balance;
+            let calculated = inner.borrow().accounts.update_balances_outcome(
+                working_account,
+                &instrument,
+                order_filled,
+            );
+            working_account = calculated.value.0;
+            balance_applied = matches!(calculated.outcome, ReportPortfolioOutcome::Complete);
+            merge_portfolio_outcome(&mut outcome, calculated.outcome);
         }
 
         cache.borrow_mut().cache_account_owned(working_account);
+
+        if balance_applied && let Some(before) = cash_before {
+            let applied = {
+                let cache_ref = cache.borrow();
+                match cache_ref.account(&account_id) {
+                    Some(account) => AppliedCashFill::from_applied(&before, &account, order_filled),
+                    None => Err(anyhow::anyhow!(
+                        "Cash account disappeared after balance apply"
+                    )),
+                }
+            };
+            match applied {
+                Ok(applied) => {
+                    inner.borrow_mut().applied_cash_fills.insert(
+                        cash_fill_key(
+                            account_id,
+                            order_filled.instrument_id,
+                            order_filled.client_order_id,
+                            order_filled.trade_id,
+                        ),
+                        applied,
+                    );
+                }
+                Err(error) => merge_portfolio_outcome(
+                    &mut outcome,
+                    portfolio_failure(PortfolioFailureStage::BalanceCalculation, &error),
+                ),
+            }
+        }
 
         let portfolio_clone = Portfolio {
             clock: Rc::clone(clock),
@@ -3543,25 +3779,26 @@ fn update_order(
             config,
         };
 
-        match portfolio_clone.calculate_unrealized_pnl(
+        match portfolio_clone.calculate_unrealized_pnl_result(
             &order_filled.instrument_id,
             None,
             Some(&account_id),
             None,
         ) {
-            Some(unrealized_pnl) => {
+            Ok(unrealized_pnl) => {
                 inner
                     .borrow_mut()
                     .unrealized_pnls
                     .insert(event.instrument_id(), unrealized_pnl);
             }
-            None => {
+            Err(error) => {
                 // The callee already logged the cause and marked the instrument pending; the
                 // usual cause is a book-only run with no price yet, which is not an error
                 log::debug!(
                     "Failed to calculate unrealized PnL for {}, marking as pending",
                     event.instrument_id()
                 );
+                merge_portfolio_outcome(&mut outcome, valuation_outcome(error));
             }
         }
 
@@ -3569,13 +3806,32 @@ fn update_order(
             log::error!(
                 "Cannot finish fill account update: account {account_id} could not be restored"
             );
-            return;
+            return portfolio_failure(
+                PortfolioFailureStage::Lookup,
+                "Working account could not be restored",
+            );
         };
         working_account = restored_account;
     } else if let OrderEventAny::FillVoided(fill_voided) = event
         && calculate_account_state
     {
-        cache.borrow_mut().cache_account_owned(working_account);
+        if is_wallet {
+            cache.borrow_mut().cache_account_owned(working_account);
+        } else {
+            merge_portfolio_outcome(
+                &mut outcome,
+                update_cash_fill_void_account(
+                    cache,
+                    clock,
+                    inner,
+                    &instrument,
+                    &orders_open,
+                    working_account,
+                    fill_voided,
+                    source,
+                ),
+            );
+        }
 
         let portfolio = Portfolio {
             clock: Rc::clone(clock),
@@ -3591,55 +3847,70 @@ fn update_order(
             portfolio.update_net_position(&fill_voided.instrument_id, &positions);
         }
 
-        if let Some(pnl) =
-            portfolio.calculate_unrealized_pnl(&fill_voided.instrument_id, None, None, None)
-        {
-            inner
-                .borrow_mut()
-                .unrealized_pnls
-                .insert(fill_voided.instrument_id, pnl);
-        } else {
-            inner
-                .borrow_mut()
-                .unrealized_pnls
-                .shift_remove(&fill_voided.instrument_id);
+        match portfolio.calculate_unrealized_pnl_result(
+            &fill_voided.instrument_id,
+            None,
+            None,
+            None,
+        ) {
+            Ok(pnl) => {
+                inner
+                    .borrow_mut()
+                    .unrealized_pnls
+                    .insert(fill_voided.instrument_id, pnl);
+            }
+            Err(error) => {
+                inner
+                    .borrow_mut()
+                    .unrealized_pnls
+                    .shift_remove(&fill_voided.instrument_id);
+                merge_portfolio_outcome(&mut outcome, valuation_outcome(error));
+            }
         }
 
-        if let Some(pnl) = portfolio.calculate_realized_pnl(&fill_voided.instrument_id, None, None)
-        {
-            inner
-                .borrow_mut()
-                .realized_pnls
-                .insert(fill_voided.instrument_id, pnl);
-        } else {
-            inner
-                .borrow_mut()
-                .realized_pnls
-                .shift_remove(&fill_voided.instrument_id);
+        match portfolio.calculate_realized_pnl_result(&fill_voided.instrument_id, None, None) {
+            Ok(pnl) => {
+                inner
+                    .borrow_mut()
+                    .realized_pnls
+                    .insert(fill_voided.instrument_id, pnl);
+            }
+            Err(error) => {
+                inner
+                    .borrow_mut()
+                    .realized_pnls
+                    .shift_remove(&fill_voided.instrument_id);
+                merge_portfolio_outcome(&mut outcome, valuation_outcome(error));
+            }
         }
 
         if !is_wallet {
             log::debug!("Updated {event}");
-            return;
+            return outcome;
         }
 
         let Some(restored_account) = take_or_clone_account(cache, account_id) else {
             log::error!(
                 "Cannot recalculate Wallet reservations: account {account_id} was not restored after fill void"
             );
-            return;
+            return portfolio_failure(
+                PortfolioFailureStage::Lookup,
+                "Working account could not be restored",
+            );
         };
         working_account = restored_account;
     }
 
     let orders_open_refs: Vec<&OrderAny> = orders_open.iter().collect();
-    let account_state = inner.borrow().accounts.update_orders_in_place(
+    let calculation = inner.borrow().accounts.update_orders_outcome(
         &mut working_account,
         &instrument,
         &orders_open_refs,
         clock.borrow().timestamp_ns(),
     );
 
+    merge_portfolio_outcome(&mut outcome, calculation.outcome);
+    let account_state = calculation.value;
     let is_fill = matches!(event, OrderEventAny::Filled(_));
     let suppress_margin_fill_account_state =
         is_fill && matches!(working_account, AccountAny::Margin(_));
@@ -3651,6 +3922,10 @@ fn update_order(
         && let Err(e) = working_account.apply(account_state.clone())
     {
         log::error!("Cannot apply generated account state: {e}");
+        merge_portfolio_outcome(
+            &mut outcome,
+            portfolio_failure(PortfolioFailureStage::AccountApply, &e),
+        );
     }
 
     let updated_account_id = working_account.id();
@@ -3658,7 +3933,7 @@ fn update_order(
     if account_state.is_some() || matches!(event, OrderEventAny::Filled(_)) {
         if let Err(e) = cache.borrow_mut().update_account_owned(working_account) {
             log::error!("Cannot persist updated account {updated_account_id}: {e}");
-            return;
+            return portfolio_failure(PortfolioFailureStage::AccountPersistence, &e);
         }
     } else {
         cache.borrow_mut().cache_account_owned(working_account);
@@ -3670,11 +3945,13 @@ fn update_order(
     }
 
     if let Some(account_state) = account_state {
-        if publish_account_state {
-            msgbus::publish_account_state(
+        if publish_account_state
+            && let Some(published) = publish_account_state_outcome(
                 format!("events.account.{updated_account_id}").into(),
                 &account_state,
-            );
+            )
+        {
+            merge_portfolio_outcome(&mut outcome, published);
         }
     } else {
         log::debug!("Added pending calculation for {}", instrument.id());
@@ -3682,6 +3959,139 @@ fn update_order(
     }
 
     log::debug!("Updated {event}");
+    outcome
+}
+
+#[expect(clippy::too_many_arguments)]
+fn update_cash_fill_void_account(
+    cache: &Rc<RefCell<Cache>>,
+    clock: &Rc<RefCell<dyn Clock>>,
+    inner: &Rc<RefCell<PortfolioState>>,
+    instrument: &InstrumentAny,
+    orders_open: &[OrderAny],
+    mut account: AccountAny,
+    voided: &OrderFillVoided,
+    source: OrderUpdateSource,
+) -> ReportPortfolioOutcome {
+    let key = cash_fill_key(
+        voided.account_id,
+        voided.instrument_id,
+        voided.client_order_id,
+        voided.trade_id,
+    );
+    let (local_fill, canonical_void) = cache
+        .borrow()
+        .order(&voided.client_order_id)
+        .map_or((None, false), |order| {
+            let fill = order.events().into_iter().find_map(|event| match event {
+                OrderEventAny::Filled(fill) if fill.trade_id == voided.trade_id => {
+                    Some(fill.clone())
+                }
+                _ => None,
+            });
+            let canonical_void = order.events().into_iter().any(|event| {
+                matches!(event, OrderEventAny::FillVoided(actual)
+                    if actual == voided && actual.voided_qty.precision == voided.voided_qty.precision
+                        && actual.last_px.precision == voided.last_px.precision)
+            });
+            (fill, canonical_void)
+        });
+    let Some(local_fill) = local_fill else {
+        cache.borrow_mut().cache_account_owned(account);
+        return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::EventNotApplicable);
+    };
+    if !canonical_void {
+        cache.borrow_mut().cache_account_owned(account);
+        return portfolio_failure(
+            PortfolioFailureStage::BalanceCalculation,
+            "Cash correction has not been applied to the canonical order",
+        );
+    }
+    let applied = inner.borrow().applied_cash_fills.get(&key).cloned();
+    let Some(applied) = applied else {
+        cache.borrow_mut().cache_account_owned(account);
+        return portfolio_failure(
+            PortfolioFailureStage::BalanceCalculation,
+            "Fill void has no proven local single-currency Cash balance apply basis",
+        );
+    };
+    if applied.original != local_fill
+        || applied.original.last_qty.precision != local_fill.last_qty.precision
+        || applied.original.last_px.precision != local_fill.last_px.precision
+    {
+        cache.borrow_mut().cache_account_owned(account);
+        return portfolio_failure(
+            PortfolioFailureStage::BalanceCalculation,
+            "Canonical fill differs from the locally applied Cash basis",
+        );
+    }
+    let original_account = account.clone();
+    let corrected = match applied.prepare_correction(&mut account, instrument, voided) {
+        Ok(corrected) => corrected,
+        Err(error) => {
+            cache.borrow_mut().cache_account_owned(original_account);
+            return portfolio_failure(PortfolioFailureStage::BalanceCalculation, &error);
+        }
+    };
+    let orders: Vec<_> = orders_open.iter().collect();
+    let calculation = inner.borrow().accounts.update_orders_outcome(
+        &mut account,
+        instrument,
+        &orders,
+        clock.borrow().timestamp_ns(),
+    );
+    let state = match (calculation.outcome, calculation.value) {
+        (ReportPortfolioOutcome::Complete, Some(state)) => state,
+        (ReportPortfolioOutcome::Complete, None) => {
+            cache.borrow_mut().cache_account_owned(original_account);
+            return portfolio_failure(
+                PortfolioFailureStage::ReservationCalculation,
+                "Cash correction reservation produced no account state",
+            );
+        }
+        (ReportPortfolioOutcome::Failed(failure), _) => {
+            cache.borrow_mut().cache_account_owned(original_account);
+            return ReportPortfolioOutcome::Failed(failure);
+        }
+        (outcome, _) => {
+            cache.borrow_mut().cache_account_owned(original_account);
+            return portfolio_failure(
+                PortfolioFailureStage::ReservationCalculation,
+                &format!(
+                    "Cash correction cannot commit without complete reservations: {outcome:?}"
+                ),
+            );
+        }
+    };
+    if let Err(error) = account.apply(state.clone()) {
+        cache.borrow_mut().cache_account_owned(original_account);
+        return portfolio_failure(PortfolioFailureStage::AccountApply, &error);
+    }
+    // Cache updates memory before calling its database adapter. Keep that actual effect even on Err.
+    let persisted = cache.borrow_mut().update_account_owned(account);
+    inner.borrow_mut().applied_cash_fills.insert(key, corrected);
+    match source {
+        OrderUpdateSource::Endpoint => {
+            inner
+                .borrow_mut()
+                .cash_void_mirrors
+                .insert(voided.event_id, state);
+        }
+        OrderUpdateSource::Topic => {
+            let publication = publish_account_state_outcome(
+                format!("events.account.{}", voided.account_id).into(),
+                &state,
+            );
+            if let Err(error) = persisted {
+                return portfolio_failure(PortfolioFailureStage::AccountPersistence, &error);
+            }
+            return publication.unwrap_or(ReportPortfolioOutcome::Unobserved);
+        }
+    }
+    match persisted {
+        Ok(()) => ReportPortfolioOutcome::Complete,
+        Err(error) => portfolio_failure(PortfolioFailureStage::AccountPersistence, &error),
+    }
 }
 
 fn take_or_clone_account(cache: &Rc<RefCell<Cache>>, account_id: AccountId) -> Option<AccountAny> {
@@ -3694,18 +4104,33 @@ fn on_order_event(
     cache: &Rc<RefCell<Cache>>,
     inner: &Rc<RefCell<PortfolioState>>,
     event: &OrderEventAny,
-) {
+) -> ReportPortfolioOutcome {
+    let cash_void_state = if let OrderEventAny::FillVoided(voided) = event {
+        inner
+            .borrow_mut()
+            .cash_void_mirrors
+            .remove(&voided.event_id)
+    } else {
+        None
+    };
+    if let Some(state) = cash_void_state {
+        return publish_account_state_outcome(
+            format!("events.account.{}", state.account_id).into(),
+            &state,
+        )
+        .unwrap_or(ReportPortfolioOutcome::Unobserved);
+    }
     if let OrderEventAny::Filled(order_filled) = event {
         inner
             .borrow_mut()
             .pre_position_fill_events
             .remove(&order_filled.event_id);
-        return;
+        return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::MirrorNoNewApply);
     }
 
     let account_id = match event.account_id() {
         Some(account_id) => account_id,
-        None => return,
+        None => return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::NoAccountAssigned),
     };
 
     let is_wallet = cache
@@ -3727,7 +4152,7 @@ fn on_order_event(
         | OrderEventAny::CancelRejected(_)
         | OrderEventAny::FillVoided(_)
             if is_wallet => {}
-        _ => return,
+        _ => return ReportPortfolioOutcome::Skipped(PortfolioSkipReason::EventNotApplicable),
     }
 
     let account_state = cache
@@ -3736,11 +4161,15 @@ fn on_order_event(
         .and_then(|account| account.last_event());
 
     if let Some(account_state) = account_state {
-        msgbus::publish_account_state(
+        return publish_account_state_outcome(
             format!("events.account.{account_id}").into(),
             &account_state,
-        );
+        )
+        .unwrap_or(ReportPortfolioOutcome::Skipped(
+            PortfolioSkipReason::MirrorNoNewApply,
+        ));
     }
+    ReportPortfolioOutcome::Skipped(PortfolioSkipReason::MirrorNoNewApply)
 }
 
 /// Result of peeking at the cached account inside [`update_position`]: only a margin account
@@ -3751,6 +4180,24 @@ enum AccountPeek {
     Missing,
 }
 
+struct PositionProcessingOutcome {
+    outcome: ReportPortfolioOutcome,
+    legacy_panic: Option<String>,
+}
+
+impl PositionProcessingOutcome {
+    fn finish_legacy(self) {
+        if let Some(error) = self.legacy_panic {
+            panic!("called `Result::unwrap()` on an `Err` value: {error}");
+        }
+    }
+}
+
+struct MarginRecomputeOutcome {
+    calculation: AccountCalculation<Option<AccountState>>,
+    legacy_panic: Option<String>,
+}
+
 fn update_position(
     cache: &Rc<RefCell<Cache>>,
     clock: &Rc<RefCell<dyn Clock>>,
@@ -3758,6 +4205,18 @@ fn update_position(
     config: PortfolioConfig,
     event: &PositionEvent,
 ) {
+    update_position_outcome(cache, clock, inner, config, event).finish_legacy();
+}
+
+fn update_position_outcome(
+    cache: &Rc<RefCell<Cache>>,
+    clock: &Rc<RefCell<dyn Clock>>,
+    inner: &Rc<RefCell<PortfolioState>>,
+    config: PortfolioConfig,
+    event: &PositionEvent,
+) -> PositionProcessingOutcome {
+    let mut outcome = ReportPortfolioOutcome::Complete;
+    let mut legacy_panic = None;
     let instrument_id = event.instrument_id();
     let account_id = event.account_id();
 
@@ -3780,46 +4239,48 @@ fn update_position(
 
     record_closed_position_pnl(cache, inner, config, event);
 
-    if let Some(calculated_unrealized_pnl) =
-        portfolio_clone.calculate_unrealized_pnl(&instrument_id, None, None, None)
-    {
-        inner
-            .borrow_mut()
-            .unrealized_pnls
-            .insert(event.instrument_id(), calculated_unrealized_pnl);
-    } else {
-        log::debug!(
-            "Failed to calculate unrealized PnL for {}, marking as pending",
-            event.instrument_id()
-        );
-        inner
-            .borrow_mut()
-            .pending_calcs
-            .insert(event.instrument_id());
+    match portfolio_clone.calculate_unrealized_pnl_result(&instrument_id, None, None, None) {
+        Ok(calculated_unrealized_pnl) => {
+            inner
+                .borrow_mut()
+                .unrealized_pnls
+                .insert(event.instrument_id(), calculated_unrealized_pnl);
+        }
+        Err(error) => {
+            merge_portfolio_outcome(&mut outcome, valuation_outcome(error));
+            log::debug!(
+                "Failed to calculate unrealized PnL for {}, marking as pending",
+                event.instrument_id()
+            );
+            inner
+                .borrow_mut()
+                .pending_calcs
+                .insert(event.instrument_id());
+        }
     }
-
-    if let Some(calculated_realized_pnl) =
-        portfolio_clone.calculate_realized_pnl(&instrument_id, None, None)
-    {
-        inner
-            .borrow_mut()
-            .realized_pnls
-            .insert(event.instrument_id(), calculated_realized_pnl);
-    } else {
-        inner
-            .borrow_mut()
-            .realized_pnls
-            .shift_remove(&event.instrument_id());
-        log::warn!(
-            "Failed to calculate realized PnL for {}, marking as pending",
-            event.instrument_id()
-        );
-        inner
-            .borrow_mut()
-            .pending_calcs
-            .insert(event.instrument_id());
+    match portfolio_clone.calculate_realized_pnl_result(&instrument_id, None, None) {
+        Ok(calculated_realized_pnl) => {
+            inner
+                .borrow_mut()
+                .realized_pnls
+                .insert(event.instrument_id(), calculated_realized_pnl);
+        }
+        Err(error) => {
+            merge_portfolio_outcome(&mut outcome, valuation_outcome(error));
+            inner
+                .borrow_mut()
+                .realized_pnls
+                .shift_remove(&event.instrument_id());
+            log::warn!(
+                "Failed to calculate realized PnL for {}, marking as pending",
+                event.instrument_id()
+            );
+            inner
+                .borrow_mut()
+                .pending_calcs
+                .insert(event.instrument_id());
+        }
     }
-
     // Peek under a borrow: the account event log grows per fill, so a clone here was O(n)
     let peek = {
         let cache_ref = cache.borrow();
@@ -3835,7 +4296,11 @@ fn update_position(
     };
     let account_state_to_publish = match peek {
         AccountPeek::MarginRecompute => {
-            recompute_margin_account(cache, clock, inner, account_id, &instrument_id)
+            let calculation =
+                recompute_margin_account(cache, clock, inner, account_id, &instrument_id);
+            legacy_panic = calculation.legacy_panic;
+            merge_portfolio_outcome(&mut outcome, calculation.calculation.outcome);
+            calculation.calculation.value
         }
         AccountPeek::LastEvent(last_event) => *last_event,
         AccountPeek::Missing => {
@@ -3843,15 +4308,25 @@ fn update_position(
                 "Cannot update position: no account registered for {}",
                 event.account_id()
             );
+            merge_portfolio_outcome(
+                &mut outcome,
+                portfolio_failure(PortfolioFailureStage::Lookup, "Position account is missing"),
+            );
             None
         }
     };
 
-    if let Some(account_state) = account_state_to_publish {
-        msgbus::publish_account_state(
+    if let Some(account_state) = account_state_to_publish
+        && let Some(published) = publish_account_state_outcome(
             format!("events.account.{account_id}").into(),
             &account_state,
-        );
+        )
+    {
+        merge_portfolio_outcome(&mut outcome, published);
+    }
+    PositionProcessingOutcome {
+        outcome,
+        legacy_panic,
     }
 }
 
@@ -3865,22 +4340,51 @@ fn recompute_margin_account(
     inner: &Rc<RefCell<PortfolioState>>,
     account_id: AccountId,
     instrument_id: &InstrumentId,
-) -> Option<AccountState> {
+) -> MarginRecomputeOutcome {
     let instrument = { cache.borrow().instrument(instrument_id).cloned() };
     let Some(instrument) = instrument else {
         log::error!("Cannot update position: no instrument found for {instrument_id}");
         let cache_ref = cache.borrow();
-        return cache_ref
-            .account(&account_id)
-            .and_then(|account| account.last_event());
+        return MarginRecomputeOutcome {
+            calculation: AccountCalculation {
+                value: cache_ref
+                    .account(&account_id)
+                    .and_then(|account| account.last_event()),
+                outcome: portfolio_failure(
+                    PortfolioFailureStage::Lookup,
+                    "Margin instrument is missing",
+                ),
+            },
+            legacy_panic: None,
+        };
     };
 
     // Bind the taken account so the mutable cache borrow drops before the recompute
     let taken_account = cache.borrow_mut().take_account(&account_id);
-    let mut account = taken_account?;
+    let Some(mut account) = taken_account else {
+        return MarginRecomputeOutcome {
+            calculation: AccountCalculation {
+                value: None,
+                outcome: portfolio_failure(
+                    PortfolioFailureStage::Lookup,
+                    "Margin account is missing",
+                ),
+            },
+            legacy_panic: None,
+        };
+    };
     let AccountAny::Margin(margin_account) = &mut account else {
         // The caller peeked a margin account, so this only restores an unexpected account type
-        return restore_cached_account(cache, account);
+        return MarginRecomputeOutcome {
+            calculation: AccountCalculation {
+                value: restore_cached_account(cache, account),
+                outcome: portfolio_failure(
+                    PortfolioFailureStage::Lookup,
+                    "Margin account type changed",
+                ),
+            },
+            legacy_panic: None,
+        };
     };
 
     let recomputed = {
@@ -3888,7 +4392,7 @@ fn recompute_margin_account(
         let refs =
             cache_ref.positions_open(None, Some(instrument_id), None, Some(&account_id), None);
         let positions: Vec<&Position> = refs.iter().map(|r| &**r).collect();
-        inner.borrow_mut().accounts.update_positions_in_place(
+        inner.borrow_mut().accounts.update_positions_outcome(
             margin_account,
             &instrument,
             positions,
@@ -3896,12 +4400,36 @@ fn recompute_margin_account(
         )
     };
 
-    match recomputed {
-        Some(account_state) => {
-            cache.borrow_mut().update_account_owned(account).unwrap();
-            Some(account_state)
-        }
-        None => restore_cached_account(cache, account),
+    match recomputed.value {
+        Some(account_state) => match cache.borrow_mut().update_account_owned(account) {
+            Ok(()) => MarginRecomputeOutcome {
+                calculation: AccountCalculation {
+                    value: Some(account_state),
+                    outcome: recomputed.outcome,
+                },
+                legacy_panic: None,
+            },
+            Err(error) => {
+                let original_error = format!("{error:?}");
+                MarginRecomputeOutcome {
+                    calculation: AccountCalculation {
+                        value: None,
+                        outcome: portfolio_failure(
+                            PortfolioFailureStage::AccountPersistence,
+                            &error,
+                        ),
+                    },
+                    legacy_panic: Some(original_error),
+                }
+            }
+        },
+        None => MarginRecomputeOutcome {
+            calculation: AccountCalculation {
+                value: restore_cached_account(cache, account),
+                outcome: recomputed.outcome,
+            },
+            legacy_panic: None,
+        },
     }
 }
 
@@ -4015,6 +4543,16 @@ fn update_account(
     config: PortfolioConfig,
     event: &AccountState,
 ) {
+    let _ = update_account_outcome(clock, cache, inner, config, event);
+}
+
+fn update_account_outcome(
+    clock: &Rc<RefCell<dyn Clock>>,
+    cache: &Rc<RefCell<Cache>>,
+    inner: &Rc<RefCell<PortfolioState>>,
+    config: PortfolioConfig,
+    event: &AccountState,
+) -> ReportPortfolioOutcome {
     let already_applied = {
         cache
             .borrow()
@@ -4023,9 +4561,21 @@ fn update_account(
             .is_some_and(|last_event| last_event.event_id == event.event_id)
     };
 
+    if !already_applied && event.is_reported {
+        // A new authoritative snapshot supersedes local apply evidence, including a later DB Err.
+        inner
+            .borrow_mut()
+            .applied_cash_fills
+            .retain(|key, _| key.0 != event.account_id);
+        inner
+            .borrow_mut()
+            .cash_void_mirrors
+            .retain(|_, state| state.account_id != event.account_id);
+    }
+
     if !already_applied && let Err(e) = cache.borrow_mut().update_account_state(event) {
         log::error!("Failed to update account state: {e}");
-        return;
+        return portfolio_failure(PortfolioFailureStage::AccountState, &e);
     }
 
     // Throttled logging logic
@@ -4061,6 +4611,11 @@ fn update_account(
     drop(inner_ref);
 
     register_equity_curve_account(clock, cache, inner, config, event.account_id);
+    if already_applied {
+        ReportPortfolioOutcome::Skipped(PortfolioSkipReason::AccountStateAlreadyApplied)
+    } else {
+        ReportPortfolioOutcome::Complete
+    }
 }
 
 fn equity_curve_timer_name(account_id: AccountId) -> String {

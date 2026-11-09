@@ -19344,3 +19344,3313 @@ fn test_bundled_retained_fill_economic_conflict_does_not_infer_a_replacement(
     assert_eq!(position.realized_pnl, retained.realized_pnl);
     assert_eq!(position.commissions(), retained.commissions());
 }
+
+#[derive(Clone, Debug)]
+struct ReportOwnerObservation {
+    event: nautilus_common::owner_delivery::OwnerExternalEvent,
+    outlet: &'static str,
+    order_state: Option<(ClientOrderId, OrderStatus, Quantity)>,
+}
+
+struct ReportOwnerDelivery {
+    engine: std::rc::Weak<RefCell<ExecutionEngine>>,
+    observation: ReportOwnerObservation,
+    records: Rc<RefCell<Vec<ReportOwnerObservation>>>,
+    fail_first_fill: bool,
+}
+
+impl nautilus_common::owner_delivery::OwnerExternalAction for ReportOwnerDelivery {
+    fn original_event(&self) -> nautilus_common::owner_delivery::OwnerExternalEvent {
+        self.observation.event.clone()
+    }
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test checks the applied event while the callback is running"
+    )]
+    fn deliver(&mut self) -> Result<(), nautilus_common::owner_delivery::OwnerDeliveryError> {
+        use nautilus_common::owner_delivery::{OwnerDeliveryError, OwnerExternalEvent};
+        let engine = self.engine.upgrade().expect("actual engine remains owned");
+        let engine = engine
+            .try_borrow_mut()
+            .expect("report external delivery releases native engine borrow");
+        let mut observed = self.observation.clone();
+        if let OwnerExternalEvent::Order(event) = &observed.event {
+            let client_order_id = event.clone().into_boxed().client_order_id();
+            let cache = engine.cache().borrow();
+            let order = cache.order(&client_order_id).expect("canonical order");
+            observed.order_state = Some((client_order_id, order.status(), order.filled_qty()));
+            assert!(
+                order
+                    .events()
+                    .iter()
+                    .any(|cached| OrderEventAny::clone(cached).into_boxed().id()
+                        == event.clone().into_boxed().id())
+            );
+        }
+        self.records.borrow_mut().push(observed);
+        if self.fail_first_fill
+            && self.observation.outlet == "specific"
+            && matches!(
+                self.observation.event,
+                OwnerExternalEvent::Order(OrderEventAny::Filled(_))
+            )
+        {
+            return Err(OwnerDeliveryError::ExternalCallback);
+        }
+        Ok(())
+    }
+}
+
+fn report_output_kind(event: &nautilus_common::owner_delivery::OwnerExternalEvent) -> &'static str {
+    use nautilus_common::owner_delivery::OwnerExternalEvent;
+    match event {
+        OwnerExternalEvent::Order(OrderEventAny::Initialized(_)) => "Initialized",
+        OwnerExternalEvent::Order(OrderEventAny::Accepted(_)) => "Accepted",
+        OwnerExternalEvent::Order(OrderEventAny::Filled(_)) => "Filled",
+        OwnerExternalEvent::Position(PositionEvent::PositionOpened(_)) => "Opened",
+        OwnerExternalEvent::Position(PositionEvent::PositionChanged(_)) => "Changed",
+        _ => panic!("unexpected output in fixed report fixture"),
+    }
+}
+
+#[rstest]
+#[case("order")]
+#[case("external-order")]
+#[case("fill")]
+#[case("bundled")]
+#[case("position")]
+#[case("mass")]
+#[case("fault")]
+fn test_runtime_report_owner_variants_and_retained_fault(#[case] variant: &str) {
+    use nautilus_common::owner_delivery::{
+        self, OwnerDelivery, OwnerDeliveryCause, OwnerDeliveryError, OwnerExternalEvent,
+        OwnerReportDispatchStage, OwnerReportStepKind,
+    };
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let _portfolio =
+        nautilus_portfolio::portfolio::Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut execution_engine = ExecutionEngine::new(clock, cache, None);
+    let instrument = audusd_sim();
+    setup_netting_snapshot_engine(&mut execution_engine, &instrument);
+    let a_id = ClientOrderId::from("OWNER-REPORT-A");
+    let b_id = ClientOrderId::from("OWNER-REPORT-B");
+    let c_id = ClientOrderId::from("OWNER-REPORT-C");
+    let a_venue = VenueOrderId::from("V-OWNER-A");
+    let b_venue = VenueOrderId::from("V-OWNER-B");
+    let c_venue = VenueOrderId::from("V-OWNER-C");
+    if matches!(variant, "order" | "bundled" | "mass" | "fault") {
+        let count = if variant == "mass" { 2 } else { 1 };
+        for id in [a_id, b_id].into_iter().take(count) {
+            let order = OrderTestBuilder::new(OrderType::Limit)
+                .instrument_id(instrument.id())
+                .client_order_id(id)
+                .side(OrderSide::Buy)
+                .quantity(Quantity::from(100_000))
+                .price(Price::from("1.00000"))
+                .build();
+            execution_engine
+                .cache()
+                .borrow_mut()
+                .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+                .unwrap();
+            execution_engine.process(&TestOrderEventStubs::submitted(
+                &order,
+                AccountId::test_default(),
+            ));
+        }
+    }
+    let a_report = create_order_status_report(
+        Some(a_id),
+        a_venue,
+        instrument.id(),
+        if matches!(variant, "order" | "external-order") {
+            OrderStatus::Accepted
+        } else {
+            OrderStatus::Filled
+        },
+        Quantity::from(100_000),
+        if matches!(variant, "order" | "external-order") {
+            Quantity::from(0)
+        } else {
+            Quantity::from(100_000)
+        },
+    );
+    let fills = vec![
+        create_fill_report(
+            instrument.id(),
+            Some(a_id),
+            a_venue,
+            TradeId::from("T-OWNER-A-1"),
+            Quantity::from(50_000),
+            Price::from("1.00000"),
+        ),
+        create_fill_report(
+            instrument.id(),
+            Some(a_id),
+            a_venue,
+            TradeId::from("T-OWNER-A-2"),
+            Quantity::from(50_000),
+            Price::from("1.00000"),
+        ),
+    ];
+    let position =
+        create_position_report(instrument.id(), PositionSide::Flat, Quantity::from(0), None);
+    let report = match variant {
+        "order" | "external-order" => ExecutionReport::Order(Box::new(a_report.clone())),
+        "fill" => ExecutionReport::Fill(Box::new(fills[0].clone())),
+        "bundled" | "fault" => {
+            ExecutionReport::OrderWithFills(Box::new(a_report.clone()), fills.clone())
+        }
+        "position" => ExecutionReport::Position(Box::new(position)),
+        "mass" => {
+            let mut mass = ExecutionMassStatus::new(
+                ClientId::from("STUB"),
+                AccountId::test_default(),
+                instrument.id().venue,
+                1_000_000.into(),
+                None,
+            );
+            mass.add_order_reports(vec![
+                a_report.clone(),
+                create_order_status_report(
+                    Some(b_id),
+                    b_venue,
+                    instrument.id(),
+                    OrderStatus::Accepted,
+                    Quantity::from(100_000),
+                    Quantity::from(0),
+                ),
+            ]);
+            let mut all_fills = fills.clone();
+            all_fills.push(create_fill_report(
+                instrument.id(),
+                Some(c_id),
+                c_venue,
+                TradeId::from("T-OWNER-C"),
+                Quantity::from(25_000),
+                Price::from("1.00000"),
+            ));
+            mass.add_fill_reports(all_fills);
+            mass.add_position_reports(vec![position]);
+            ExecutionReport::MassStatus(Box::new(mass))
+        }
+        _ => unreachable!("fixed case list"),
+    };
+    let engine = Rc::new(RefCell::new(execution_engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let records = Rc::new(RefCell::new(Vec::new()));
+    let published = Rc::new(RefCell::new(Vec::new()));
+    let weak_engine = Rc::downgrade(&engine);
+    let failed = variant == "fault";
+    let make_external = {
+        let records = records.clone();
+        let published = published.clone();
+        move |event: OwnerExternalEvent, event_id: UUID4| {
+            published.borrow_mut().push(event.clone());
+            for outlet in ["specific", "aggregate"] {
+                assert!(
+                    owner_delivery::capture_external(
+                        event_id,
+                        Box::new(ReportOwnerDelivery {
+                            engine: weak_engine.clone(),
+                            observation: ReportOwnerObservation {
+                                event: event.clone(),
+                                outlet,
+                                order_state: None
+                            },
+                            records: records.clone(),
+                            fail_first_fill: failed,
+                        })
+                    )
+                    .unwrap()
+                    .is_none()
+                );
+            }
+        }
+    };
+    let make_external = Rc::new(make_external);
+    let order_handler = TypedHandler::from({
+        let make_external = make_external.clone();
+        move |event: &OrderEventAny| {
+            make_external(
+                OwnerExternalEvent::Order(event.clone()),
+                event.clone().into_boxed().id(),
+            );
+        }
+    });
+    let position_handler = TypedHandler::from({
+        move |event: &PositionEvent| {
+            let id = match event {
+                PositionEvent::PositionOpened(e) => e.event_id,
+                PositionEvent::PositionChanged(e) => e.event_id,
+                PositionEvent::PositionClosed(e) => e.event_id,
+                PositionEvent::PositionAdjusted(e) => e.event_id,
+            };
+            make_external(OwnerExternalEvent::Position(event.clone()), id);
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), order_handler.clone(), None);
+    msgbus::subscribe_position_events("events.position.*".into(), position_handler.clone(), None);
+    let owner = OwnerDelivery::new();
+    let _binding = owner.bind().unwrap();
+    let observer = owner_delivery::current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        report,
+    );
+    let expected: &[&str] = match variant {
+        "order" => &["Accepted"],
+        "external-order" => &["Initialized", "Accepted"],
+        "fill" => &["Initialized", "Accepted", "Filled"],
+        "bundled" => &["Accepted", "Filled", "Opened", "Filled", "Changed"],
+        "position" => &[],
+        "mass" => &[
+            "Accepted",
+            "Filled",
+            "Opened",
+            "Filled",
+            "Changed",
+            "Accepted",
+            "Initialized",
+            "Accepted",
+            "Filled",
+        ],
+        "fault" => &["Accepted", "Filled", "Opened"],
+        _ => unreachable!(),
+    };
+    let actual_kinds: Vec<_> = published.borrow().iter().map(report_output_kind).collect();
+    assert_eq!(actual_kinds, expected, "independent native output order");
+    let records = records.borrow();
+    assert_eq!(records.len(), expected.len() * 2);
+    for (pair, original) in records
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(published.borrow().iter())
+    {
+        assert_eq!([pair[0].outlet, pair[1].outlet], ["specific", "aggregate"]);
+        for observed in pair {
+            let to_json = |event: &OwnerExternalEvent| match event {
+                OwnerExternalEvent::Order(event) => serde_json::to_value(event).unwrap(),
+                OwnerExternalEvent::Position(event) => serde_json::to_value(event).unwrap(),
+            };
+            assert_eq!(to_json(&observed.event), to_json(original));
+        }
+    }
+    let fill_states: Vec<_> = records
+        .iter()
+        .filter(|record| {
+            record.outlet == "specific"
+                && matches!(
+                    record.event,
+                    OwnerExternalEvent::Order(OrderEventAny::Filled(_))
+                )
+        })
+        .map(|record| record.order_state.unwrap())
+        .collect();
+    if matches!(variant, "bundled" | "mass") {
+        assert_eq!(
+            &fill_states[..2],
+            &[
+                (a_id, OrderStatus::PartiallyFilled, Quantity::from(50_000)),
+                (a_id, OrderStatus::Filled, Quantity::from(100_000))
+            ]
+        );
+    }
+    if matches!(variant, "fill" | "mass") {
+        let cache = engine.borrow().cache().clone();
+        let cache = cache.borrow();
+        let external_id = if variant == "fill" { a_id } else { c_id };
+        let order = cache.order(&external_id).unwrap();
+        assert!(order.is_reduce_only());
+        assert_eq!(order.strategy_id(), StrategyId::external());
+        assert_eq!(order.status(), OrderStatus::Filled);
+        let expected_qty = if variant == "fill" {
+            Quantity::from(50_000)
+        } else {
+            Quantity::from(25_000)
+        };
+        assert_eq!(order.quantity(), expected_qty);
+        assert_eq!(order.filled_qty(), expected_qty);
+        assert_eq!(order.trade_ids().len(), 1);
+        assert!(
+            cache
+                .positions(
+                    None,
+                    Some(&instrument.id()),
+                    Some(&StrategyId::external()),
+                    Some(&AccountId::test_default()),
+                    None
+                )
+                .is_empty(),
+            "a venue-initiated reduce-only fill cannot create a new external position"
+        );
+    }
+    assert_eq!(engine.borrow().report_count(), 1);
+    if failed {
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::ExternalCallback));
+        let cache = engine.borrow().cache().clone();
+        let cache = cache.borrow();
+        let order = cache.order(&a_id).unwrap();
+        assert_eq!(order.status(), OrderStatus::PartiallyFilled);
+        assert_eq!(order.filled_qty(), Quantity::from(50_000));
+        assert_eq!(order.trade_ids().len(), 1);
+        assert_eq!(*order.trade_ids()[0], fills[0].trade_id);
+        let retained = observer.retained_reports().unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].kind, Some(OwnerReportStepKind::CanonicalEvent));
+        assert_eq!(
+            retained[0].stage,
+            OwnerReportDispatchStage::CompletionPending
+        );
+        let cause = retained[0].cause.as_ref().unwrap();
+        assert_eq!(cause.sources.len(), 1);
+        assert_eq!(cause.sources[0].root_report_id, a_report.report_id);
+        assert_eq!(cause.sources[0].source_report_id, fills[0].report_id);
+        assert_eq!(cause.sources[0].fill_index, Some(0));
+        assert!(cause.control_origin.is_none());
+        let ExecutionReport::OrderWithFills(original, original_fills) =
+            &retained[0].input.reports[0]
+        else {
+            panic!("original report");
+        };
+        assert_eq!(**original, a_report);
+        assert_eq!(*original_fills, fills);
+        let outputs = observer.retained_typed_deliveries().unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].cause, OwnerDeliveryCause::Report(cause.clone()));
+        assert_eq!(outputs[0].event_id, cause.canonical_event_id.unwrap());
+        assert_eq!(outputs[0].error, Some(OwnerDeliveryError::ExternalCallback));
+        assert!(owner.pending() > 0);
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    } else {
+        assert_eq!(owner.failure(), None);
+        assert_eq!(owner.pending(), 0);
+        assert!(observer.retained_reports().unwrap().is_empty());
+        assert_eq!(owner.retire(), Ok(()));
+    }
+    msgbus::unsubscribe_order_events("events.order.*".into(), &order_handler);
+    msgbus::unsubscribe_position_events("events.position.*".into(), &position_handler);
+}
+
+#[rstest]
+fn test_runtime_report_post_commit_position_failure_stops_next_fill() {
+    use nautilus_common::owner_delivery::{
+        OwnerDelivery, OwnerDeliveryError, OwnerReportDispatchStage, current_observer,
+    };
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let (database, control) = FailNthAddOrderDatabase::create();
+    cache.borrow_mut().set_database(Box::new(database));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    setup_netting_snapshot_engine(&mut engine, &instrument);
+    let position_id = PositionId::new(format!("{}-{}", instrument.id, StrategyId::test_default()));
+    process_filled_order(
+        &mut engine,
+        TraderId::test_default(),
+        StrategyId::test_default(),
+        &instrument,
+        "NATIVE-FAILURE-PREDECESSOR",
+        "V-NATIVE-PREDECESSOR",
+        "T-NATIVE-PREDECESSOR",
+        OrderSide::Buy,
+        100_000,
+        position_id,
+    );
+    assert_eq!(
+        cache.borrow().position(&position_id).unwrap().quantity,
+        Quantity::from(100_000)
+    );
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("NATIVE-POST-COMMIT"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    assert!(!order.is_reduce_only());
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    let venue_id = VenueOrderId::from("V-NATIVE-POST-COMMIT");
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    engine.process(&TestOrderEventStubs::accepted(
+        &order,
+        AccountId::test_default(),
+        venue_id,
+    ));
+    let report = create_order_status_report(
+        Some(order.client_order_id()),
+        venue_id,
+        instrument.id,
+        OrderStatus::Filled,
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+    );
+    let fills: Vec<_> = ["T-NATIVE-FAULT-A", "T-NATIVE-UNAPPLIED-B"]
+        .into_iter()
+        .map(|id| {
+            create_fill_report(
+                instrument.id,
+                Some(order.client_order_id()),
+                venue_id,
+                TradeId::from(id),
+                Quantity::from(50_000),
+                Price::from("1.00000"),
+            )
+        })
+        .collect();
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    control.set_fail_update_position_on(Some(1));
+    let owner = OwnerDelivery::new();
+    let _binding = owner.bind().unwrap();
+    let observer = current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::OrderWithFills(Box::new(report.clone()), fills.clone()),
+    );
+    eprintln!(
+        "POST_COMMIT_NATIVE_FAILURE calls={} order_qty={} position_qty={} failure={:?}",
+        control.update_position_calls(),
+        cache
+            .borrow()
+            .order(&order.client_order_id())
+            .unwrap()
+            .filled_qty(),
+        cache.borrow().position(&position_id).unwrap().quantity,
+        owner.failure()
+    );
+    assert_eq!(owner.failure(), Some(OwnerDeliveryError::NativeAction));
+    assert_eq!(control.update_position_calls(), 1);
+    let cached = cache.borrow();
+    let canonical_order = cached.order(&order.client_order_id()).unwrap();
+    assert_eq!(canonical_order.filled_qty(), Quantity::from(50_000));
+    assert_eq!(canonical_order.trade_ids().len(), 1);
+    assert_eq!(*canonical_order.trade_ids()[0], fills[0].trade_id);
+    let position = cached.position(&position_id).unwrap();
+    assert_eq!(
+        position.quantity,
+        Quantity::from(150_000),
+        "A committed before the database failure"
+    );
+    assert!(position.trade_ids.contains(&fills[0].trade_id));
+    assert!(!position.trade_ids.contains(&fills[1].trade_id));
+    drop(position);
+    drop(canonical_order);
+    drop(cached);
+    let retained = observer.retained_reports().unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(
+        retained[0].stage,
+        OwnerReportDispatchStage::DispatchReturned
+    );
+    let cause = retained[0].cause.as_ref().unwrap();
+    assert_eq!(cause.sources[0].root_report_id, report.report_id);
+    assert_eq!(cause.sources[0].source_report_id, fills[0].report_id);
+    assert_eq!(cause.sources[0].fill_index, Some(0));
+    let ExecutionReport::OrderWithFills(original, original_fills) = &retained[0].input.reports[0]
+    else {
+        panic!("retained original report");
+    };
+    assert_eq!(**original, report);
+    assert_eq!(*original_fills, fills);
+    assert!(owner.pending() > 0);
+    assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+}
+
+#[rstest]
+#[case("position", true)]
+#[case("order", true)]
+#[case("account", true)]
+#[case("position", false)]
+#[case("order", false)]
+#[case("account", false)]
+fn test_runtime_report_native_fault_and_legacy_progress(#[case] fault: &str, #[case] owned: bool) {
+    use nautilus_common::owner_delivery::{OwnerDelivery, OwnerDeliveryError, current_observer};
+    use nautilus_portfolio::portfolio::Portfolio;
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let (database, control) = FailNthAddOrderDatabase::create();
+    cache.borrow_mut().set_database(Box::new(database));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    setup_netting_snapshot_engine(&mut engine, &instrument);
+    cache
+        .borrow_mut()
+        .cache_account_owned(cash_account_for(AccountId::test_default()).into());
+    let position_id = PositionId::new(format!("{}-{}", instrument.id, StrategyId::test_default()));
+    process_filled_order(
+        &mut engine,
+        TraderId::test_default(),
+        StrategyId::test_default(),
+        &instrument,
+        "POST-COMMIT-SEED",
+        "V-POST-COMMIT-SEED",
+        "T-POST-COMMIT-SEED",
+        OrderSide::Buy,
+        100_000,
+        position_id,
+    );
+    let before_account = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    let AccountAny::Cash(before_cash) = &before_account else {
+        panic!("real cash account");
+    };
+    let before_total = before_cash
+        .base
+        .base_balance_total(Some(Currency::USD()))
+        .unwrap();
+    let before_commission = before_cash
+        .base
+        .commission(&Currency::USD())
+        .unwrap_or(Money::zero(Currency::USD()));
+    let before_position_commission = cache.borrow().position(&position_id).unwrap().commissions();
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("POST-COMMIT-ORDER"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    let venue = VenueOrderId::from("V-POST-COMMIT-ORDER");
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    engine.process(&TestOrderEventStubs::accepted(
+        &order,
+        AccountId::test_default(),
+        venue,
+    ));
+    let report = create_order_status_report(
+        Some(order.client_order_id()),
+        venue,
+        instrument.id,
+        OrderStatus::Filled,
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+    );
+    let fills: Vec<_> = ["T-POST-COMMIT-A", "T-POST-COMMIT-B"]
+        .into_iter()
+        .map(|id| {
+            create_fill_report(
+                instrument.id,
+                Some(order.client_order_id()),
+                venue,
+                TradeId::from(id),
+                Quantity::from(50_000),
+                Price::from("1.00000"),
+            )
+        })
+        .collect();
+    match fault {
+        "position" => control.set_fail_update_position_on(Some(1)),
+        "order" => control.set_fail_update_order_on(Some(1)),
+        "account" => control.set_fail_update_account_on(Some(1)),
+        _ => unreachable!("fixed case list"),
+    }
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = owned.then(OwnerDelivery::new);
+    let _binding = owner.as_ref().map(|owner| owner.bind().unwrap());
+    let observer = owned.then(|| current_observer().unwrap());
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::OrderWithFills(Box::new(report.clone()), fills.clone()),
+    );
+    assert_eq!(
+        control.failed_updates(),
+        vec![fault],
+        "actual backing adapter rejection"
+    );
+    let expected_fills = if owned { 1_u32 } else { 2 };
+    let quantity = if owned {
+        Quantity::from(50_000)
+    } else {
+        Quantity::from(100_000)
+    };
+    let cache_ref = cache.borrow();
+    let canonical = cache_ref.order(&order.client_order_id()).unwrap();
+    assert_eq!(canonical.filled_qty(), quantity);
+    assert_eq!(canonical.trade_ids().len(), expected_fills as usize);
+    let position = cache_ref.position(&position_id).unwrap();
+    assert_eq!(
+        position.quantity,
+        if owned {
+            Quantity::from(150_000)
+        } else {
+            Quantity::from(200_000)
+        }
+    );
+    assert_eq!(position.trade_ids.contains(&fills[1].trade_id), !owned);
+    let position_fees = position.commissions();
+    let prior_fee = before_position_commission
+        .iter()
+        .copied()
+        .find(|fee| fee.currency == Currency::USD())
+        .unwrap_or(Money::zero(Currency::USD()));
+    let added_fee =
+        Money::from_decimal(dec!(0.10) * Decimal::from(expected_fills), Currency::USD()).unwrap();
+    assert_eq!(position_fees, vec![prior_fee + added_fee]);
+    let account = cache_ref.account_owned(&AccountId::test_default()).unwrap();
+    let AccountAny::Cash(account) = account else {
+        panic!("same actual cash account");
+    };
+    assert_eq!(
+        account.base.commission(&Currency::USD()),
+        Some(before_commission + added_fee)
+    );
+    let principal = Money::from_decimal(quantity.as_decimal(), Currency::USD()).unwrap();
+    assert_eq!(
+        account.base.base_balance_total(Some(Currency::USD())),
+        Some(before_total - principal - added_fee)
+    );
+    drop(position);
+    drop(canonical);
+    drop(cache_ref);
+    if let Some(owner) = owner {
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::NativeAction));
+        let reports = observer.unwrap().retained_reports().unwrap();
+        assert_eq!(reports.len(), 1);
+        let cause = reports[0].cause.as_ref().unwrap();
+        assert_eq!(cause.sources[0].source_report_id, fills[0].report_id);
+        assert_eq!(cause.sources[0].root_report_id, report.report_id);
+        assert_eq!(cause.sources[0].fill_index, Some(0));
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    }
+}
+
+#[rstest]
+#[case("missing")]
+#[case("expired")]
+#[case("noop")]
+#[case("rebuilt")]
+#[case("two-live")]
+#[case("new-expired-old-live")]
+fn test_runtime_report_requires_actual_portfolio_receiver(#[case] mode: &str) {
+    use nautilus_common::owner_delivery::{OwnerDelivery, OwnerDeliveryError, current_observer};
+    use nautilus_portfolio::portfolio::Portfolio;
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let mut portfolio =
+        (mode != "missing").then(|| Portfolio::new(clock.clone(), cache.clone(), None));
+    let mut engine = ExecutionEngine::new(clock.clone(), cache.clone(), None);
+    let instrument = audusd_sim();
+    setup_netting_snapshot_engine(&mut engine, &instrument);
+    cache
+        .borrow_mut()
+        .cache_account_owned(cash_account_for(AccountId::test_default()).into());
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("ACTUAL-RECEIVER"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    let venue = VenueOrderId::from("V-ACTUAL-RECEIVER");
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    engine.process(&TestOrderEventStubs::accepted(
+        &order,
+        AccountId::test_default(),
+        venue,
+    ));
+    if mode == "expired" {
+        drop(portfolio.take());
+    }
+    let _replacement = match mode {
+        "rebuilt" => {
+            drop(portfolio.take());
+            Some(Portfolio::new(clock.clone(), cache.clone(), None))
+        }
+        "two-live" => Some(Portfolio::new(clock.clone(), cache.clone(), None)),
+        "new-expired-old-live" => {
+            let replacement = Portfolio::new(clock.clone(), cache.clone(), None);
+            drop(replacement);
+            None
+        }
+        _ => None,
+    };
+    let healthy = matches!(mode, "rebuilt" | "two-live");
+    let noop_received = Rc::new(RefCell::new(Vec::new()));
+    if mode == "noop" {
+        msgbus::register_order_event_endpoint(
+            MessagingSwitchboard::portfolio_update_order(),
+            TypedIntoHandler::from({
+                let records = noop_received.clone();
+                move |event: OrderEventAny| {
+                    records.borrow_mut().push(event);
+                }
+            }),
+        );
+    }
+    let report = create_order_status_report(
+        Some(order.client_order_id()),
+        venue,
+        instrument.id,
+        OrderStatus::Filled,
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+    );
+    let fills: Vec<_> = ["T-ACTUAL-A", "T-UNOBSERVED-B"]
+        .into_iter()
+        .map(|id| {
+            create_fill_report(
+                instrument.id,
+                Some(order.client_order_id()),
+                venue,
+                TradeId::from(id),
+                Quantity::from(50_000),
+                Price::from("1.00000"),
+            )
+        })
+        .collect();
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = OwnerDelivery::new();
+    let _binding = owner.bind().unwrap();
+    let observer = current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::OrderWithFills(Box::new(report.clone()), fills.clone()),
+    );
+    assert_eq!(
+        owner.failure(),
+        if healthy {
+            None
+        } else {
+            Some(OwnerDeliveryError::NativeAction)
+        }
+    );
+    let cache = cache.borrow();
+    let canonical = cache.order(&order.client_order_id()).unwrap();
+    assert_eq!(
+        canonical.filled_qty(),
+        if healthy {
+            Quantity::from(100_000)
+        } else {
+            Quantity::from(50_000)
+        }
+    );
+    assert_eq!(canonical.trade_ids().len(), if healthy { 2 } else { 1 });
+    assert_eq!(*canonical.trade_ids()[0], fills[0].trade_id);
+    let reports = observer.retained_reports().unwrap();
+    if healthy {
+        assert!(reports.is_empty());
+        let position_id =
+            PositionId::new(format!("{}-{}", instrument.id, StrategyId::test_default()));
+        let position = cache.position(&position_id).unwrap();
+        assert_eq!(position.quantity, Quantity::from(100_000));
+        assert_eq!(position.commissions(), vec![Money::from("0.20 USD")]);
+        let AccountAny::Cash(account) = cache.account_owned(&AccountId::test_default()).unwrap()
+        else {
+            panic!("actual cash account");
+        };
+        assert_eq!(
+            account.base.base_balance_total(Some(Currency::USD())),
+            Some(Money::from("899999.80 USD"))
+        );
+        assert_eq!(
+            account.base.commission(&Currency::USD()),
+            Some(Money::from("0.20 USD"))
+        );
+        assert_eq!(owner.retire(), Ok(()));
+        return;
+    }
+    assert_eq!(reports.len(), 1);
+    let cause = reports[0].cause.as_ref().unwrap();
+    assert_eq!(cause.sources[0].root_report_id, report.report_id);
+    assert_eq!(cause.sources[0].source_report_id, fills[0].report_id);
+    if mode == "noop" {
+        let received = noop_received.borrow();
+        assert_eq!(
+            received.len(),
+            1,
+            "actual void endpoint received the canonical A event"
+        );
+        assert_eq!(
+            received[0].clone().into_boxed().id(),
+            cause.canonical_event_id.unwrap()
+        );
+        assert_eq!(&received[0], canonical.last_event());
+    } else {
+        assert!(noop_received.borrow().is_empty());
+    }
+    assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    drop(canonical);
+    drop(cache);
+    drop(portfolio);
+}
+
+#[rstest]
+#[case(2, true)]
+#[case(2, false)]
+#[case(3, true)]
+#[case(3, false)]
+fn test_runtime_report_margin_account_failure_boundaries(
+    #[case] failed_write: usize,
+    #[case] owned: bool,
+) {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use nautilus_common::owner_delivery::{OwnerDelivery, OwnerDeliveryError};
+    use nautilus_model::accounts::MarginAccount;
+    use nautilus_portfolio::portfolio::Portfolio;
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let (database, control) = FailNthAddOrderDatabase::create();
+    cache.borrow_mut().set_database(Box::new(database));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    setup_netting_snapshot_engine(&mut engine, &instrument);
+    let state = AccountState::new(
+        AccountId::test_default(),
+        AccountType::Margin,
+        vec![AccountBalance::new(
+            Money::from("1000000 USD"),
+            Money::from("0 USD"),
+            Money::from("1000000 USD"),
+        )],
+        vec![],
+        true,
+        UUID4::new(),
+        0.into(),
+        0.into(),
+        Some(Currency::USD()),
+    );
+    cache
+        .borrow_mut()
+        .cache_account_owned(MarginAccount::new(state, true).into());
+    let position_id = PositionId::new(format!("{}-{}", instrument.id, StrategyId::test_default()));
+    process_filled_order(
+        &mut engine,
+        TraderId::test_default(),
+        StrategyId::test_default(),
+        &instrument,
+        "MARGIN-SEED",
+        "V-MARGIN-SEED",
+        "T-MARGIN-SEED",
+        OrderSide::Buy,
+        100_000,
+        position_id,
+    );
+    let AccountAny::Margin(before) = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap()
+    else {
+        panic!("actual margin predecessor");
+    };
+    let before_total = before
+        .base
+        .base_balance_total(Some(Currency::USD()))
+        .unwrap();
+    let before_fees = before
+        .base
+        .commission(&Currency::USD())
+        .unwrap_or(Money::zero(Currency::USD()));
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("MARGIN-REPORT"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    let venue = VenueOrderId::from("V-MARGIN-REPORT");
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    engine.process(&TestOrderEventStubs::accepted(
+        &order,
+        AccountId::test_default(),
+        venue,
+    ));
+    let report = create_order_status_report(
+        Some(order.client_order_id()),
+        venue,
+        instrument.id,
+        OrderStatus::Filled,
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+    );
+    let fills: Vec<_> = ["T-MARGIN-A", "T-MARGIN-B"]
+        .into_iter()
+        .map(|id| {
+            create_fill_report(
+                instrument.id,
+                Some(order.client_order_id()),
+                venue,
+                TradeId::from(id),
+                Quantity::from(50_000),
+                Price::from("1.00000"),
+            )
+        })
+        .collect();
+    let account_publications = Rc::new(RefCell::new(Vec::new()));
+    let handler = TypedHandler::from({
+        let records = account_publications.clone();
+        move |event: &AccountState| {
+            records.borrow_mut().push(event.clone());
+        }
+    });
+    msgbus::subscribe_account_state("events.account.*".into(), handler.clone(), Some(1));
+    control.set_fail_update_account_on(Some(failed_write));
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = owned.then(OwnerDelivery::new);
+    let _binding = owner.as_ref().map(|owner| owner.bind().unwrap());
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        msgbus::send_execution_report(
+            MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+            ExecutionReport::OrderWithFills(Box::new(report), fills.clone()),
+        );
+    }));
+    eprintln!(
+        "MARGIN_ACCOUNT_FAILURE write={failed_write} owned={owned} panicked={} order_qty={} position_qty={} failure={:?} publications={}",
+        result.is_err(),
+        cache
+            .borrow()
+            .order(&order.client_order_id())
+            .unwrap()
+            .filled_qty(),
+        cache.borrow().position(&position_id).unwrap().quantity,
+        owner.as_ref().and_then(OwnerDelivery::failure),
+        account_publications.borrow().len()
+    );
+    assert_eq!(control.failed_updates(), vec!["account"]);
+    if owned {
+        assert!(
+            result.is_ok(),
+            "report receives a typed failure instead of the legacy unwrap panic"
+        );
+        assert_eq!(
+            owner.as_ref().unwrap().failure(),
+            Some(OwnerDeliveryError::NativeAction)
+        );
+    } else {
+        assert_eq!(
+            result.is_err(),
+            failed_write == 2,
+            "preserve the actual legacy unwrap boundary"
+        );
+    }
+    let filled = if !owned && failed_write == 3 {
+        2_u32
+    } else {
+        1
+    };
+    let cache = cache.borrow();
+    let canonical = cache.order(&order.client_order_id()).unwrap();
+    assert_eq!(
+        canonical.filled_qty(),
+        Quantity::from(50_000 * u64::from(filled))
+    );
+    assert_eq!(canonical.trade_ids().len(), filled as usize);
+    let position = cache.position(&position_id).unwrap();
+    assert_eq!(
+        position.quantity,
+        Quantity::from(100_000 + 50_000 * u64::from(filled))
+    );
+    assert_eq!(position.trade_ids.contains(&fills[1].trade_id), filled == 2);
+    let AccountAny::Margin(after) = cache.account_owned(&AccountId::test_default()).unwrap() else {
+        panic!("same actual margin account");
+    };
+    let fees = Money::from_decimal(dec!(0.10) * Decimal::from(filled), Currency::USD()).unwrap();
+    assert_eq!(
+        after.base.base_balance_total(Some(Currency::USD())),
+        Some(before_total - fees)
+    );
+    assert_eq!(
+        after.base.commission(&Currency::USD()),
+        Some(before_fees + fees)
+    );
+    assert_eq!(
+        account_publications.borrow().len(),
+        if failed_write == 2 {
+            0
+        } else {
+            filled as usize
+        }
+    );
+    if let Some(owner) = owner {
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    }
+    msgbus::unsubscribe_account_state("events.account.*".into(), &handler);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn test_runtime_report_initialization_finishes_source_registration_after_publication_fault(
+    #[case] owned: bool,
+) {
+    use nautilus_common::owner_delivery::{
+        OwnerDelivery, OwnerDeliveryError, OwnerReportStepKind, current_observer,
+    };
+    use nautilus_portfolio::portfolio::Portfolio;
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let client = StubExecutionClient::new(
+        ClientId::from("STUB"),
+        AccountId::test_default(),
+        Venue::test_default(),
+        OmsType::Netting,
+        None,
+    );
+    let registered = client.registered_external_order_ids();
+    engine.register_client(Box::new(client)).unwrap();
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(CashAccount::default().into())
+        .unwrap();
+    drop(portfolio);
+    let report = create_order_status_report(
+        Some(ClientOrderId::from("EXTERNAL-PUB-FAULT")),
+        VenueOrderId::from("V-EXTERNAL-PUB-FAULT"),
+        instrument.id,
+        OrderStatus::Accepted,
+        Quantity::from(100_000),
+        Quantity::from(0),
+    );
+    let published = Rc::new(RefCell::new(Vec::new()));
+    let handler = TypedHandler::from({
+        let events = published.clone();
+        move |event: &OrderEventAny| {
+            events.borrow_mut().push(event.clone());
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), Some(1));
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = owned.then(OwnerDelivery::new);
+    let _binding = owner.as_ref().map(|owner| owner.bind().unwrap());
+    let observer = owned.then(|| current_observer().unwrap());
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::Order(Box::new(report.clone())),
+    );
+    let id = report.client_order_id.unwrap();
+    assert_eq!(
+        *registered.borrow(),
+        vec![id],
+        "publish failure cannot skip original source registration"
+    );
+    let cache = cache.borrow();
+    let canonical = cache.order(&id).unwrap();
+    assert_eq!(cache.client_id(&id), Some(&ClientId::from("STUB")));
+    assert_eq!(
+        canonical.status(),
+        if owned {
+            OrderStatus::Initialized
+        } else {
+            OrderStatus::Accepted
+        }
+    );
+    let events = published.borrow();
+    assert_eq!(events.len(), if owned { 1 } else { 2 });
+    let mut expected_initialized = canonical.init_event().clone();
+    // LimitOrder::try_from rebuilds its seed without the input reconciliation flag.
+    assert!(!expected_initialized.reconciliation);
+    expected_initialized.reconciliation = true;
+    assert_eq!(events[0], OrderEventAny::Initialized(expected_initialized));
+    if let Some(owner) = owner {
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::NativeAction));
+        let retained = observer.unwrap().retained_reports().unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            retained[0].kind,
+            Some(OwnerReportStepKind::ExternalInitialization)
+        );
+        assert_eq!(
+            retained[0].cause.as_ref().unwrap().sources[0].source_report_id,
+            report.report_id
+        );
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    }
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn test_runtime_report_mass_materialization_failure_preserves_legacy_segment_progress(
+    #[case] owned: bool,
+) {
+    use nautilus_common::owner_delivery::{OwnerDelivery, OwnerDeliveryError};
+    use nautilus_portfolio::portfolio::Portfolio;
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let (database, control) = FailNthAddOrderDatabase::create();
+    cache.borrow_mut().set_database(Box::new(database));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let client = StubExecutionClient::new(
+        ClientId::from("STUB"),
+        AccountId::test_default(),
+        Venue::test_default(),
+        OmsType::Netting,
+        None,
+    );
+    let registered = client.registered_external_order_ids();
+    engine.register_client(Box::new(client)).unwrap();
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(CashAccount::default().into())
+        .unwrap();
+    let a = ClientOrderId::from("MASS-ADD-FAULT-A");
+    let b = ClientOrderId::from("MASS-AFTER-FAULT-B");
+    let mut report = ExecutionMassStatus::new(
+        ClientId::from("STUB"),
+        AccountId::test_default(),
+        instrument.id.venue,
+        1_000_000.into(),
+        None,
+    );
+    report.add_order_reports(vec![
+        create_order_status_report(
+            Some(a),
+            VenueOrderId::from("V-MASS-FAULT-A"),
+            instrument.id,
+            OrderStatus::Accepted,
+            Quantity::from(100_000),
+            Quantity::from(0),
+        ),
+        create_order_status_report(
+            Some(b),
+            VenueOrderId::from("V-MASS-AFTER-B"),
+            instrument.id,
+            OrderStatus::Accepted,
+            Quantity::from(100_000),
+            Quantity::from(0),
+        ),
+    ]);
+    control.set_fail_add_order_on(Some(1));
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = owned.then(OwnerDelivery::new);
+    let _binding = owner.as_ref().map(|owner| owner.bind().unwrap());
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::MassStatus(Box::new(report)),
+    );
+    let cache = cache.borrow();
+    assert_eq!(
+        cache.order(&a).unwrap().status(),
+        OrderStatus::Initialized,
+        "actual add_order commits canonical state before its database error"
+    );
+    if let Some(owner) = owner {
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::NativeAction));
+        assert!(cache.order(&b).is_none());
+        assert!(registered.borrow().is_empty());
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    } else {
+        assert_eq!(cache.order(&b).unwrap().status(), OrderStatus::Accepted);
+        assert_eq!(*registered.borrow(), vec![b]);
+    }
+}
+
+#[rstest]
+#[case::standalone(false)]
+#[case::owned(true)]
+fn test_runtime_retained_projection_failure_preserves_position_and_legacy_mass_progress(
+    #[case] owned: bool,
+) {
+    use nautilus_common::owner_delivery::{
+        OwnerDelivery, OwnerDeliveryError, OwnerReportDispatchStage, OwnerReportStepKind,
+        current_observer,
+    };
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let (database, database_control) = FailNthAddOrderDatabase::create();
+    cache.borrow_mut().set_database(Box::new(database));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let client = StubExecutionClient::new(
+        ClientId::from("STUB"),
+        AccountId::test_default(),
+        Venue::test_default(),
+        OmsType::Hedging,
+        None,
+    );
+    let registrations = client.registered_external_order_ids();
+    engine.register_client(Box::new(client)).unwrap();
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(CashAccount::default().into())
+        .unwrap();
+    // This is the normal cache restoration shape: retained position evidence precedes its order.
+    let retained_position = stub_position_long(instrument.clone());
+    let retained_fill = retained_position.events[0].clone();
+    cache
+        .borrow_mut()
+        .add_position_without_order(&retained_position, OmsType::Hedging)
+        .unwrap();
+    let position_before = serde_json::to_value(&retained_position).unwrap();
+    let account_before = serde_json::to_value(
+        cache
+            .borrow()
+            .account_owned(&retained_fill.account_id)
+            .unwrap(),
+    )
+    .unwrap();
+    let mut a = create_order_status_report(
+        Some(retained_fill.client_order_id),
+        retained_fill.venue_order_id,
+        retained_fill.instrument_id,
+        OrderStatus::Filled,
+        retained_fill.last_qty,
+        retained_fill.last_qty,
+    );
+    a.account_id = retained_fill.account_id;
+    a.avg_px = Some(retained_fill.last_px.as_decimal());
+    let mut fill = create_fill_report_with_account(
+        retained_fill.account_id,
+        retained_fill.instrument_id,
+        Some(retained_fill.client_order_id),
+        retained_fill.venue_order_id,
+        retained_fill.trade_id,
+        retained_fill.last_qty,
+        retained_fill.last_px,
+    );
+    fill.venue_position_id = Some(retained_position.id);
+    fill.commission = retained_fill
+        .commission
+        .unwrap_or(Money::zero(retained_fill.currency));
+    fill.liquidity_side = retained_fill.liquidity_side;
+    let b_id = ClientOrderId::from("PROJECTION-FAULT-NEXT-B");
+    let b = create_order_status_report(
+        Some(b_id),
+        VenueOrderId::from("V-PROJECTION-NEXT-B"),
+        instrument.id(),
+        OrderStatus::Accepted,
+        Quantity::from(100_000),
+        Quantity::from(0),
+    );
+    let mut mass = ExecutionMassStatus::new(
+        ClientId::from("STUB"),
+        retained_fill.account_id,
+        instrument.id().venue,
+        1_000_000.into(),
+        None,
+    );
+    mass.add_order_reports(vec![a, b]);
+    mass.add_fill_reports(vec![fill.clone()]);
+    // Accepted is persisted first. The actual projection's subsequent refresh fails after commit.
+    database_control.set_fail_update_order_on(Some(2));
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = owned.then(OwnerDelivery::new);
+    let _binding = owner.as_ref().map(|owner| owner.bind().unwrap());
+    let observer = owned.then(|| current_observer().unwrap());
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::MassStatus(Box::new(mass.clone())),
+    );
+    assert_eq!(database_control.failed_updates(), vec!["order"]);
+    let cache = cache.borrow();
+    let projected = cache.order(&retained_fill.client_order_id).unwrap();
+    assert_eq!(projected.status(), OrderStatus::Filled);
+    assert_eq!(projected.filled_qty(), retained_fill.last_qty);
+    assert_eq!(projected.trade_ids(), vec![&retained_fill.trade_id]);
+    assert_eq!(
+        serde_json::to_value(&*cache.position(&retained_position.id).unwrap()).unwrap(),
+        position_before
+    );
+    assert_eq!(
+        serde_json::to_value(cache.account_owned(&retained_fill.account_id).unwrap()).unwrap(),
+        account_before
+    );
+    assert_eq!(
+        database_control.update_position_calls(),
+        0,
+        "projection cannot repeat position economics"
+    );
+    if let Some(owner) = owner {
+        assert_eq!(owner.failure(), Some(OwnerDeliveryError::NativeAction));
+        assert!(cache.order(&b_id).is_none());
+        assert_eq!(*registrations.borrow(), vec![retained_fill.client_order_id]);
+        let reports = observer.unwrap().retained_reports().unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].kind,
+            Some(OwnerReportStepKind::RetainedFillProjection)
+        );
+        assert_eq!(reports[0].stage, OwnerReportDispatchStage::DispatchReturned);
+        let cause = reports[0].cause.as_ref().unwrap();
+        assert_eq!(cause.sources[0].root_report_id, mass.report_id);
+        assert_eq!(cause.sources[0].source_report_id, fill.report_id);
+        assert_eq!(cause.sources[0].order_index, Some(0));
+        assert_eq!(reports[0].event.as_ref(), Some(projected.last_event()));
+        assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+    } else {
+        assert_eq!(cache.order(&b_id).unwrap().status(), OrderStatus::Accepted);
+        assert_eq!(
+            *registrations.borrow(),
+            vec![retained_fill.client_order_id, b_id]
+        );
+    }
+}
+
+type AcceptedQueryObservation = (
+    OrderEventAny,
+    &'static str,
+    OrderStatus,
+    Quantity,
+    nautilus_common::owner_delivery::OwnerReportCause,
+);
+
+#[rstest]
+fn test_runtime_order_report_refreshes_inferred_fill_after_accepted_query_child() {
+    use nautilus_common::{
+        messages::execution::QueryOrder,
+        owner_delivery::{
+            self, EnteredOwnerControl, OwnerControlContext, OwnerDelivery, OwnerDeliveryError,
+            OwnerExternalAction, OwnerExternalEvent, SubmissionBinding,
+        },
+        runner::TradingCommandMessage,
+    };
+    use nautilus_execution::reconciliation::generate_reconciliation_order_events;
+    use nautilus_model::accounts::Account;
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    // This context exercises the native control protocol for a neutral query, not signed finance admission.
+    #[derive(Debug)]
+    struct QueryContext;
+    struct EnteredQuery;
+    impl OwnerControlContext for QueryContext {
+        fn enter(&self) -> Result<Box<dyn EnteredOwnerControl>, OwnerDeliveryError> {
+            Ok(Box::new(EnteredQuery))
+        }
+    }
+    impl EnteredOwnerControl for EnteredQuery {
+        fn finish(&mut self, _failed: bool) -> Result<(), OwnerDeliveryError> {
+            Ok(())
+        }
+    }
+    struct FillOnQueryClient {
+        inner: StubExecutionClient,
+        fill: FillReport,
+        queries: Rc<RefCell<Vec<QueryOrder>>>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl ExecutionClient for FillOnQueryClient {
+        fn is_connected(&self) -> bool {
+            self.inner.is_connected()
+        }
+        fn client_id(&self) -> ClientId {
+            self.inner.client_id()
+        }
+        fn account_id(&self) -> AccountId {
+            self.inner.account_id()
+        }
+        fn venue(&self) -> Venue {
+            self.inner.venue()
+        }
+        fn oms_type(&self) -> OmsType {
+            self.inner.oms_type()
+        }
+        fn get_account(&self) -> Option<AccountAny> {
+            self.inner.get_account()
+        }
+        fn generate_account_state(
+            &self,
+            balances: Vec<AccountBalance>,
+            margins: Vec<nautilus_model::types::MarginBalance>,
+            reported: bool,
+            ts_event: UnixNanos,
+            info: Option<Params>,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .generate_account_state(balances, margins, reported, ts_event, info)
+        }
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.inner.start()
+        }
+        fn stop(&mut self) -> anyhow::Result<()> {
+            self.inner.stop()
+        }
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the test checks the actual query arguments delivered by the callback"
+        )]
+        fn query_order(&self, command: QueryOrder) -> anyhow::Result<()> {
+            assert_eq!(Some(command.client_order_id), self.fill.client_order_id);
+            assert_eq!(command.venue_order_id, Some(self.fill.venue_order_id));
+            assert_eq!(command.instrument_id, self.fill.instrument_id);
+            self.queries.borrow_mut().push(command);
+            msgbus::send_execution_report(
+                MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+                ExecutionReport::Fill(Box::new(self.fill.clone())),
+            );
+            Ok(())
+        }
+    }
+    struct QueryFromAccepted {
+        event: OrderEventAny,
+        outlet: &'static str,
+        engine: std::rc::Weak<RefCell<ExecutionEngine>>,
+        records: Rc<RefCell<Vec<AcceptedQueryObservation>>>,
+        command: Rc<RefCell<Option<QueryOrder>>>,
+        context: Rc<dyn OwnerControlContext>,
+    }
+    impl OwnerExternalAction for QueryFromAccepted {
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Order(self.event.clone())
+        }
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the test checks native state inside the callback"
+        )]
+        fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+            let engine = self.engine.upgrade().unwrap();
+            let engine = engine
+                .try_borrow_mut()
+                .expect("actual report owner releases engine borrow");
+            let cache = engine.cache().borrow();
+            let order = cache.order(&self.event.client_order_id()).unwrap();
+            let state = (order.status(), order.filled_qty());
+            let event_id = self.event.clone().into_boxed().id();
+            let cause = owner_delivery::current_observer()
+                .unwrap()
+                .retained_reports()?
+                .iter()
+                .find_map(|held| {
+                    held.cause
+                        .as_ref()
+                        .filter(|cause| cause.canonical_event_id == Some(event_id))
+                        .cloned()
+                })
+                .unwrap();
+            self.records.borrow_mut().push((
+                self.event.clone(),
+                self.outlet,
+                state.0,
+                state.1,
+                cause,
+            ));
+            drop(order);
+            drop(cache);
+            drop(engine);
+            if self.outlet == "specific"
+                && let OrderEventAny::Accepted(accepted) = &self.event
+            {
+                assert_eq!(state, (OrderStatus::Accepted, Quantity::from(0)));
+                let mut query = QueryOrder::new(
+                    accepted.trader_id,
+                    Some(ClientId::from("STUB")),
+                    accepted.strategy_id,
+                    accepted.instrument_id,
+                    accepted.client_order_id,
+                    Some(accepted.venue_order_id),
+                    UUID4::new(),
+                    accepted.ts_event,
+                    None,
+                    None,
+                );
+                query.causation_id = Some(accepted.event_id);
+                *self.command.borrow_mut() = Some(query.clone());
+                let _factory = SubmissionBinding::new(self.context.clone())?;
+                assert!(
+                    owner_delivery::capture_control_command(TradingCommandMessage::new(
+                        MessagingSwitchboard::exec_engine_execute(),
+                        TradingCommand::QueryOrder(query),
+                    ))?
+                    .is_none()
+                );
+            }
+            Ok(())
+        }
+    }
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(cash_account_for(AccountId::test_default()).into())
+        .unwrap();
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("REPORT-QUERY-REFRESH"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    assert!(!order.is_reduce_only());
+    let fill = create_fill_report(
+        instrument.id,
+        Some(order.client_order_id()),
+        VenueOrderId::from("V-REPORT-QUERY"),
+        TradeId::from("REPORT-QUERY-ACTUAL-FILL"),
+        Quantity::from(50_000),
+        Price::from("1.00000"),
+    );
+    let queries = Rc::new(RefCell::new(Vec::new()));
+    engine
+        .register_client(Box::new(FillOnQueryClient {
+            inner: StubExecutionClient::new(
+                ClientId::from("STUB"),
+                AccountId::test_default(),
+                Venue::test_default(),
+                OmsType::Netting,
+                None,
+            ),
+            fill: fill.clone(),
+            queries: queries.clone(),
+        }))
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    let submitted = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    assert_eq!(submitted.status(), OrderStatus::Submitted);
+    let report = create_order_status_report(
+        Some(order.client_order_id()),
+        fill.venue_order_id,
+        instrument.id,
+        OrderStatus::Filled,
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+    );
+    let original_events = generate_reconciliation_order_events(
+        &submitted,
+        &report,
+        Some(&InstrumentAny::CurrencyPair(instrument.clone())),
+        1_000_000.into(),
+    );
+    assert_eq!(
+        original_events.len(),
+        2,
+        "real existing generator produces an Accepted and an inferred Fill"
+    );
+    assert!(matches!(original_events[0], OrderEventAny::Accepted(_)));
+    let OrderEventAny::Filled(inferred) = &original_events[1] else {
+        panic!("actual inferred fill");
+    };
+    assert_eq!(inferred.last_qty, Quantity::from(100_000));
+
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let records = Rc::new(RefCell::new(Vec::new()));
+    let command = Rc::new(RefCell::new(None));
+    let context: Rc<dyn OwnerControlContext> = Rc::new(QueryContext);
+    let handler = TypedHandler::from({
+        let engine = Rc::downgrade(&engine);
+        let records = records.clone();
+        let command = command.clone();
+        move |event: &OrderEventAny| {
+            for outlet in ["specific", "aggregate"] {
+                assert!(
+                    owner_delivery::capture_external(
+                        event.clone().into_boxed().id(),
+                        Box::new(QueryFromAccepted {
+                            event: event.clone(),
+                            outlet,
+                            engine: engine.clone(),
+                            records: records.clone(),
+                            command: command.clone(),
+                            context: context.clone(),
+                        })
+                    )
+                    .unwrap()
+                    .is_none()
+                );
+            }
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+    let owner = OwnerDelivery::new();
+    let _bound = owner.bind().unwrap();
+    let observer = owner_delivery::current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::Order(Box::new(report.clone())),
+    );
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+    assert_eq!(
+        queries.borrow().len(),
+        1,
+        "actual ExecutionEngine routes the control query to its client"
+    );
+    assert_eq!(Some(queries.borrow()[0].clone()), *command.borrow());
+    let account = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    let actual_order = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    let position_id = PositionId::new(format!("{}-{}", instrument.id, order.strategy_id()));
+    let position = cache.borrow().position_owned(&position_id).unwrap();
+    let actual_fills: Vec<_> = actual_order
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrderEventAny::Filled(fill) => Some(fill.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        actual_fills[0].trade_id, fill.trade_id,
+        "actual child report applied first"
+    );
+    assert_eq!(actual_fills[0].last_qty, Quantity::from(50_000));
+    eprintln!(
+        "REPORT_QUERY_REFRESH failure={:?} order={:?}/{} position={} fills={actual_fills:?} reports={:?} account={account:?}",
+        owner.failure(),
+        actual_order.status(),
+        actual_order.filled_qty(),
+        position.quantity,
+        observer.retained_reports().unwrap()
+    );
+    assert_eq!(
+        (
+            owner.failure(),
+            actual_order.status(),
+            actual_order.filled_qty(),
+            position.quantity
+        ),
+        (
+            None,
+            OrderStatus::Filled,
+            Quantity::from(100_000),
+            Quantity::from(100_000)
+        ),
+        "outer report must refresh the residual against the actual child fill"
+    );
+    assert_eq!(actual_fills.len(), 2);
+    assert_eq!(actual_fills[1].last_qty, Quantity::from(50_000));
+    assert_ne!(actual_fills[0].trade_id, actual_fills[1].trade_id);
+    assert_eq!(position.events, actual_fills);
+    assert_eq!(position.commissions(), vec![Money::from("0.10 USD")]);
+    assert_eq!(
+        account.balance_total(None),
+        Some(Money::from("899999.90 USD"))
+    );
+    let records = records.borrow();
+    assert_eq!(records.len(), 6);
+    assert!(matches!(records[0].0, OrderEventAny::Accepted(_)));
+    assert_eq!([records[0].1, records[1].1], ["specific", "aggregate"]);
+    let root = &records[0].4;
+    let child = &records[2].4;
+    assert_eq!(root.sources[0].root_report_id, report.report_id);
+    assert_eq!(child.sources[0].root_report_id, fill.report_id);
+    assert_eq!(child.parent_report_ticket, Some(root.ticket));
+    assert_eq!(child.parent_event_id, root.canonical_event_id);
+    assert_eq!(
+        child.control_origin.as_ref().unwrap().command_id,
+        queries.borrow()[0].command_id
+    );
+    assert_eq!(records[4].4.ticket, root.ticket);
+    assert_eq!(owner.pending(), 0);
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.retire(), Ok(()));
+}
+
+#[rstest]
+#[case::order("order")]
+#[case::bundled("bundled")]
+#[case::fill("fill")]
+fn test_runtime_initialized_report_child_does_not_repeat_acceptance(#[case] variant: &str) {
+    use nautilus_common::{
+        messages::execution::QueryOrder,
+        owner_delivery::{
+            self, EnteredOwnerControl, OwnerControlContext, OwnerDelivery, OwnerDeliveryError,
+            OwnerExternalAction, OwnerExternalEvent, SubmissionBinding,
+        },
+        runner::TradingCommandMessage,
+    };
+    use nautilus_model::accounts::Account;
+    use nautilus_portfolio::portfolio::Portfolio;
+    #[derive(Debug)]
+    struct QueryContext;
+    struct EnteredQuery;
+    impl OwnerControlContext for QueryContext {
+        fn enter(&self) -> Result<Box<dyn EnteredOwnerControl>, OwnerDeliveryError> {
+            Ok(Box::new(EnteredQuery))
+        }
+    }
+    impl EnteredOwnerControl for EnteredQuery {
+        fn finish(&mut self, _failed: bool) -> Result<(), OwnerDeliveryError> {
+            Ok(())
+        }
+    }
+    struct Client {
+        inner: StubExecutionClient,
+        accepted: OrderStatusReport,
+        queries: Rc<RefCell<Vec<QueryOrder>>>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl ExecutionClient for Client {
+        fn is_connected(&self) -> bool {
+            self.inner.is_connected()
+        }
+        fn client_id(&self) -> ClientId {
+            self.inner.client_id()
+        }
+        fn account_id(&self) -> AccountId {
+            self.inner.account_id()
+        }
+        fn venue(&self) -> Venue {
+            self.inner.venue()
+        }
+        fn oms_type(&self) -> OmsType {
+            self.inner.oms_type()
+        }
+        fn get_account(&self) -> Option<AccountAny> {
+            self.inner.get_account()
+        }
+        fn generate_account_state(
+            &self,
+            balances: Vec<AccountBalance>,
+            margins: Vec<nautilus_model::types::MarginBalance>,
+            reported: bool,
+            time: UnixNanos,
+            info: Option<Params>,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .generate_account_state(balances, margins, reported, time, info)
+        }
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.inner.start()
+        }
+        fn stop(&mut self) -> anyhow::Result<()> {
+            self.inner.stop()
+        }
+        fn register_external_order(
+            &self,
+            id: ClientOrderId,
+            venue: VenueOrderId,
+            instrument: InstrumentId,
+            strategy: StrategyId,
+            time: UnixNanos,
+        ) {
+            self.inner
+                .register_external_order(id, venue, instrument, strategy, time);
+        }
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the test checks source registration before the real child query"
+        )]
+        fn query_order(&self, query: QueryOrder) -> anyhow::Result<()> {
+            assert_eq!(
+                self.inner
+                    .registered_external_order_ids()
+                    .borrow()
+                    .as_slice(),
+                &[query.client_order_id],
+                "source registration precedes the external Initialized callback's real query"
+            );
+            assert_eq!(Some(query.client_order_id), self.accepted.client_order_id);
+            self.queries.borrow_mut().push(query);
+            msgbus::send_execution_report(
+                MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+                ExecutionReport::Order(Box::new(self.accepted.clone())),
+            );
+            Ok(())
+        }
+    }
+    type InitializationObservation = (OrderEventAny, &'static str, OrderStatus, Quantity);
+
+    struct Delivery {
+        event: OrderEventAny,
+        outlet: &'static str,
+        engine: std::rc::Weak<RefCell<ExecutionEngine>>,
+        records: Rc<RefCell<Vec<InitializationObservation>>>,
+    }
+    impl OwnerExternalAction for Delivery {
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Order(self.event.clone())
+        }
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the test checks command admission inside the callback"
+        )]
+        fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+            let engine = self.engine.upgrade().unwrap();
+            let engine = engine
+                .try_borrow_mut()
+                .expect("real initialization/native borrow released");
+            let cache = engine.cache().borrow();
+            let order = cache.order(&self.event.client_order_id()).unwrap();
+            self.records.borrow_mut().push((
+                self.event.clone(),
+                self.outlet,
+                order.status(),
+                order.filled_qty(),
+            ));
+            drop(order);
+            drop(cache);
+            drop(engine);
+            if self.outlet == "specific"
+                && let OrderEventAny::Initialized(event) = &self.event
+            {
+                let mut query = QueryOrder::new(
+                    event.trader_id,
+                    Some(ClientId::from("STUB")),
+                    event.strategy_id,
+                    event.instrument_id,
+                    event.client_order_id,
+                    None,
+                    UUID4::new(),
+                    event.ts_init,
+                    None,
+                    None,
+                );
+                query.causation_id = Some(event.event_id);
+                let _factory = SubmissionBinding::new(Rc::new(QueryContext))?;
+                assert!(
+                    owner_delivery::capture_control_command(TradingCommandMessage::new(
+                        MessagingSwitchboard::exec_engine_execute(),
+                        TradingCommand::QueryOrder(query)
+                    ))?
+                    .is_none()
+                );
+            }
+            Ok(())
+        }
+    }
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(cash_account_for(AccountId::test_default()).into())
+        .unwrap();
+    let id = ClientOrderId::from("REPORT-INIT-CHILD");
+    let venue = VenueOrderId::from("V-REPORT-INIT-CHILD");
+    let mut accepted = create_order_status_report(
+        Some(id),
+        venue,
+        instrument.id,
+        OrderStatus::Accepted,
+        Quantity::from(100_000),
+        Quantity::from(0),
+    );
+    if variant == "fill" {
+        accepted.order_type = OrderType::Market;
+        accepted.price = None;
+    }
+    let queries = Rc::new(RefCell::new(Vec::new()));
+    let inner = StubExecutionClient::new(
+        ClientId::from("STUB"),
+        AccountId::test_default(),
+        Venue::test_default(),
+        OmsType::Netting,
+        None,
+    );
+    let source_registrations = inner.registered_external_order_ids();
+    engine
+        .register_client(Box::new(Client {
+            inner,
+            accepted: accepted.clone(),
+            queries: queries.clone(),
+        }))
+        .unwrap();
+    let mut status = accepted;
+    status.order_status = OrderStatus::Filled;
+    status.filled_qty = Quantity::from(100_000);
+    status.report_id = UUID4::new();
+    let fill = create_fill_report(
+        instrument.id,
+        Some(id),
+        venue,
+        TradeId::from("REPORT-INIT-ROOT-TRADE"),
+        Quantity::from(100_000),
+        Price::from("1.00000"),
+    );
+    let root = match variant {
+        "order" => ExecutionReport::Order(Box::new(status)),
+        "bundled" => ExecutionReport::OrderWithFills(Box::new(status), vec![fill.clone()]),
+        "fill" => ExecutionReport::Fill(Box::new(fill.clone())),
+        _ => unreachable!(),
+    };
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let records = Rc::new(RefCell::new(Vec::new()));
+    let handler = TypedHandler::from({
+        let engine = Rc::downgrade(&engine);
+        let records = records.clone();
+        move |event: &OrderEventAny| {
+            for outlet in ["specific", "aggregate"] {
+                assert!(
+                    owner_delivery::capture_external(
+                        event.clone().into_boxed().id(),
+                        Box::new(Delivery {
+                            event: event.clone(),
+                            outlet,
+                            engine: engine.clone(),
+                            records: records.clone(),
+                        })
+                    )
+                    .unwrap()
+                    .is_none()
+                );
+            }
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+    let owner = OwnerDelivery::new();
+    let _bound = owner.bind().unwrap();
+    let observer = owner_delivery::current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        root,
+    );
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+    assert_eq!(
+        queries.borrow().len(),
+        1,
+        "actual Initialized callback query reached original execution client"
+    );
+    assert_eq!(
+        source_registrations.borrow().as_slice(),
+        &[id],
+        "normal original source registers once"
+    );
+    let order = cache.borrow().order_owned(&id).unwrap();
+    eprintln!(
+        "INIT_REPORT_CHILD variant={variant} failure={:?} order={:?}/{} records={:?} reports={:?}",
+        owner.failure(),
+        order.status(),
+        order.filled_qty(),
+        records.borrow(),
+        observer.retained_reports().unwrap()
+    );
+    assert_eq!(
+        (owner.failure(), order.status(), order.filled_qty()),
+        (None, OrderStatus::Filled, Quantity::from(100_000)),
+        "actual child acceptance must precede remaining root events without reacceptance"
+    );
+    let events = order.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, OrderEventAny::Initialized(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, OrderEventAny::Accepted(_)))
+            .count(),
+        1
+    );
+    let fills: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            OrderEventAny::Filled(fill) => Some(fill),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills.len(), 1);
+    assert_eq!(fills[0].last_qty, Quantity::from(100_000));
+    if variant != "order" {
+        assert_eq!(fills[0].trade_id, fill.trade_id);
+    }
+    assert_eq!(
+        order.is_reduce_only(),
+        variant == "fill",
+        "status report flags and Fill bootstrap policy retain their original meanings"
+    );
+    if variant == "fill" {
+        assert!(
+            cache
+                .borrow()
+                .positions(None, None, None, None, None)
+                .is_empty()
+        );
+    } else {
+        let position_id = PositionId::new(format!("{}-{}", instrument.id, StrategyId::external()));
+        let position = cache.borrow().position_owned(&position_id).unwrap();
+        assert_eq!(position.quantity, Quantity::from(100_000));
+        assert_eq!(
+            position.events,
+            fills.iter().map(|fill| (*fill).clone()).collect::<Vec<_>>()
+        );
+        let fee = if variant == "order" {
+            Money::zero(Currency::USD())
+        } else {
+            Money::from("0.10 USD")
+        };
+        assert_eq!(
+            position.realized_pnl,
+            Some(Money::zero(Currency::USD()) - fee)
+        );
+        assert_eq!(
+            cache
+                .borrow()
+                .account_owned(&AccountId::test_default())
+                .unwrap()
+                .balance_total(None),
+            Some(Money::from("900000 USD") - fee)
+        );
+    }
+    let records = records.borrow();
+    assert_eq!(records.len(), 6);
+    for (pair, event) in records.as_chunks::<2>().0.iter().zip(order.events()) {
+        assert_eq!([pair[0].1, pair[1].1], ["specific", "aggregate"]);
+        let mut canonical = OrderEventAny::clone(event);
+        // The existing external initializer publishes reconciliation=true while the native constructor keeps its initialization seed false.
+        if let OrderEventAny::Initialized(initialized) = &mut canonical {
+            initialized.reconciliation = true;
+        }
+        for actual in pair {
+            assert_eq!(
+                serde_json::to_value(&actual.0).unwrap(),
+                serde_json::to_value(&canonical).unwrap()
+            );
+        }
+    }
+    assert_eq!(owner.pending(), 0);
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.retire(), Ok(()));
+}
+
+#[rstest]
+fn test_runtime_snapshot_residual_refreshes_multiple_voids_after_real_query_fill() {
+    use nautilus_common::{
+        messages::execution::QueryOrder,
+        owner_delivery::{
+            self, EnteredOwnerControl, OwnerControlContext, OwnerDelivery, OwnerDeliveryError,
+            OwnerExternalAction, OwnerExternalEvent, SubmissionBinding,
+        },
+        runner::TradingCommandMessage,
+    };
+    use nautilus_execution::reconciliation::generate_reconciliation_order_snapshot_events;
+    use nautilus_model::accounts::Account;
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    // This context exercises the native control protocol for a neutral query, not signed finance admission.
+    #[derive(Debug)]
+    struct QueryContext;
+    struct EnteredQuery;
+    impl OwnerControlContext for QueryContext {
+        fn enter(&self) -> Result<Box<dyn EnteredOwnerControl>, OwnerDeliveryError> {
+            Ok(Box::new(EnteredQuery))
+        }
+    }
+    impl EnteredOwnerControl for EnteredQuery {
+        fn finish(&mut self, _failed: bool) -> Result<(), OwnerDeliveryError> {
+            Ok(())
+        }
+    }
+    struct FillOnQueryClient {
+        inner: StubExecutionClient,
+        fill: FillReport,
+        queries: Rc<RefCell<Vec<QueryOrder>>>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl ExecutionClient for FillOnQueryClient {
+        fn is_connected(&self) -> bool {
+            self.inner.is_connected()
+        }
+        fn client_id(&self) -> ClientId {
+            self.inner.client_id()
+        }
+        fn account_id(&self) -> AccountId {
+            self.inner.account_id()
+        }
+        fn venue(&self) -> Venue {
+            self.inner.venue()
+        }
+        fn oms_type(&self) -> OmsType {
+            self.inner.oms_type()
+        }
+        fn get_account(&self) -> Option<AccountAny> {
+            self.inner.get_account()
+        }
+        fn generate_account_state(
+            &self,
+            balances: Vec<AccountBalance>,
+            margins: Vec<nautilus_model::types::MarginBalance>,
+            reported: bool,
+            ts_event: UnixNanos,
+            info: Option<Params>,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .generate_account_state(balances, margins, reported, ts_event, info)
+        }
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.inner.start()
+        }
+        fn stop(&mut self) -> anyhow::Result<()> {
+            self.inner.stop()
+        }
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the test checks the actual query arguments delivered by the callback"
+        )]
+        fn query_order(&self, command: QueryOrder) -> anyhow::Result<()> {
+            assert_eq!(Some(command.client_order_id), self.fill.client_order_id);
+            assert_eq!(command.venue_order_id, Some(self.fill.venue_order_id));
+            assert_eq!(command.instrument_id, self.fill.instrument_id);
+            self.queries.borrow_mut().push(command);
+            msgbus::send_execution_report(
+                MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+                ExecutionReport::Fill(Box::new(self.fill.clone())),
+            );
+            Ok(())
+        }
+    }
+    struct QueryFromAccepted {
+        event: OrderEventAny,
+        outlet: &'static str,
+        engine: std::rc::Weak<RefCell<ExecutionEngine>>,
+        records: Rc<RefCell<Vec<AcceptedQueryObservation>>>,
+        command: Rc<RefCell<Option<QueryOrder>>>,
+        context: Rc<dyn OwnerControlContext>,
+    }
+    impl OwnerExternalAction for QueryFromAccepted {
+        fn original_event(&self) -> OwnerExternalEvent {
+            OwnerExternalEvent::Order(self.event.clone())
+        }
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the test checks native state inside the callback"
+        )]
+        fn deliver(&mut self) -> Result<(), OwnerDeliveryError> {
+            let engine = self.engine.upgrade().unwrap();
+            let engine = engine
+                .try_borrow_mut()
+                .expect("actual report owner releases engine borrow");
+            let cache = engine.cache().borrow();
+            let order = cache.order(&self.event.client_order_id()).unwrap();
+            let state = (order.status(), order.filled_qty());
+            let event_id = self.event.clone().into_boxed().id();
+            let cause = owner_delivery::current_observer()
+                .unwrap()
+                .retained_reports()?
+                .iter()
+                .find_map(|held| {
+                    held.cause
+                        .as_ref()
+                        .filter(|cause| cause.canonical_event_id == Some(event_id))
+                        .cloned()
+                })
+                .unwrap();
+            self.records.borrow_mut().push((
+                self.event.clone(),
+                self.outlet,
+                state.0,
+                state.1,
+                cause,
+            ));
+            drop(order);
+            drop(cache);
+            drop(engine);
+            let already_requested = self.command.borrow().is_some();
+            if !already_requested
+                && self.outlet == "specific"
+                && let OrderEventAny::FillVoided(accepted) = &self.event
+            {
+                assert_eq!(
+                    state,
+                    (OrderStatus::PartiallyFilled, Quantity::from(100_000))
+                );
+                let mut query = QueryOrder::new(
+                    accepted.trader_id,
+                    Some(ClientId::from("STUB")),
+                    accepted.strategy_id,
+                    accepted.instrument_id,
+                    accepted.client_order_id,
+                    Some(accepted.venue_order_id),
+                    UUID4::new(),
+                    accepted.ts_event,
+                    None,
+                    None,
+                );
+                query.causation_id = Some(accepted.event_id);
+                *self.command.borrow_mut() = Some(query.clone());
+                let _factory = SubmissionBinding::new(self.context.clone())?;
+                assert!(
+                    owner_delivery::capture_control_command(TradingCommandMessage::new(
+                        MessagingSwitchboard::exec_engine_execute(),
+                        TradingCommand::QueryOrder(query),
+                    ))?
+                    .is_none()
+                );
+            }
+            Ok(())
+        }
+    }
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(cash_account_for(AccountId::test_default()).into())
+        .unwrap();
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("REPORT-VOID-REFRESH"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(200_000))
+        .price(Price::from("1.00000"))
+        .build();
+    assert!(!order.is_reduce_only());
+    let fill = create_fill_report(
+        instrument.id,
+        Some(order.client_order_id()),
+        VenueOrderId::from("V-REPORT-VOID"),
+        TradeId::from("REPORT-VOID-CHILD-FILL"),
+        Quantity::from(25_000),
+        Price::from("1.00000"),
+    );
+    let queries = Rc::new(RefCell::new(Vec::new()));
+    engine
+        .register_client(Box::new(FillOnQueryClient {
+            inner: StubExecutionClient::new(
+                ClientId::from("STUB"),
+                AccountId::test_default(),
+                Venue::test_default(),
+                OmsType::Netting,
+                None,
+            ),
+            fill: fill.clone(),
+            queries: queries.clone(),
+        }))
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    engine.process(&OrderEventAny::Accepted(
+        nautilus_model::events::OrderAccepted::new(
+            order.trader_id(),
+            order.strategy_id(),
+            instrument.id,
+            order.client_order_id(),
+            fill.venue_order_id,
+            AccountId::test_default(),
+            UUID4::new(),
+            1_000_000.into(),
+            1_000_000.into(),
+            false,
+        ),
+    ));
+    let original_fills = [
+        create_fill_report(
+            instrument.id,
+            Some(order.client_order_id()),
+            fill.venue_order_id,
+            TradeId::from("VOID-PREDECESSOR-A"),
+            Quantity::from(100_000),
+            Price::from("1.00000"),
+        ),
+        create_fill_report(
+            instrument.id,
+            Some(order.client_order_id()),
+            fill.venue_order_id,
+            TradeId::from("VOID-PREDECESSOR-B"),
+            Quantity::from(100_000),
+            Price::from("1.00000"),
+        ),
+    ];
+    for predecessor in &original_fills {
+        engine.reconcile_fill_report(predecessor);
+    }
+    let before = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    assert_eq!(before.status(), OrderStatus::Filled);
+    assert_eq!(before.filled_qty(), Quantity::from(200_000));
+    assert_eq!(
+        cache
+            .borrow()
+            .account_owned(&AccountId::test_default())
+            .unwrap()
+            .balance_total(None),
+        Some(Money::from("799999.80 USD"))
+    );
+    let report = create_order_status_report(
+        Some(order.client_order_id()),
+        fill.venue_order_id,
+        instrument.id,
+        OrderStatus::PartiallyFilled,
+        Quantity::from(200_000),
+        Quantity::from(50_000),
+    );
+    let plan = generate_reconciliation_order_snapshot_events(
+        &before,
+        &report,
+        Some(&InstrumentAny::CurrencyPair(instrument.clone())),
+        1_000_000.into(),
+    );
+    assert_eq!(plan.len(), 2);
+    let [
+        OrderEventAny::FillVoided(first),
+        OrderEventAny::FillVoided(second),
+    ] = plan.as_slice()
+    else {
+        panic!("real snapshot multiple-void plan");
+    };
+    assert_eq!(first.voided_qty, Quantity::from(100_000));
+    assert_eq!(second.voided_qty, Quantity::from(50_000));
+
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let records = Rc::new(RefCell::new(Vec::new()));
+    let command = Rc::new(RefCell::new(None));
+    let context: Rc<dyn OwnerControlContext> = Rc::new(QueryContext);
+    let handler = TypedHandler::from({
+        let engine = Rc::downgrade(&engine);
+        let records = records.clone();
+        let command = command.clone();
+        move |event: &OrderEventAny| {
+            for outlet in ["specific", "aggregate"] {
+                assert!(
+                    owner_delivery::capture_external(
+                        event.clone().into_boxed().id(),
+                        Box::new(QueryFromAccepted {
+                            event: event.clone(),
+                            outlet,
+                            engine: engine.clone(),
+                            records: records.clone(),
+                            command: command.clone(),
+                            context: context.clone(),
+                        })
+                    )
+                    .unwrap()
+                    .is_none()
+                );
+            }
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+    let owner = OwnerDelivery::new();
+    let _bound = owner.bind().unwrap();
+    let observer = owner_delivery::current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::OrderWithFills(Box::new(report.clone()), vec![]),
+    );
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+    assert_eq!(
+        queries.borrow().len(),
+        1,
+        "actual ExecutionEngine routes the control query to its client"
+    );
+    assert_eq!(Some(queries.borrow()[0].clone()), *command.borrow());
+    let account = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    let actual_order = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    let position_id = PositionId::new(format!("{}-{}", instrument.id, order.strategy_id()));
+    let position = cache.borrow().position_owned(&position_id).unwrap();
+    let actual_fills: Vec<_> = actual_order
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrderEventAny::Filled(fill) => Some(fill.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(actual_fills.len(), 3);
+    assert_eq!(actual_fills[2].trade_id, fill.trade_id);
+    assert_eq!(actual_fills[2].last_qty, Quantity::from(25_000));
+    eprintln!(
+        "RESIDUAL_VOID_REFRESH failure={:?} order={:?}/{} position={} reports={:?}",
+        owner.failure(),
+        actual_order.status(),
+        actual_order.filled_qty(),
+        position.quantity,
+        observer.retained_reports().unwrap()
+    );
+    assert_eq!(
+        (
+            owner.failure(),
+            actual_order.status(),
+            actual_order.filled_qty(),
+            position.quantity
+        ),
+        (
+            None,
+            OrderStatus::PartiallyFilled,
+            Quantity::from(50_000),
+            Quantity::from(50_000)
+        ),
+        "snapshot residual must refresh all remaining voids against the real new fill"
+    );
+    let voids: Vec<_> = actual_order
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrderEventAny::FillVoided(event) => Some(event.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(voids.len(), 3);
+    assert_eq!(
+        voids
+            .iter()
+            .map(|event| (event.trade_id, event.voided_qty))
+            .collect::<Vec<_>>(),
+        vec![
+            (original_fills[1].trade_id, Quantity::from(100_000)),
+            (fill.trade_id, Quantity::from(25_000)),
+            (original_fills[0].trade_id, Quantity::from(50_000)),
+        ]
+    );
+    // Position keeps effective replay fills; Order history retains the original fills and corrections.
+    let mut effective_a = actual_fills[0].clone();
+    effective_a.last_qty = Quantity::from(50_000);
+    effective_a.commission = Some(Money::from("0.05 USD"));
+    assert_eq!(position.events, vec![effective_a]);
+    assert_eq!(position.commissions(), vec![Money::from("0.05 USD")]);
+    assert_eq!(position.realized_pnl, Some(Money::from("-0.05 USD")));
+    assert_eq!(owner.pending(), 0);
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.retire(), Ok(()));
+    drop(_bound);
+    // Independent normal native processing distinguishes existing Cash policy from cursor ordering.
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let legacy_clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let legacy_cache = Rc::new(RefCell::new(Cache::default()));
+    let _legacy_portfolio = Portfolio::new(legacy_clock.clone(), legacy_cache.clone(), None);
+    let mut legacy = ExecutionEngine::new(legacy_clock, legacy_cache.clone(), None);
+    legacy
+        .register_client(Box::new(StubExecutionClient::new(
+            ClientId::from("STUB"),
+            AccountId::test_default(),
+            Venue::test_default(),
+            OmsType::Netting,
+            None,
+        )))
+        .unwrap();
+    legacy_cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    legacy_cache
+        .borrow_mut()
+        .add_account(cash_account_for(AccountId::test_default()).into())
+        .unwrap();
+    legacy_cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    legacy.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    legacy.process(&OrderEventAny::Accepted(
+        nautilus_model::events::OrderAccepted::new(
+            order.trader_id(),
+            order.strategy_id(),
+            instrument.id,
+            order.client_order_id(),
+            fill.venue_order_id,
+            AccountId::test_default(),
+            UUID4::new(),
+            1_000_000.into(),
+            1_000_000.into(),
+            false,
+        ),
+    ));
+    for original in &original_fills {
+        legacy.reconcile_fill_report(original);
+    }
+    legacy.process(&OrderEventAny::FillVoided(voids[0].clone()));
+    legacy.reconcile_fill_report(&fill);
+    for original in &voids[1..] {
+        legacy.process(&OrderEventAny::FillVoided(original.clone()));
+    }
+    let legacy_position = legacy_cache.borrow().position_owned(&position_id).unwrap();
+    assert_eq!(legacy_position.quantity, position.quantity);
+    assert_eq!(legacy_position.commissions(), position.commissions());
+    let legacy_balance = legacy_cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap()
+        .balance_total(None);
+    eprintln!(
+        "VOID_CASH_NATIVE_COMPARISON owned={:?} standalone={legacy_balance:?} effective_fee={:?}",
+        account.balance_total(None),
+        position.commissions()
+    );
+    assert_eq!(
+        legacy_balance,
+        account.balance_total(None),
+        "current normal native accounting must match owner continuation accounting"
+    );
+    assert_eq!(
+        account.balance_total(None),
+        Some(Money::from("949999.95 USD"))
+    );
+    let records = records.borrow();
+    assert_eq!(records.len(), 8);
+    assert!(matches!(records[0].0, OrderEventAny::FillVoided(_)));
+    assert_eq!([records[0].1, records[1].1], ["specific", "aggregate"]);
+    let root = &records[0].4;
+    let child = &records[2].4;
+    assert_eq!(root.sources[0].root_report_id, report.report_id);
+    assert_eq!(child.sources[0].root_report_id, fill.report_id);
+    assert_eq!(child.parent_report_ticket, Some(root.ticket));
+    assert_eq!(child.parent_event_id, root.canonical_event_id);
+    assert_eq!(
+        child.control_origin.as_ref().unwrap().command_id,
+        queries.borrow()[0].command_id
+    );
+    assert_eq!(records[4].4.ticket, root.ticket);
+    assert_eq!(records[6].4.ticket, root.ticket);
+}
+#[rstest]
+fn test_runtime_cash_fill_void_refunds_only_the_cumulative_applied_effect() {
+    use nautilus_common::owner_delivery::{OwnerDelivery, current_observer};
+    use nautilus_model::accounts::Account;
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(cash_account_for(AccountId::test_default()).into())
+        .unwrap();
+    engine
+        .register_client(Box::new(StubExecutionClient::new(
+            ClientId::from("STUB"),
+            AccountId::test_default(),
+            Venue::test_default(),
+            OmsType::Netting,
+            None,
+        )))
+        .unwrap();
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("CASH-CORRECTION-OWNER"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    let venue = VenueOrderId::from("CASH-CORRECTION-VENUE");
+    let accepted = create_order_status_report(
+        Some(order.client_order_id()),
+        venue,
+        instrument.id,
+        OrderStatus::Accepted,
+        Quantity::from(100_000),
+        Quantity::zero(0),
+    );
+    engine.reconcile_order_status_report(&accepted);
+    let fill = create_fill_report(
+        instrument.id,
+        Some(order.client_order_id()),
+        venue,
+        TradeId::from("CASH-CORRECTION-TRADE"),
+        Quantity::from(100_000),
+        Price::from("1.00000"),
+    );
+    engine.reconcile_fill_report(&fill);
+    let before = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    assert_eq!(
+        before.balance_total(None),
+        Some(Money::from("899999.90 USD"))
+    );
+    let mut corrected = accepted;
+    corrected.report_id = UUID4::new();
+    corrected.order_status = OrderStatus::PartiallyFilled;
+    corrected.filled_qty = Quantity::from(50_000);
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = OwnerDelivery::new();
+    let _binding = owner.bind().unwrap();
+    let observer = current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::OrderWithFills(Box::new(corrected), vec![]),
+    );
+    let account = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    let canonical = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    assert_eq!(canonical.filled_qty(), Quantity::from(50_000));
+    assert_eq!(canonical.voided_qty(), Quantity::from(50_000));
+    assert_eq!(
+        canonical.commissions().get(&Currency::USD()),
+        Some(&Money::from("0.05 USD"))
+    );
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.pending(), 0);
+    assert!(observer.retained_reports().unwrap().is_empty());
+    assert_eq!(
+        account.balance_total(None),
+        Some(Money::from("949999.95 USD"))
+    );
+    assert_eq!(account.balance_locked(None), Some(Money::from("50000 USD")));
+    assert_eq!(
+        account.balance_free(None),
+        Some(Money::from("899999.95 USD"))
+    );
+    let AccountAny::Cash(cash) = &account else {
+        panic!("the actual account must remain Cash");
+    };
+    assert!(cash.calculate_account_state);
+    assert_eq!(
+        cash.commission(&Currency::USD()),
+        Some(Money::from("0.05 USD"))
+    );
+    assert_eq!(owner.retire(), Ok(()));
+}
+
+#[rstest]
+#[case("same")]
+#[case("quantity")]
+#[case("price")]
+fn test_cash_canonical_void_preserves_legal_numeric_precision(#[case] precision: &str) {
+    use nautilus_common::owner_delivery::{self, OwnerDelivery, OwnerIncomingOrder};
+    use nautilus_model::accounts::Account;
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let _portfolio = Portfolio::new(clock.clone(), cache.clone(), None);
+    let mut engine = ExecutionEngine::new(clock, cache.clone(), None);
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    cache
+        .borrow_mut()
+        .add_account(cash_account_for(AccountId::test_default()).into())
+        .unwrap();
+    engine
+        .register_client(Box::new(StubExecutionClient::new(
+            ClientId::from("STUB"),
+            AccountId::test_default(),
+            Venue::test_default(),
+            OmsType::Netting,
+            None,
+        )))
+        .unwrap();
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("CASH-CORRECTION-OWNER"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .price(Price::from("1.00000"))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    let venue = VenueOrderId::from("CASH-CORRECTION-VENUE");
+    let accepted = create_order_status_report(
+        Some(order.client_order_id()),
+        venue,
+        instrument.id,
+        OrderStatus::Accepted,
+        Quantity::from(100_000),
+        Quantity::zero(0),
+    );
+    engine.reconcile_order_status_report(&accepted);
+    let fill = create_fill_report(
+        instrument.id,
+        Some(order.client_order_id()),
+        venue,
+        TradeId::from("CASH-CORRECTION-TRADE"),
+        Quantity::from(100_000),
+        Price::from("1.00000"),
+    );
+    engine.reconcile_fill_report(&fill);
+    let before = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    assert_eq!(
+        before.balance_total(None),
+        Some(Money::from("899999.90 USD"))
+    );
+
+    let mut event = build_fill_void_from_cached_fill(
+        &engine,
+        "CASH-CORRECTION-OWNER",
+        "CASH-CORRECTION-TRADE",
+        Quantity::from(50_000),
+    );
+    let OrderEventAny::FillVoided(voided) = &mut event else {
+        unreachable!()
+    };
+    voided.commission_voided = Some(Money::from("0.05 USD"));
+    voided.is_reopened = true;
+    match precision {
+        "same" => {}
+        "quantity" => voided.voided_qty = Quantity::from("50000.0"),
+        "price" => voided.last_px = Price::from("1.000000"),
+        _ => unreachable!(),
+    }
+    let original = voided.clone();
+    let mut validation = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    validation
+        .apply(event.clone())
+        .expect("the real Order model accepts this numeric-equal correction");
+    assert_eq!(validation.filled_qty(), Quantity::from(50_000));
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let published = Rc::new(RefCell::new(Vec::new()));
+    let handler = TypedHandler::from({
+        let published = published.clone();
+        move |event: &OrderEventAny| {
+            if let OrderEventAny::FillVoided(voided) = event {
+                published.borrow_mut().push(voided.clone());
+            }
+        }
+    });
+    msgbus::subscribe_order_events("events.order.*".into(), handler.clone(), None);
+    let owner = OwnerDelivery::new();
+    let _binding = owner.bind().unwrap();
+    owner_delivery::dispatch_incoming_orders(vec![OwnerIncomingOrder::Process(event)]).unwrap();
+    msgbus::unsubscribe_order_events("events.order.*".into(), &handler);
+    let canonical = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    let actual: Vec<_> = canonical
+        .events()
+        .into_iter()
+        .filter_map(|event| {
+            if let OrderEventAny::FillVoided(voided) = event {
+                Some(voided.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(actual, vec![original.clone()]);
+    assert_eq!(*published.borrow(), actual);
+    assert_eq!(
+        actual[0].voided_qty.precision,
+        original.voided_qty.precision
+    );
+    assert_eq!(actual[0].last_px.precision, original.last_px.precision);
+    assert_eq!(canonical.status(), OrderStatus::PartiallyFilled);
+    assert_eq!(canonical.filled_qty(), Quantity::from(50_000));
+    let account = cache
+        .borrow()
+        .account_owned(&AccountId::test_default())
+        .unwrap();
+    assert_eq!(
+        account.balance_total(None),
+        Some(Money::from("949999.95 USD")),
+        "a model-accepted correction cannot be rejected solely for equivalent numeric precision"
+    );
+    let AccountAny::Cash(cash) = account else {
+        unreachable!()
+    };
+    assert_eq!(
+        cash.commission(&Currency::USD()),
+        Some(Money::from("0.05 USD"))
+    );
+    assert_eq!(owner.pending(), 0);
+    assert_eq!(owner.failure(), None);
+    assert_eq!(owner.retire(), Ok(()));
+}
+
+#[rstest]
+#[case("unapplied")]
+#[case("reset")]
+#[case("snapshot")]
+#[case("reported")]
+#[case("reported-db")]
+#[case("void-db")]
+#[case("margin")]
+#[case("multi")]
+#[case("fx")]
+fn test_runtime_cash_correction_failure_stops_next_report_and_retains_input(
+    #[case] boundary: &str,
+) {
+    use nautilus_common::owner_delivery::{
+        OwnerDelivery, OwnerDeliveryError, OwnerReportDispatchStage, current_observer,
+    };
+    use nautilus_model::{
+        accounts::{Account, MarginAccount},
+        instruments::stubs::default_fx_ccy,
+    };
+    use nautilus_portfolio::portfolio::Portfolio;
+
+    *msgbus::get_message_bus().borrow_mut() = MessageBus::default();
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let (database, database_control) = FailNthAddOrderDatabase::create();
+    cache.borrow_mut().set_database(Box::new(database));
+    let mut portfolio = Some(Portfolio::new(clock.clone(), cache.clone(), None));
+    let mut engine = ExecutionEngine::new(clock.clone(), cache.clone(), None);
+    let instrument = audusd_sim();
+    cache
+        .borrow_mut()
+        .add_instrument(instrument.clone().into())
+        .unwrap();
+    let currency = if boundary == "fx" {
+        Currency::EUR()
+    } else {
+        Currency::USD()
+    };
+    let mut balances = vec![AccountBalance::new(
+        Money::from_decimal(dec!(1000000), currency).unwrap(),
+        Money::zero(currency),
+        Money::from_decimal(dec!(1000000), currency).unwrap(),
+    )];
+    if boundary == "multi" {
+        balances.push(AccountBalance::new(
+            Money::from("1000000 AUD"),
+            Money::from("0 AUD"),
+            Money::from("1000000 AUD"),
+        ));
+    }
+    let state = AccountState::new(
+        AccountId::test_default(),
+        if boundary == "margin" {
+            AccountType::Margin
+        } else {
+            AccountType::Cash
+        },
+        balances,
+        vec![],
+        true,
+        UUID4::new(),
+        0.into(),
+        0.into(),
+        (boundary != "multi").then_some(currency),
+    );
+    let account = if boundary == "margin" {
+        AccountAny::Margin(MarginAccount::new(state, true))
+    } else {
+        AccountAny::Cash(CashAccount::new(state, true, false))
+    };
+    cache.borrow_mut().add_account(account).unwrap();
+    if boundary == "fx" {
+        let rate = default_fx_ccy(Symbol::from("EUR/USD"), Some(Venue::test_default()));
+        cache
+            .borrow_mut()
+            .add_instrument(rate.clone().into())
+            .unwrap();
+        cache
+            .borrow_mut()
+            .add_quote(QuoteTick::new(
+                rate.id,
+                Price::from("2.00000"),
+                Price::from("2.00000"),
+                Quantity::from(1_000_000),
+                Quantity::from(1_000_000),
+                0.into(),
+                0.into(),
+            ))
+            .unwrap();
+    }
+    engine
+        .register_client(Box::new(StubExecutionClient::new(
+            ClientId::from("STUB"),
+            AccountId::test_default(),
+            Venue::test_default(),
+            OmsType::Netting,
+            None,
+        )))
+        .unwrap();
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("CASH-FAILURE-A"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    engine.process(&TestOrderEventStubs::submitted(
+        &order,
+        AccountId::test_default(),
+    ));
+    let venue = VenueOrderId::from("CASH-FAILURE-VENUE-A");
+    let mut accepted = create_order_status_report(
+        Some(order.client_order_id()),
+        venue,
+        instrument.id,
+        OrderStatus::Accepted,
+        Quantity::from(100_000),
+        Quantity::zero(0),
+    );
+    accepted.order_type = OrderType::Market;
+    engine.reconcile_order_status_report(&accepted);
+    let fill = create_fill_report(
+        instrument.id,
+        Some(order.client_order_id()),
+        venue,
+        TradeId::from("CASH-FAILURE-ORIGINAL-TRADE"),
+        Quantity::from(100_000),
+        Price::from("1.00000"),
+    );
+    if boundary == "unapplied" {
+        cache
+            .borrow_mut()
+            .account_mut(&AccountId::test_default())
+            .unwrap()
+            .set_calculate_account_state(false);
+    }
+    engine.reconcile_fill_report(&fill);
+    if boundary == "unapplied" {
+        cache
+            .borrow_mut()
+            .account_mut(&AccountId::test_default())
+            .unwrap()
+            .set_calculate_account_state(true);
+    }
+    let expected_before = match boundary {
+        "unapplied" => Money::from("1000000 USD"),
+        "margin" => Money::from("999999.90 USD"),
+        "fx" => Money::from("949999.95 EUR"),
+        _ => Money::from("899999.90 USD"),
+    };
+    assert_eq!(
+        cache
+            .borrow()
+            .account_owned(&AccountId::test_default())
+            .unwrap()
+            .balance_total(Some(currency)),
+        Some(expected_before),
+        "the real normal predecessor must establish the exact account mode and balance"
+    );
+    if boundary == "multi" {
+        assert_eq!(
+            cache
+                .borrow()
+                .account_owned(&AccountId::test_default())
+                .unwrap()
+                .balance_total(Some(Currency::AUD())),
+            Some(Money::from("1100000 AUD"))
+        );
+    }
+    let b = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id)
+        .client_order_id(ClientOrderId::from("CASH-FAILURE-B"))
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(1))
+        .build();
+    cache
+        .borrow_mut()
+        .add_order(b.clone(), None, Some(ClientId::from("STUB")), true)
+        .unwrap();
+    engine.process(&TestOrderEventStubs::submitted(
+        &b,
+        AccountId::test_default(),
+    ));
+    match boundary {
+        "reset" => portfolio.as_mut().unwrap().reset(),
+        "snapshot" => {
+            drop(portfolio.take());
+            portfolio = Some(Portfolio::new(clock, cache.clone(), None));
+        }
+        "reported" | "reported-db" => {
+            if boundary == "reported-db" {
+                database_control.set_fail_update_account_on(Some(1));
+            }
+            let reported = AccountState::new(
+                AccountId::test_default(),
+                AccountType::Cash,
+                vec![AccountBalance::new(
+                    Money::from("777777.77 USD"),
+                    Money::from("0 USD"),
+                    Money::from("777777.77 USD"),
+                )],
+                vec![],
+                true,
+                UUID4::new(),
+                10.into(),
+                10.into(),
+                Some(Currency::USD()),
+            );
+            portfolio.as_mut().unwrap().update_account(&reported);
+            assert_eq!(
+                cache
+                    .borrow()
+                    .account_owned(&AccountId::test_default())
+                    .unwrap()
+                    .last_event()
+                    .unwrap(),
+                reported
+            );
+            if boundary == "reported-db" {
+                assert_eq!(database_control.failed_updates(), vec!["account"]);
+                database_control.set_fail_update_account_on(None);
+            }
+        }
+        _ => {}
+    }
+    if boundary == "void-db" {
+        database_control.set_fail_update_account_on(Some(1));
+    }
+    let mut corrected = accepted;
+    corrected.report_id = UUID4::new();
+    corrected.order_status = OrderStatus::PartiallyFilled;
+    corrected.filled_qty = Quantity::from(50_000);
+    let mut b_report = create_order_status_report(
+        Some(b.client_order_id()),
+        VenueOrderId::from("CASH-FAILURE-VENUE-B"),
+        instrument.id,
+        OrderStatus::Accepted,
+        Quantity::from(1),
+        Quantity::zero(0),
+    );
+    b_report.order_type = OrderType::Market;
+    let mut mass = ExecutionMassStatus::new(
+        ClientId::from("STUB"),
+        AccountId::test_default(),
+        instrument.id.venue,
+        20.into(),
+        None,
+    );
+    mass.add_order_reports(vec![corrected.clone(), b_report]);
+    // A cumulative decrease is authoritative only when paired with the venue's fill evidence.
+    // The already-applied trade is deduplicated before the snapshot residual creates the void.
+    mass.add_fill_reports(vec![fill.clone()]);
+    let predecessor = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    assert!(
+        nautilus_execution::reconciliation::generate_reconciliation_order_events(
+            &predecessor,
+            &corrected,
+            Some(&instrument.clone().into()),
+            20.into(),
+        )
+        .is_empty()
+    );
+    let correction_plan =
+        nautilus_execution::reconciliation::generate_reconciliation_order_snapshot_events(
+            &predecessor,
+            &corrected,
+            Some(&instrument.into()),
+            20.into(),
+        );
+    assert!(matches!(
+        correction_plan.as_slice(),
+        [OrderEventAny::FillVoided(_)]
+    ));
+    let engine = Rc::new(RefCell::new(engine));
+    ExecutionEngine::register_msgbus_handlers(&engine);
+    let owner = OwnerDelivery::new();
+    let _binding = owner.bind().unwrap();
+    let observer = current_observer().unwrap();
+    msgbus::send_execution_report(
+        MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+        ExecutionReport::MassStatus(Box::new(mass.clone())),
+    );
+    let current = cache
+        .borrow()
+        .order_owned(&order.client_order_id())
+        .unwrap();
+    assert_eq!(current.filled_qty(), Quantity::from(50_000));
+    let voids: Vec<_> = current
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrderEventAny::FillVoided(voided) => Some(voided.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(voids.len(), 1);
+    let expected_after = match boundary {
+        "reported" | "reported-db" => Money::from("777777.77 USD"),
+        "void-db" => Money::from("949999.95 USD"),
+        _ => expected_before,
+    };
+    assert_eq!(
+        cache
+            .borrow()
+            .account_owned(&AccountId::test_default())
+            .unwrap()
+            .balance_total(Some(currency)),
+        Some(expected_after)
+    );
+    assert_eq!(owner.failure(), Some(OwnerDeliveryError::NativeAction));
+    assert_eq!(
+        cache.borrow().order(&b.client_order_id()).unwrap().status(),
+        OrderStatus::Submitted,
+        "B must not be accepted after an incomplete A Cash correction"
+    );
+    let held = observer.retained_reports().unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].stage, OwnerReportDispatchStage::DispatchReturned);
+    assert_eq!(held[0].error, OwnerDeliveryError::NativeAction);
+    assert_eq!(
+        held[0].event,
+        Some(OrderEventAny::FillVoided(voids[0].clone()))
+    );
+    let ExecutionReport::MassStatus(original) = &held[0].input.reports[0] else {
+        panic!("original mass report");
+    };
+    assert_eq!(**original, mass);
+    assert_eq!(
+        serde_json::to_value(&**original).unwrap(),
+        serde_json::to_value(&mass).unwrap()
+    );
+    let cause = held[0].cause.as_ref().unwrap();
+    assert_eq!(cause.canonical_event_id, Some(voids[0].event_id));
+    assert_eq!(cause.sources[0].root_report_id, mass.report_id);
+    assert_eq!(cause.sources[0].source_report_id, corrected.report_id);
+    assert_ne!(
+        cause.incarnation.as_str(),
+        "00000000-0000-0000-0000-000000000000"
+    );
+    assert!(cause.sequence > 0);
+    if boundary == "void-db" {
+        assert_eq!(database_control.failed_updates(), vec!["account"]);
+        database_control.set_fail_update_account_on(None);
+        portfolio
+            .as_mut()
+            .unwrap()
+            .update_order(&OrderEventAny::FillVoided(voids[0].clone()));
+        assert_eq!(
+            cache
+                .borrow()
+                .account_owned(&AccountId::test_default())
+                .unwrap()
+                .balance_total(None),
+            Some(expected_after),
+            "the actual memory correction watermark survives a database error and prevents a second refund"
+        );
+        let AccountAny::Cash(account) = cache
+            .borrow()
+            .account_owned(&AccountId::test_default())
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            account.commission(&Currency::USD()),
+            Some(Money::from("0.05 USD"))
+        );
+    }
+    assert!(owner.pending() > 0);
+    assert_eq!(owner.retire(), Err(OwnerDeliveryError::PendingAtRetirement));
+}
