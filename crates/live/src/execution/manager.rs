@@ -40,6 +40,7 @@ use nautilus_common::{
         },
     },
     msgbus::{self, MessagingSwitchboard, switchboard},
+    owner_delivery::OwnerReportRef,
 };
 use nautilus_core::{
     DurationNanos, UUID4, UnixNanos,
@@ -79,7 +80,13 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
-use super::recency::RecencyMap;
+use super::{
+    recency::RecencyMap,
+    report::{
+        ContinuousReportInput, FillKey, ReconciliationBook, ReconciliationStep,
+        apply_continuous_events, apply_startup_events, fill_is_applied,
+    },
+};
 
 /// Tag for orders originating from venue (external orders).
 static TAG_VENUE: LazyLock<Ustr> = LazyLock::new(|| Ustr::from("VENUE"));
@@ -95,7 +102,6 @@ static TAG_RECONCILIATION: LazyLock<Ustr> = LazyLock::new(|| Ustr::from("RECONCI
 pub type InstrumentAccountKey = (InstrumentId, AccountId);
 type AccountInstrumentKey = (AccountId, InstrumentId);
 type AccountInstrumentStrategyKey = (AccountId, InstrumentId, StrategyId);
-type FillKey = (AccountId, InstrumentId, TradeId);
 
 #[expect(clippy::too_many_arguments)]
 fn build_cross_zero_leg_report(
@@ -177,7 +183,7 @@ pub struct ReconciliationResult {
 }
 
 /// Result of inflight order checks containing terminal events and intermediate queries.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct InflightCheckResult {
     /// Terminal events (rejection/cancellation) for orders that exceeded max retries.
     pub events: Vec<OrderEventAny>,
@@ -207,16 +213,16 @@ impl TargetedOrderQuery {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct TargetedOrderReportResult {
     client_order_id: ClientOrderId,
     client_id: Option<ClientId>,
-    report: Option<OrderStatusReport>,
-    fills: Vec<FillReport>,
+    pub(super) report: Option<OrderStatusReport>,
+    pub(super) fills: Vec<FillReport>,
     coverage_complete: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SourcedOrderStatusReport {
     pub client_id: ClientId,
     pub report: OrderStatusReport,
@@ -528,16 +534,11 @@ pub struct ExecutionManager {
     cache: Rc<RefCell<Cache>>,
     config: ExecutionManagerConfig,
     inflight_checks: IndexMap<ClientOrderId, InflightCheck>,
-    processed_fills: RecencyMap<FillKey>,
+    reconciliation_book: ReconciliationBook,
     recon_check_retries: IndexMap<ClientOrderId, u32>,
     order_query_recency: RecencyMap<ClientOrderId>,
-    order_local_activity: RecencyMap<ClientOrderId>,
-    // Monotonic (`dst::time`) instants, not `self.clock`; see `record_position_activity`.
-    position_local_activity: RecencyMap<InstrumentAccountKey>,
-    position_local_activity_revisions: IndexMap<InstrumentAccountKey, u64>,
     position_reconciliation_states: IndexMap<InstrumentAccountKey, PositionReconciliationState>,
     position_reconciliation_tolerances: IndexMap<AccountId, Decimal>,
-    recent_fills_cache: RecencyMap<FillKey>,
     missing_order_coverage_warnings: IndexSet<ClientOrderId>,
     open_check_lookback_warnings: IndexSet<ClientOrderId>,
     unresolved_order_coverage: IndexSet<ClientOrderId>,
@@ -549,7 +550,10 @@ impl Debug for ExecutionManager {
         f.debug_struct(stringify!(ExecutionManager))
             .field("config", &self.config)
             .field("inflight_checks", &self.inflight_checks)
-            .field("processed_fills", &self.processed_fills)
+            .field(
+                "processed_fills",
+                &self.reconciliation_book.0.borrow().processed,
+            )
             .field("recon_check_retries", &self.recon_check_retries)
             .finish_non_exhaustive()
     }
@@ -573,15 +577,11 @@ impl ExecutionManager {
             cache,
             config,
             inflight_checks: IndexMap::new(),
-            processed_fills: RecencyMap::default(),
+            reconciliation_book: ReconciliationBook::default(),
             recon_check_retries: IndexMap::new(),
             order_query_recency: RecencyMap::default(),
-            order_local_activity: RecencyMap::default(),
-            position_local_activity: RecencyMap::default(),
-            position_local_activity_revisions: IndexMap::new(),
             position_reconciliation_states: IndexMap::new(),
             position_reconciliation_tolerances: IndexMap::new(),
-            recent_fills_cache: RecencyMap::default(),
             missing_order_coverage_warnings: IndexSet::new(),
             open_check_lookback_warnings: IndexSet::new(),
             unresolved_order_coverage: IndexSet::new(),
@@ -637,34 +637,36 @@ impl ExecutionManager {
             })
     }
 
+    pub(crate) fn apply_continuous_reconciliation(
+        &self,
+        engine: &Rc<RefCell<ExecutionEngine>>,
+        input: ContinuousReportInput,
+        events: Vec<OrderEventAny>,
+    ) -> anyhow::Result<()> {
+        apply_continuous_events(
+            engine,
+            &self.cache,
+            &self.reconciliation_book,
+            input,
+            events,
+        )
+    }
+
+    #[cfg(feature = "node")]
     pub(crate) fn reconcile_startup_mass_status(
-        &mut self,
+        &self,
         mass_status: &ExecutionMassStatus,
-        exec_engine: &RefCell<ExecutionEngine>,
+        exec_engine: &Rc<RefCell<ExecutionEngine>>,
     ) -> anyhow::Result<ReconciliationResult> {
         self.reconcile_mass_status(mass_status, exec_engine, true)
     }
 
     fn reconcile_mass_status(
-        &mut self,
+        &self,
         mass_status: &ExecutionMassStatus,
-        exec_engine: &RefCell<ExecutionEngine>,
+        exec_engine: &Rc<RefCell<ExecutionEngine>>,
         require_native_outcome: bool,
     ) -> anyhow::Result<ReconciliationResult> {
-        let apply_event = |event: &OrderEventAny, projection: Option<&OrderFilled>| {
-            let mut engine = exec_engine.borrow_mut();
-            if require_native_outcome {
-                return match projection {
-                    Some(fill) => engine.apply_retained_reconciliation_fill(fill),
-                    None => engine.apply_reconciliation_event(event),
-                };
-            }
-            match projection {
-                Some(fill) => engine.project_reconciliation_fill(fill),
-                None => engine.process(event),
-            }
-            Ok(())
-        };
         if exec_engine
             .borrow()
             .get_client(&mass_status.client_id)
@@ -1188,38 +1190,64 @@ impl ExecutionManager {
 
         events.sort_by_key(OrderEventAny::ts_event);
 
-        let mut unapplied_fill_position_ids = IndexSet::new();
+        let retained_projection = |event: &OrderEventAny| {
+            matches!(event, OrderEventAny::Filled(fill)
+            if Self::should_project_reconciliation_fill(
+                fill,
+                &retained_fill_state,
+                &reported_fill_keys,
+                &order_only_venue_order_ids,
+            ))
+        };
+        let unapplied_fill_position_ids = if require_native_outcome {
+            let steps = events
+                .iter()
+                .map(|event| ReconciliationStep {
+                    event: event.clone(),
+                    retained_projection: retained_projection(event),
+                    sources: None,
+                    fill_key: match event {
+                        OrderEventAny::Filled(fill) => {
+                            fill_queue.event_fill_keys.get(&fill.event_id).copied()
+                        }
+                        _ => None,
+                    },
+                })
+                .collect();
+            apply_startup_events(
+                exec_engine,
+                &self.cache,
+                &self.reconciliation_book,
+                mass_status,
+                steps,
+            )?
+        } else {
+            let mut unapplied_positions = IndexSet::new();
+            for event in &events {
+                if let OrderEventAny::Filled(fill) = event
+                    && retained_projection(event)
+                {
+                    exec_engine.borrow_mut().project_reconciliation_fill(fill);
+                } else {
+                    exec_engine.borrow_mut().process(event);
+                }
 
-        for event in &events {
-            let projection = if let OrderEventAny::Filled(fill) = event
-                && Self::should_project_reconciliation_fill(
-                    fill,
-                    &retained_fill_state,
-                    &reported_fill_keys,
-                    &order_only_venue_order_ids,
-                ) {
-                Some(fill)
-            } else {
-                None
-            };
-            let applied = apply_event(event, projection);
-
-            if let OrderEventAny::Filled(fill) = event
-                && let Some(fill_key) = fill_queue.event_fill_keys.get(&fill.event_id).copied()
-            {
-                if self.is_fill_applied(fill, fill_key) {
-                    self.processed_fills.mark(fill_key);
-                } else if let Some(venue_position_id) = fill.position_id {
-                    log::error!(
-                        "Skipping reconciliation for venue position {venue_position_id}: historical fill {} was not applied",
-                        fill.trade_id,
-                    );
-
-                    unapplied_fill_position_ids.insert(venue_position_id);
+                if let OrderEventAny::Filled(fill) = event
+                    && let Some(key) = fill_queue.event_fill_keys.get(&fill.event_id).copied()
+                {
+                    if self.is_fill_applied(fill, key) {
+                        self.reconciliation_book.0.borrow_mut().processed.mark(key);
+                    } else if let Some(position_id) = fill.position_id {
+                        log::error!(
+                            "Skipping reconciliation for venue position {position_id}: historical fill {} was not applied",
+                            fill.trade_id,
+                        );
+                        unapplied_positions.insert(position_id);
+                    }
                 }
             }
-            applied?;
-        }
+            unapplied_positions
+        };
 
         let mut positions_created = 0usize;
 
@@ -1241,7 +1269,9 @@ impl ExecutionManager {
                 )
                 .collect();
 
-            for (instrument_id, reports) in mass_status.position_reports() {
+            for (instrument_index, (instrument_id, reports)) in
+                mass_status.position_reports().into_iter().enumerate()
+            {
                 if !self.should_reconcile_instrument(&instrument_id) {
                     log::debug!(
                         "Skipping position reports for {instrument_id}: not in reconciliation_instrument_ids"
@@ -1249,7 +1279,7 @@ impl ExecutionManager {
                     continue;
                 }
 
-                for report in reports {
+                for (position_index, report) in reports.into_iter().enumerate() {
                     if report.venue_position_id.is_some_and(|venue_position_id| {
                         unapplied_fill_position_ids.contains(&venue_position_id)
                     }) {
@@ -1261,10 +1291,37 @@ impl ExecutionManager {
                         mass_status.account_id,
                         &instruments_with_unattributed_fills,
                     ) {
-                        for event in position_events {
-                            apply_event(&event, None)?;
-                            events.push(event);
+                        if require_native_outcome {
+                            let source = OwnerReportRef {
+                                root_report_id: mass_status.report_id,
+                                source_report_id: report.report_id,
+                                root_index: 0,
+                                order_index: None,
+                                fill_index: None,
+                                position_index: Some((instrument_index, position_index)),
+                            };
+                            let steps = position_events
+                                .iter()
+                                .map(|event| ReconciliationStep {
+                                    event: event.clone(),
+                                    retained_projection: false,
+                                    fill_key: None,
+                                    sources: Some(vec![source.clone()]),
+                                })
+                                .collect();
+                            apply_startup_events(
+                                exec_engine,
+                                &self.cache,
+                                &self.reconciliation_book,
+                                mass_status,
+                                steps,
+                            )?;
+                        } else {
+                            for event in &position_events {
+                                exec_engine.borrow_mut().process(event);
+                            }
                         }
+                        events.extend(position_events);
 
                         positions_created += 1;
                     }
@@ -2218,7 +2275,12 @@ impl ExecutionManager {
             }
 
             let threshold = Duration::from(self.config.open_check_threshold_ns);
-            if let Some(elapsed) = self.order_local_activity.elapsed_at(&client_order_id, now)
+            if let Some(elapsed) = self
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .elapsed_at(&client_order_id, now)
                 && elapsed < threshold
             {
                 let elapsed_ms = elapsed.as_millis();
@@ -2381,7 +2443,12 @@ impl ExecutionManager {
 
             // Check for recent local activity to avoid race conditions with in-flight fills
             let threshold = Duration::from(self.config.open_check_threshold_ns);
-            if let Some(elapsed) = self.order_local_activity.elapsed(&client_order_id)
+            if let Some(elapsed) = self
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .elapsed(&client_order_id)
                 && elapsed < threshold
             {
                 let elapsed_ms = elapsed.as_millis();
@@ -2675,7 +2742,12 @@ impl ExecutionManager {
                 )
             })
             .collect();
-        let mut activity_revisions = self.position_local_activity_revisions.clone();
+        let mut activity_revisions = self
+            .reconciliation_book
+            .0
+            .borrow()
+            .position_revisions
+            .clone();
         for key in &position_keys {
             activity_revisions
                 .entry(*key)
@@ -2766,7 +2838,7 @@ impl ExecutionManager {
             discrepancy_keys.insert(key);
 
             if self.position_activity_revision(&key) > prepared_revision
-                || self.position_local_activity.within(
+                || self.reconciliation_book.0.borrow().positions.within(
                     &key,
                     Duration::from(self.config.position_check_threshold_ns),
                 )
@@ -3353,7 +3425,11 @@ impl ExecutionManager {
         );
         self.recon_check_retries.insert(client_order_id, 0);
         self.order_query_recency.remove(&client_order_id);
-        self.order_local_activity.remove(&client_order_id);
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .orders
+            .remove(&client_order_id);
     }
 
     /// Records local activity for the specified order.
@@ -3363,7 +3439,11 @@ impl ExecutionManager {
     /// conditions where network/queue latency makes events appear "old" even
     /// though they just arrived.
     pub fn record_local_activity(&mut self, client_order_id: ClientOrderId) {
-        self.order_local_activity.mark(client_order_id);
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .orders
+            .mark(client_order_id);
     }
 
     /// Clears reconciliation tracking state for an order.
@@ -3380,7 +3460,11 @@ impl ExecutionManager {
         if drop_last_query {
             self.order_query_recency.remove(client_order_id);
         }
-        self.order_local_activity.remove(client_order_id);
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .orders
+            .remove(client_order_id);
     }
 
     #[cfg(feature = "node")]
@@ -3425,17 +3509,17 @@ impl ExecutionManager {
     /// clock the reconciliation loop already schedules on keeps the grace honest.
     /// See `check_position_discrepancy`.
     pub fn record_position_activity(&mut self, instrument_id: InstrumentId, account_id: AccountId) {
-        let key = (instrument_id, account_id);
-        self.position_local_activity.mark(key);
-        let revision = self
-            .position_local_activity_revisions
-            .entry(key)
-            .or_default();
-        *revision = revision.saturating_add(1);
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .mark_position(instrument_id, account_id);
     }
 
     pub(crate) fn position_activity_revision(&self, key: &InstrumentAccountKey) -> u64 {
-        self.position_local_activity_revisions
+        self.reconciliation_book
+            .0
+            .borrow()
+            .position_revisions
             .get(key)
             .copied()
             .unwrap_or_default()
@@ -3576,8 +3660,11 @@ impl ExecutionManager {
         instrument_id: InstrumentId,
         trade_id: TradeId,
     ) -> bool {
-        self.recent_fills_cache
-            .contains_key(&(account_id, instrument_id, trade_id))
+        self.reconciliation_book.0.borrow().recent.contains_key(&(
+            account_id,
+            instrument_id,
+            trade_id,
+        ))
     }
 
     /// Marks a fill as recently processed with the current monotonic instant.
@@ -3587,7 +3674,10 @@ impl ExecutionManager {
         instrument_id: InstrumentId,
         trade_id: TradeId,
     ) {
-        self.recent_fills_cache
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .recent
             .mark((account_id, instrument_id, trade_id));
     }
 
@@ -3616,7 +3706,11 @@ impl ExecutionManager {
             Err(_) => Duration::ZERO,
         };
 
-        self.recent_fills_cache.prune_older_than(ttl);
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .recent
+            .prune_older_than(ttl);
     }
 
     /// Prunes committed mass-reconciliation fills outside the startup report window.
@@ -3629,12 +3723,19 @@ impl ExecutionManager {
         };
 
         let ttl = Duration::from_mins(lookback_mins).max(Duration::from_mins(1));
-        self.processed_fills.prune_older_than(ttl);
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .processed
+            .prune_older_than(ttl);
     }
 
     /// Prunes order activity outside the continuous reconciliation settling window.
     pub fn prune_order_local_activity(&mut self) {
-        self.order_local_activity
+        self.reconciliation_book
+            .0
+            .borrow_mut()
+            .orders
             .prune_older_than(Duration::from(self.config.open_check_threshold_ns));
     }
 
@@ -3755,7 +3856,7 @@ impl ExecutionManager {
         // Recent local activity is the real-time settling window for missing
         // orders. Venue/domain timestamps can be ahead of the trading clock and
         // must not stall reconciliation.
-        if self.order_local_activity.within(
+        if self.reconciliation_book.0.borrow().orders.within(
             &client_order_id,
             Duration::from(self.config.open_check_threshold_ns),
         ) {
@@ -3794,7 +3895,7 @@ impl ExecutionManager {
             return events;
         }
 
-        if self.order_local_activity.within(
+        if self.reconciliation_book.0.borrow().orders.within(
             &client_order_id,
             Duration::from(self.config.open_check_threshold_ns),
         ) {
@@ -3956,7 +4057,7 @@ impl ExecutionManager {
         let ts_now = self.clock.borrow().timestamp_ns();
 
         // Grace window measured on the monotonic `dst::time` clock; see `record_position_activity`.
-        if self.position_local_activity.within(
+        if self.reconciliation_book.0.borrow().positions.within(
             &key,
             Duration::from(self.config.position_check_threshold_ns),
         ) {
@@ -4798,7 +4899,7 @@ impl ExecutionManager {
         reason = "Snapshot and continuous reports share fill projection"
     )]
     fn reconcile_order_with_fills(
-        &mut self,
+        &self,
         is_snapshot: bool,
         order: &OrderAny,
         report: &OrderStatusReport,
@@ -4865,7 +4966,11 @@ impl ExecutionManager {
                     if let OrderEventAny::Filled(fill) = &event
                         && self.is_fill_applied(fill, fill_key)
                     {
-                        self.processed_fills.mark(fill_key);
+                        self.reconciliation_book
+                            .0
+                            .borrow_mut()
+                            .processed
+                            .mark(fill_key);
 
                         if matches!(
                             report.order_status,
@@ -5503,17 +5608,7 @@ impl ExecutionManager {
     }
 
     fn is_fill_applied(&self, fill: &OrderFilled, fill_key: FillKey) -> bool {
-        if fill.last_qty.is_zero() {
-            return false;
-        }
-
-        self.get_order(fill.client_order_id)
-            .or_else(|| self.get_order_by_venue_order_id(fill.venue_order_id))
-            .is_some_and(|order| {
-                order.account_id() == Some(fill_key.0)
-                    && order.instrument_id() == fill_key.1
-                    && order.trade_ids().contains(&&fill_key.2)
-            })
+        fill_is_applied(&self.cache.borrow(), fill, fill_key)
     }
 
     fn create_order_fill(
@@ -5529,7 +5624,14 @@ impl ExecutionManager {
         }
 
         let fill_key = (fill.account_id, fill.instrument_id, fill.trade_id);
-        if self.processed_fills.contains_key(&fill_key) || pending_fill_keys.contains(&fill_key) {
+        if self
+            .reconciliation_book
+            .0
+            .borrow()
+            .processed
+            .contains_key(&fill_key)
+            || pending_fill_keys.contains(&fill_key)
+        {
             return None;
         }
 
@@ -6433,7 +6535,7 @@ mod tests {
         #[case] residual_px: Price,
         #[case] event_count: usize,
     ) {
-        let (mut manager, _cache, order, mut report, instrument) = cached_commission_fixtures();
+        let (manager, _cache, order, mut report, instrument) = cached_commission_fixtures();
         report.order_status = status;
         report.filled_qty = filled_qty;
         report.avg_px = Some(dec!(60.0));
@@ -6550,7 +6652,7 @@ mod tests {
 
     #[rstest]
     fn test_cached_reconciliation_preserves_explicit_fill_side() {
-        let (mut manager, _cache, order, mut report, instrument) = cached_commission_fixtures();
+        let (manager, _cache, order, mut report, instrument) = cached_commission_fixtures();
         report.order_status = OrderStatus::PartiallyFilled;
         report.filled_qty = Quantity::from("4.0");
         let trade_id = TradeId::from("T-CONFLICTING-SIDE");
@@ -6594,7 +6696,7 @@ mod tests {
 
     #[rstest]
     fn test_continuous_report_preserves_newer_fills() {
-        let (mut manager, _cache, mut order, mut report, instrument) = cached_commission_fixtures();
+        let (manager, _cache, mut order, mut report, instrument) = cached_commission_fixtures();
         let fill = TestOrderEventStubs::filled(
             &order,
             &instrument,
@@ -6630,7 +6732,7 @@ mod tests {
     #[case::with_fills(true)]
     #[case::without_fills(false)]
     fn test_cached_snapshot_without_instrument_defers_unaccounted_fills(#[case] has_fills: bool) {
-        let (mut manager, _cache, order, mut report, _instrument) = cached_commission_fixtures();
+        let (manager, _cache, order, mut report, _instrument) = cached_commission_fixtures();
         report.order_status = OrderStatus::Canceled;
         let explicit_fill = FillReport::new(
             report.account_id,
@@ -7308,7 +7410,12 @@ mod tests {
             expect_inflight,
         );
         assert_eq!(
-            manager.order_local_activity.contains_key(&client_order_id),
+            manager
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .contains_key(&client_order_id),
             expect_activity,
         );
         assert_eq!(
@@ -7416,7 +7523,14 @@ mod tests {
         assert!(manager.inflight_checks.contains_key(&client_order_id));
         assert!(manager.recon_check_retries.contains_key(&client_order_id));
         assert!(manager.order_query_recency.contains_key(&client_order_id));
-        assert!(manager.order_local_activity.contains_key(&client_order_id));
+        assert!(
+            manager
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .contains_key(&client_order_id)
+        );
         assert!(
             manager
                 .missing_order_coverage_warnings
@@ -7513,7 +7627,14 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(order.status(), OrderStatus::Accepted);
         assert_eq!(order.venue_order_id(), Some(new_venue_order_id));
-        assert!(manager.order_local_activity.contains_key(&client_order_id));
+        assert!(
+            manager
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .contains_key(&client_order_id)
+        );
         assert!(
             manager
                 .prepare_missing_order_query(client_order_id)
@@ -7548,8 +7669,22 @@ mod tests {
 
         manager.prune_order_local_activity();
 
-        assert!(!manager.order_local_activity.contains_key(&old_id));
-        assert!(manager.order_local_activity.contains_key(&fresh_id));
+        assert!(
+            !manager
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .contains_key(&old_id)
+        );
+        assert!(
+            manager
+                .reconciliation_book
+                .0
+                .borrow()
+                .orders
+                .contains_key(&fresh_id)
+        );
     }
 
     #[rstest]
@@ -8120,7 +8255,7 @@ mod tests {
     fn test_mass_status_projects_companion_fill_before_void_correction() {
         let clock = Rc::new(RefCell::new(TestClock::new()));
         let cache = Rc::new(RefCell::new(Cache::default()));
-        let mut manager =
+        let manager =
             ExecutionManager::new(clock, cache.clone(), ExecutionManagerConfig::default())
                 .expect("valid config");
         let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());

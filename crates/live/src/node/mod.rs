@@ -124,6 +124,7 @@ use nautilus_trading::{
 use tabled::{builder::Builder, settings::Style};
 
 use crate::{
+    execution::report::ContinuousReportInput,
     execution::{
         client::LiveExecutionClient,
         manager::{
@@ -863,7 +864,7 @@ impl LiveNode {
     ///
     /// Returns an error if reconciliation fails or times out.
     #[expect(clippy::await_holding_refcell_ref)] // Single-threaded runtime, intentional design
-    async fn perform_startup_reconciliation(&mut self) -> anyhow::Result<()> {
+    async fn perform_startup_reconciliation(&self) -> anyhow::Result<()> {
         if !self.config.exec_engine.reconciliation {
             log::info!("Startup reconciliation disabled");
             self.kernel
@@ -925,6 +926,7 @@ impl LiveNode {
                         color = LogColor::Blue
                     );
 
+                    let _owner = self.owner_delivery.bind()?;
                     let result = self
                         .exec_manager
                         .reconcile_startup_mass_status(&mass_status, &self.kernel.exec_engine)?;
@@ -1485,6 +1487,7 @@ impl LiveNode {
 
         // Running phase: runs until shutdown deadline expires
         let mut residual_events = 0usize;
+        let mut reconciliation_failure = None;
         let mut open_order_report_task: Option<OpenOrderReportTask> = None;
         let mut targeted_order_report_task: Option<TargetedOrderReportTask> = None;
         let mut position_report_task: Option<PositionReportTask> = None;
@@ -1568,7 +1571,7 @@ impl LiveNode {
                         Some(task) => task.future.as_mut().await,
                         None => std::future::pending::<ReportTaskOutcome<OpenOrderReportResult>>().await,
                     }
-                }, if open_order_report_task.is_some() => {
+                }, if is_running && open_order_report_task.is_some() => {
                     let maintenance_start = dst::time::Instant::now();
 
                     drop(open_order_report_task.take());
@@ -1580,6 +1583,12 @@ impl LiveNode {
                                 .iter()
                                 .map(|client| client as &dyn ExecutionClient)
                                 .collect::<Vec<_>>();
+                            let original = ContinuousReportInput::Open {
+                                check: result.check.clone(),
+                                reports: result.reports.clone(),
+                                queried: result.queried_clients.clone(),
+                                failed: result.failed_clients.clone(),
+                            };
                             let reconciliation = self.exec_manager.reconcile_open_order_reports(
                                 &result.check,
                                 result.reports,
@@ -1587,8 +1596,9 @@ impl LiveNode {
                                 &result.failed_clients,
                                 &client_refs,
                             );
-                            self.process_reconciliation_events(&reconciliation.events);
-                            if !reconciliation.targeted_queries.is_empty() {
+                            if self.apply_continuous_report(
+                                original, reconciliation.events, &mut reconciliation_failure,
+                            ) && !reconciliation.targeted_queries.is_empty() {
                                 targeted_order_report_task = Some(
                                     self.start_targeted_order_report_check(
                                         reconciliation.targeted_queries,
@@ -1611,7 +1621,7 @@ impl LiveNode {
                         Some(task) => task.future.as_mut().await,
                         None => std::future::pending::<ReportTaskOutcome<Vec<TargetedOrderReportResult>>>().await,
                     }
-                }, if targeted_order_report_task.is_some() => {
+                }, if is_running && targeted_order_report_task.is_some() => {
                     let maintenance_start = dst::time::Instant::now();
 
                     let planned_client_order_ids = targeted_order_report_task
@@ -1627,10 +1637,11 @@ impl LiveNode {
                                 .iter()
                                 .map(|client| client as &dyn ExecutionClient)
                                 .collect::<Vec<_>>();
+                            let original = ContinuousReportInput::Targeted(result.clone());
                             let events = self
                                 .exec_manager
                                 .reconcile_targeted_order_reports(result, &client_refs);
-                            self.process_reconciliation_events(&events);
+                            self.apply_continuous_report(original, events, &mut reconciliation_failure);
                         }
                         ReportTaskOutcome::TimedOut => {
                             self.cleanup_cancelled_report_tasks(&planned_client_order_ids);
@@ -1647,7 +1658,7 @@ impl LiveNode {
                         Some(task) => task.future.as_mut().await,
                         None => std::future::pending::<ReportTaskOutcome<PositionReportTaskResult>>().await,
                     }
-                }, if position_report_task.is_some() => {
+                }, if is_running && position_report_task.is_some() => {
                     let maintenance_start = dst::time::Instant::now();
 
                     drop(position_report_task.take());
@@ -1657,7 +1668,7 @@ impl LiveNode {
                             position_report_task = self.handle_position_report_result(result);
                         }
                         ReportTaskOutcome::Completed(PositionReportTaskResult::Fills(result)) => {
-                            self.handle_position_fill_report_result(result);
+                            self.handle_position_fill_report_result(result, &mut reconciliation_failure);
                         }
                         ReportTaskOutcome::TimedOut => {
                             self.cleanup_cancelled_report_tasks(&[]);
@@ -1712,6 +1723,7 @@ impl LiveNode {
                             now,
                             recon_intervals,
                             &mut recon_state,
+                            &mut reconciliation_failure,
                         );
 
                         now = dst::time::Instant::now();
@@ -1924,6 +1936,13 @@ impl LiveNode {
 
         log::info!("Event loop stopped");
 
+        if let Some(error) = reconciliation_failure {
+            return Err(match stop_result {
+                Ok(()) => error,
+                Err(stop_error) => error.context(format!("Shutdown also failed: {stop_error:#}")),
+            });
+        }
+
         if let Some(error) = self.owner_delivery.failure() {
             stop_result?;
             return Err(error.into());
@@ -2067,29 +2086,48 @@ impl LiveNode {
         }
     }
 
-    fn process_reconciliation_events(&mut self, events: &[OrderEventAny]) {
-        if events.is_empty() {
-            return;
-        }
-
-        log::info!(
-            "Processing {} reconciliation event{}",
-            events.len(),
-            if events.len() == 1 { "" } else { "s" }
-        );
-
-        for event in events {
-            self.exec_manager
-                .record_local_activity(event.client_order_id());
-            if let OrderEventAny::Filled(fill) = event {
-                self.exec_manager
-                    .record_position_activity(fill.instrument_id, fill.account_id);
+    fn apply_continuous_report(
+        &mut self,
+        original: ContinuousReportInput,
+        events: Vec<OrderEventAny>,
+        failure: &mut Option<anyhow::Error>,
+    ) -> bool {
+        let outcome = self
+            .owner_delivery
+            .bind()
+            .map_err(anyhow::Error::from)
+            .and_then(|_binding| {
+                self.exec_manager.apply_continuous_reconciliation(
+                    &self.kernel.exec_engine,
+                    original,
+                    events,
+                )
+            });
+        match outcome {
+            Ok(()) => true,
+            Err(error) => {
+                log::error!("Continuous reconciliation application failed: {error:#}");
+                failure.get_or_insert(error);
+                if self.state() == NodeState::Running {
+                    self.initiate_shutdown();
+                }
+                false
             }
-            self.kernel.exec_engine.borrow_mut().process(event);
-            if let OrderEventAny::Filled(fill) = event {
-                self.exec_manager.commit_recent_fill_if_applied(fill);
-            }
         }
+    }
+
+    #[cfg(test)]
+    fn process_reconciliation_events(&mut self, events: &[OrderEventAny]) -> anyhow::Result<()> {
+        let original = ContinuousReportInput::Inflight {
+            checked_at: dst::time::Instant::now(),
+            result: crate::execution::manager::InflightCheckResult {
+                events: events.to_vec(),
+                queries: Vec::new(),
+            },
+        };
+        let mut failure = None;
+        self.apply_continuous_report(original, events.to_vec(), &mut failure);
+        failure.map_or(Ok(()), Err)
     }
 
     fn process_exec_event(&mut self, event: ExecutionEvent) {
@@ -2921,13 +2959,20 @@ impl LiveNode {
         now: dst::time::Instant,
         intervals: ReconciliationCheckIntervals,
         state: &mut ReconciliationCheckState<'_>,
+        failure: &mut Option<anyhow::Error>,
     ) {
         if reconciliation_check_due(now, *state.last_inflight_check, intervals.inflight) {
             if self.state() == NodeState::ShuttingDown {
                 return;
             }
             let result = self.exec_manager.check_inflight_orders();
-            self.process_reconciliation_events(&result.events);
+            let original = ContinuousReportInput::Inflight {
+                checked_at: now,
+                result: result.clone(),
+            };
+            if !self.apply_continuous_report(original, result.events, failure) {
+                return;
+            }
             for cmd in result.queries {
                 AsyncRunner::handle_exec_command(cmd);
             }
@@ -3146,7 +3191,19 @@ impl LiveNode {
         Some(self.start_position_fill_report_check(result, plan.queries))
     }
 
-    fn handle_position_fill_report_result(&mut self, result: PositionFillReportResult) {
+    fn handle_position_fill_report_result(
+        &mut self,
+        result: PositionFillReportResult,
+        failure: &mut Option<anyhow::Error>,
+    ) {
+        let original = ContinuousReportInput::Position {
+            check: result.position_result.check.clone(),
+            reports: result.position_result.reports.clone(),
+            queried: result.position_result.queried_clients.clone(),
+            failed: result.position_result.failed_clients.clone(),
+            fills: result.reports.clone(),
+            successful: result.successful_keys.clone(),
+        };
         let PositionFillReportResult {
             mut position_result,
             mut reports,
@@ -3244,6 +3301,10 @@ impl LiveNode {
                 self.process_exec_event(ExecutionEvent::Report(ExecutionReport::Fill(Box::new(
                     report.clone(),
                 ))));
+                if let Some(error) = self.owner_delivery.failure() {
+                    failure.get_or_insert_with(|| error.into());
+                    return;
+                }
                 dispatches += 1;
                 let next_revision = expected_revision.saturating_add(1);
                 if self.exec_manager.position_activity_revision(&key) != next_revision
@@ -3288,7 +3349,7 @@ impl LiveNode {
             &position_result.queried_clients,
             &position_result.failed_clients,
         );
-        self.process_reconciliation_events(&events);
+        self.apply_continuous_report(original, events, failure);
     }
 
     fn flush_pending_exec_client_instruments(&self) {
@@ -5279,7 +5340,20 @@ mod tests {
         };
         let fill = fill.clone();
 
-        node.process_reconciliation_events(&[fill_event]);
+        if applied {
+            add_reconciliation_margin_account(&node, fill.account_id);
+        }
+        let result = node.process_reconciliation_events(&[fill_event]);
+        if applied {
+            result.unwrap();
+        } else {
+            let error = result.expect_err("unresolved order must fail reconciliation");
+            assert!(
+                format!("{error:#}")
+                    .contains("Cannot resolve canonical order for O-CONTINUOUS-UNKNOWN"),
+                "{error:#}"
+            );
+        }
 
         assert_eq!(is_recent_fill(&node, &fill), applied);
     }
@@ -5353,7 +5427,8 @@ mod tests {
         };
         let fill = fill.clone();
 
-        node.process_reconciliation_events(&[inferred]);
+        add_reconciliation_margin_account(&node, fill.account_id);
+        node.process_reconciliation_events(&[inferred]).unwrap();
 
         assert!(fill.reconciliation);
         assert!(is_recent_fill(&node, &fill));
@@ -5592,11 +5667,14 @@ mod tests {
         let key = (venue_report.instrument_id, venue_report.account_id);
         let position_result = position_report_result(&node, venue_report);
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result,
-            reports: IndexMap::from([(key, vec![fill_report.clone()])]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result,
+                reports: IndexMap::from([(key, vec![fill_report.clone()])]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let cache = node.kernel.cache.borrow();
         let positions = cache.positions_open(None, Some(&key.0), None, Some(&key.1), None);
@@ -5626,11 +5704,14 @@ mod tests {
         let key = (venue_report.instrument_id, venue_report.account_id);
         let position_result = position_report_result(&node, venue_report);
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result,
-            reports: IndexMap::from([(key, vec![fill_report.clone()])]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result,
+                reports: IndexMap::from([(key, vec![fill_report.clone()])]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let mut rest_report = fill_report;
         rest_report.ts_event = UnixNanos::from(2_000);
@@ -5665,11 +5746,17 @@ mod tests {
         later_fill_report.ts_event = UnixNanos::from(1_001);
         let position_result = position_report_result(&node, venue_report);
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result,
-            reports: IndexMap::from([(key, vec![fill_report.clone(), later_fill_report.clone()])]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result,
+                reports: IndexMap::from([(
+                    key,
+                    vec![fill_report.clone(), later_fill_report.clone()],
+                )]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let cache = node.kernel.cache.borrow();
         let order = cache.order(&client_order_id).unwrap();
@@ -5718,18 +5805,24 @@ mod tests {
         let key = (venue_report.instrument_id, venue_report.account_id);
         let first_result = position_report_result(&node, venue_report.clone());
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result: first_result,
-            reports: IndexMap::from([(key, vec![fill_report])]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result: first_result,
+                reports: IndexMap::from([(key, vec![fill_report])]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let fresh_result = position_report_result(&node, venue_report);
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result: fresh_result,
-            reports: IndexMap::from([(key, Vec::new())]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result: fresh_result,
+                reports: IndexMap::from([(key, Vec::new())]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let cache = node.kernel.cache.borrow();
         let positions = cache.positions_open(None, Some(&key.0), None, Some(&key.1), None);
@@ -5753,11 +5846,14 @@ mod tests {
         let key = (venue_report.instrument_id, venue_report.account_id);
         let position_result = position_report_result(&node, venue_report);
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result,
-            reports: IndexMap::new(),
-            successful_keys: IndexSet::new(),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result,
+                reports: IndexMap::new(),
+                successful_keys: IndexSet::new(),
+            },
+            &mut None,
+        );
 
         let cache = node.kernel.cache.borrow();
         let positions = cache.positions_open(None, Some(&key.0), None, Some(&key.1), None);
@@ -5789,11 +5885,14 @@ mod tests {
         fill_report.venue_order_id = VenueOrderId::from("V-POSITION-EXTERNAL");
         let position_result = position_report_result(&node, venue_report);
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result,
-            reports: IndexMap::from([(key, vec![fill_report.clone()])]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result,
+                reports: IndexMap::from([(key, vec![fill_report.clone()])]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let cache = node.kernel.cache.borrow();
         let positions = cache.positions_open(None, Some(&key.0), None, Some(&key.1), None);
@@ -5821,11 +5920,14 @@ mod tests {
         let position_result = position_report_result(&node, venue_report);
         node.exec_manager.record_position_activity(key.0, key.1);
 
-        node.handle_position_fill_report_result(PositionFillReportResult {
-            position_result,
-            reports: IndexMap::from([(key, vec![fill_report.clone()])]),
-            successful_keys: IndexSet::from([key]),
-        });
+        node.handle_position_fill_report_result(
+            PositionFillReportResult {
+                position_result,
+                reports: IndexMap::from([(key, vec![fill_report.clone()])]),
+                successful_keys: IndexSet::from([key]),
+            },
+            &mut None,
+        );
 
         let cache = node.kernel.cache.borrow();
         let positions = cache.positions_open(None, Some(&key.0), None, Some(&key.1), None);
@@ -6813,6 +6915,7 @@ mod tests {
                 targeted_order_report_task: &mut targeted_order_report_task,
                 position_report_task: &mut position_report_task,
             },
+            &mut None,
         );
 
         let commands = trading_commands.borrow();
@@ -6945,7 +7048,29 @@ mod tests {
         )
         .unwrap();
 
-        node.process_reconciliation_events(&[inferred]);
+        node.process_reconciliation_events(&[inferred]).unwrap();
+    }
+
+    fn add_reconciliation_margin_account(node: &LiveNode, account_id: AccountId) {
+        let account = AccountAny::Margin(MarginAccount::new(
+            AccountState::new(
+                account_id,
+                AccountType::Margin,
+                vec![AccountBalance::new(
+                    Money::from("1000000 USDT"),
+                    Money::from("0 USDT"),
+                    Money::from("1000000 USDT"),
+                )],
+                Vec::new(),
+                true,
+                UUID4::new(),
+                UnixNanos::default(),
+                UnixNanos::default(),
+                Some(Currency::USDT()),
+            ),
+            true,
+        ));
+        node.kernel.cache.borrow_mut().add_account(account).unwrap();
     }
 
     fn position_fill_test_fixture(
@@ -6966,25 +7091,7 @@ mod tests {
         let client_order_id = ClientOrderId::from("O-POSITION-FILLS");
         let venue_order_id = VenueOrderId::from("V-POSITION-FILLS");
         let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
-        let account = AccountAny::Margin(MarginAccount::new(
-            AccountState::new(
-                account_id,
-                AccountType::Margin,
-                vec![AccountBalance::new(
-                    Money::from("1000000 USDT"),
-                    Money::from("0 USDT"),
-                    Money::from("1000000 USDT"),
-                )],
-                Vec::new(),
-                true,
-                UUID4::new(),
-                UnixNanos::default(),
-                UnixNanos::default(),
-                Some(Currency::USDT()),
-            ),
-            true,
-        ));
-        node.kernel.cache.borrow_mut().add_account(account).unwrap();
+        add_reconciliation_margin_account(&node, account_id);
         node.kernel
             .cache
             .borrow_mut()
@@ -7020,7 +7127,7 @@ mod tests {
             unreachable!();
         };
         fill.commission = Some(Money::zero(instrument.quote_currency()));
-        node.process_reconciliation_events(&[initial_fill]);
+        node.process_reconciliation_events(&[initial_fill]).unwrap();
 
         let ts_event = UnixNanos::from(1_000);
         let fill_report = FillReport::new(

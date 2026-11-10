@@ -441,6 +441,11 @@ pub trait OwnerReportDriver: fmt::Debug {
     /// # Errors
     /// Returns a preparation failure with the driver still owned by the node.
     fn prepare_next(&mut self) -> Result<OwnerReportNext, OwnerDeliveryError>;
+
+    /// Index of the next event in the immutable prepared input, if the driver has one.
+    fn next_prepared_event_index(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -506,7 +511,7 @@ impl ReportTask {
             kind: self.kind,
             stage: self.stage,
             event: self.event.clone(),
-            next_prepared_event_index: None,
+            next_prepared_event_index: self.submission.driver.next_prepared_event_index(),
             error: self.error.unwrap_or(error),
         }
     }

@@ -20,6 +20,7 @@ pub mod manager;
 pub mod reports;
 
 pub(crate) mod recency;
+pub(crate) mod report;
 
 #[cfg(feature = "node")]
 pub(crate) mod client;

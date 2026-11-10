@@ -1447,8 +1447,7 @@ pub(crate) mod serial_tests {
             .unwrap();
     }
 
-    fn add_reconciliation_test_account(node: &LiveNode) {
-        let account_id = AccountId::from("BLOCKING-REPORT-001");
+    fn add_reconciliation_test_account(node: &LiveNode, account_id: AccountId) {
         let account = MarginAccount::new(
             AccountState::new(
                 account_id,
@@ -1524,7 +1523,7 @@ pub(crate) mod serial_tests {
             .borrow_mut()
             .add_instrument(InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt()))
             .unwrap();
-        add_reconciliation_test_account(node);
+        add_reconciliation_test_account(node, AccountId::from("BLOCKING-REPORT-001"));
     }
 
     fn apply_reconciliation_events(node: &mut LiveNode, events: &[OrderEventAny]) {
@@ -2542,8 +2541,12 @@ pub(crate) mod serial_tests {
     }
 
     #[rstest]
+    #[case::known_account(true)]
+    #[case::missing_account(false)]
     #[tokio::test]
-    async fn test_startup_mass_status_registers_external_order_with_source_client() {
+    async fn test_startup_mass_status_registers_external_order_with_source_client(
+        #[case] has_account: bool,
+    ) {
         let config = LiveNodeConfig {
             exec_engine: LiveExecutionEngineConfig {
                 reconciliation: true,
@@ -2618,7 +2621,23 @@ pub(crate) mod serial_tests {
             .add_instrument(InstrumentAny::CryptoPerpetual(instrument))
             .unwrap();
 
-        node.start().await.unwrap();
+        if has_account {
+            add_reconciliation_test_account(&node, source_account_id);
+        }
+        let result = node.start().await;
+        if !has_account {
+            let error = result.expect_err("startup must surface a missing portfolio account");
+            assert!(
+                format!("{error:#}").contains("account not found in cache: ROUTING-001"),
+                "{error:#}"
+            );
+            assert_eq!(node.state(), NodeState::Stopped);
+            assert!(source_state.registered_external_orders.lock().is_empty());
+            assert!(venue_state.registered_external_orders.lock().is_empty());
+            node.dispose();
+            return;
+        }
+        result.unwrap();
 
         assert_eq!(
             node.kernel()
@@ -2744,6 +2763,7 @@ pub(crate) mod serial_tests {
             source_account_id,
             source_venue,
         );
+        add_reconciliation_test_account(&node, source_account_id);
         add_accepted_test_order_with_origin(
             &node,
             client_order_id,
@@ -2848,6 +2868,7 @@ pub(crate) mod serial_tests {
     async fn test_startup_reconciliation_respects_position_write_outcome(
         #[case] fail_position_write: bool,
     ) {
+        use nautilus_common::owner_delivery::{OwnerDeliveryError, current_observer};
         use nautilus_testkit::cache::TestCacheDatabaseControl;
 
         let source = ClientId::from("STARTUP-POSITION-WRITE");
@@ -2865,7 +2886,7 @@ pub(crate) mod serial_tests {
             account,
             venue,
         );
-        add_reconciliation_test_account(&node);
+        add_reconciliation_test_account(&node, AccountId::from("BLOCKING-REPORT-001"));
         let predecessor = ClientOrderId::from("STARTUP-RECON-PREDECESSOR");
         add_accepted_test_order(
             &node,
@@ -2891,6 +2912,7 @@ pub(crate) mod serial_tests {
         };
         add_accepted_test_order(&node, client_order, venue_order, source);
         let mut mass = ExecutionMassStatus::new(source, account, venue, UnixNanos::default(), None);
+        let source_report_id = mass.report_id;
         mass.add_order_reports(vec![
             terminal_order_report(
                 client_order,
@@ -2924,8 +2946,11 @@ pub(crate) mod serial_tests {
         control.set_fail_update_position(fail_position_write);
         let pending_database = RefCell::new(Some(database));
         let cache_for_install = cache.clone();
+        let retained_observer = Rc::new(RefCell::new(None));
+        let observed_at_raw_capture = retained_observer.clone();
         let handler = ShareableMessageHandler::from_typed(move |_fill: &FillReport| {
             if let Some(database) = pending_database.borrow_mut().take() {
+                *observed_at_raw_capture.borrow_mut() = current_observer();
                 cache_for_install
                     .borrow_mut()
                     .set_database(Box::new(database));
@@ -2946,6 +2971,12 @@ pub(crate) mod serial_tests {
                 order.trade_ids().contains(&&second),
             )
         };
+        let retained = retained_observer
+            .borrow()
+            .as_ref()
+            .expect("startup raw capture is inside the live node owner binding")
+            .retained_reports()
+            .unwrap();
         let startup_state = node.state();
         if node.is_running() {
             node.stop().await.unwrap();
@@ -2965,10 +2996,24 @@ pub(crate) mod serial_tests {
                 (true, false),
                 "failed persistence stops the next fill"
             );
+            assert_eq!(retained.len(), 1);
+            let failure = &retained[0];
+            assert_eq!(failure.error, OwnerDeliveryError::NativeAction);
+            assert!(
+                matches!(failure.event.as_ref(), Some(OrderEventAny::Filled(fill)) if fill.trade_id == first)
+            );
+            assert!(matches!(failure.input.reports.as_slice(),
+                [nautilus_common::messages::ExecutionReport::MassStatus(mass)] if mass.report_id == source_report_id));
+            let next = failure
+                .next_prepared_event_index
+                .expect("unapplied event cursor");
+            assert!(matches!(failure.input.prepared_events.get(next),
+                Some(OrderEventAny::Filled(fill)) if fill.trade_id == second));
         } else {
             result.unwrap();
             assert_eq!(startup_state, NodeState::Running);
             assert_eq!(seen, (true, true));
+            assert!(retained.is_empty());
         }
     }
 
@@ -4294,6 +4339,144 @@ pub(crate) mod serial_tests {
     }
 
     #[rstest]
+    #[case::bulk_open(false)]
+    #[case::targeted(true)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_continuous_reconciliation_stops_at_failed_position_write(#[case] targeted: bool) {
+        use nautilus_common::owner_delivery::{OwnerDeliveryError, current_observer};
+        use nautilus_testkit::cache::TestCacheDatabaseControl;
+
+        let source = ClientId::from("BLOCKING-REPORT");
+        let account = AccountId::from("BLOCKING-REPORT-001");
+        let client_order = ClientOrderId::from("O-CONTINUOUS-WRITE");
+        let venue_order = VenueOrderId::from("V-CONTINUOUS-WRITE");
+        let seed = TradeId::from("T-CONTINUOUS-SEED");
+        let first = TradeId::from("T-CONTINUOUS-FIRST");
+        let second = TradeId::from("T-CONTINUOUS-SECOND");
+        let state = BlockingReportClientState::default();
+        let report = terminal_order_report(
+            client_order,
+            venue_order,
+            OrderStatus::Canceled,
+            Quantity::from("3.0"),
+        );
+        let fills = [seed, first, second]
+            .into_iter()
+            .zip([1_000_000_u64, 2_000_000, 3_000_000])
+            .map(|(trade, ts)| {
+                reconciliation_fill_report(
+                    client_order,
+                    venue_order,
+                    trade,
+                    Price::from("100.0"),
+                    Money::from("0 USDT"),
+                    UnixNanos::from(ts),
+                )
+            })
+            .collect();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let factory =
+            BlockingReportExecutionClientFactory::configurable(source, account, state.clone())
+                .with_fill_report_responses([fills], Some(release.clone()));
+        let factory = if targeted {
+            factory
+                .with_order_reports(Vec::new())
+                .with_targeted_order_report(report)
+        } else {
+            factory.with_order_reports(vec![report])
+        };
+        let mut node = reconciliation_node(
+            "ContinuousPositionWriteNode",
+            reconciliation_node_config(1),
+            factory,
+        );
+        add_accepted_test_order(&node, client_order, venue_order, source);
+        let seed_fill = streamed_fill(
+            &node,
+            client_order,
+            seed,
+            Price::from("100.0"),
+            Money::from("0 USDT"),
+            UnixNanos::from(1_000_000),
+        );
+        node.kernel().exec_engine().borrow_mut().process(&seed_fill);
+        let cache = node.kernel().cache();
+        assert_eq!(
+            cache
+                .borrow()
+                .positions_open_count(None, None, None, Some(&account), None),
+            1
+        );
+
+        let handle = node.handle();
+        let driver_cache = cache.clone();
+        let driver = async {
+            wait_until_async(
+                || async { state.fill_report_count.load(Ordering::Relaxed) >= 1 },
+                Duration::from_secs(2),
+            )
+            .await;
+            let observer = current_observer().expect("running node owner");
+            let (database, control) = TestCacheDatabaseControl::create();
+            control.set_fail_update_position(true);
+            driver_cache.borrow_mut().set_database(Box::new(database));
+            release.notify_one();
+            wait_until_async(
+                || async {
+                    driver_cache
+                        .borrow()
+                        .order(&client_order)
+                        .is_some_and(|order| order.trade_ids().contains(&&first))
+                },
+                Duration::from_secs(2),
+            )
+            .await;
+            handle.stop();
+            observer
+        };
+
+        let (observer, result) = tokio::join!(driver, node.run());
+        let order = cache.borrow().order_owned(&client_order).unwrap();
+        assert!(state.fill_report_count.load(Ordering::Relaxed) > 0);
+        assert!(
+            order.trade_ids().contains(&&first),
+            "first fill reached the order cache"
+        );
+        let error = result.expect_err("continuous position write failure must stop its owner");
+        assert!(
+            format!("{error:#}").contains("test position update failure"),
+            "{error:#}"
+        );
+        let retained = observer.retained_reports().unwrap();
+        assert_eq!(retained.len(), 1);
+        let failure = &retained[0];
+        assert_eq!(failure.error, OwnerDeliveryError::NativeAction);
+        assert!(
+            matches!(failure.event.as_ref(), Some(OrderEventAny::Filled(fill)) if fill.trade_id == first)
+        );
+        let next = failure
+            .next_prepared_event_index
+            .expect("unapplied event cursor");
+        assert!(matches!(failure.input.prepared_events.get(next),
+            Some(OrderEventAny::Filled(fill)) if fill.trade_id == second));
+        let instrument = crypto_perpetual_ethusdt().id();
+        assert!(
+            node.exec_manager()
+                .is_fill_recently_processed(account, instrument, first)
+        );
+        assert!(
+            !node
+                .exec_manager()
+                .is_fill_recently_processed(account, instrument, second)
+        );
+        assert!(
+            !order.trade_ids().contains(&&second),
+            "the second fill remains eligible after the first write failure"
+        );
+        assert_eq!(handle.state(), NodeState::Stopped);
+    }
+
+    #[rstest]
     #[case::stream_before_bulk_canceled(true, false, false, OrderStatus::Canceled)]
     #[case::report_before_targeted_expired(false, true, false, OrderStatus::Expired)]
     #[case::fill_query_timeout_retries(false, false, true, OrderStatus::Canceled)]
@@ -4504,7 +4687,7 @@ pub(crate) mod serial_tests {
             account_id,
             venue,
         );
-        add_reconciliation_test_account(&node);
+        add_reconciliation_test_account(&node, AccountId::from("BLOCKING-REPORT-001"));
         add_accepted_test_order(&node, client_order_id, venue_order_id, source_client_id);
         let cache = node.kernel().cache();
         let handle = node.handle();
