@@ -874,11 +874,6 @@ impl Trader {
             Self::start_component_if_not_running(actor_id.inner())?;
         }
 
-        for strategy_id in strategy_ids {
-            log::debug!("Starting strategy {strategy_id}");
-            Self::start_component_if_not_running(strategy_id.inner())?;
-        }
-
         let mut restored_exec_algorithm_ids = Vec::new();
 
         for exec_algorithm_id in exec_algorithm_ids {
@@ -887,12 +882,25 @@ impl Trader {
                 Ok(true) => restored_exec_algorithm_ids.push(exec_algorithm_id),
                 Ok(false) => {}
                 Err(start_err) => {
-                    return Err(self.exec_algorithm_start_error_with_rollback(
-                        exec_algorithm_id,
+                    return Err(self.component_start_error_with_algorithm_rollback(
+                        exec_algorithm_id.inner(),
                         &restored_exec_algorithm_ids,
                         start_err,
                     ));
                 }
+            }
+        }
+
+        // Strategy startup can synchronously route an order to an execution
+        // algorithm, which must already be running to receive it.
+        for strategy_id in strategy_ids {
+            log::debug!("Starting strategy {strategy_id}");
+            if let Err(e) = Self::start_component_if_not_running(strategy_id.inner()) {
+                return Err(self.component_start_error_with_algorithm_rollback(
+                    strategy_id.inner(),
+                    &restored_exec_algorithm_ids,
+                    e,
+                ));
             }
         }
 
@@ -923,11 +931,6 @@ impl Trader {
             Self::start_component_if_not_running(actor_id.inner())?;
         }
 
-        for strategy_id in strategy_ids {
-            log::debug!("Starting strategy {strategy_id}");
-            Self::start_component_if_not_running(strategy_id.inner())?;
-        }
-
         let mut restored_exec_algorithm_ids = Vec::new();
 
         for exec_algorithm_id in exec_algorithm_ids {
@@ -937,8 +940,8 @@ impl Trader {
                 Err(start_err) => {
                     let e = trader
                         .borrow_mut()
-                        .exec_algorithm_start_error_with_rollback(
-                            exec_algorithm_id,
+                        .component_start_error_with_algorithm_rollback(
+                            exec_algorithm_id.inner(),
                             &restored_exec_algorithm_ids,
                             start_err,
                         );
@@ -956,8 +959,8 @@ impl Trader {
             {
                 let e = trader
                     .borrow_mut()
-                    .exec_algorithm_start_error_with_rollback(
-                        exec_algorithm_id,
+                    .component_start_error_with_algorithm_rollback(
+                        exec_algorithm_id.inner(),
                         &restored_exec_algorithm_ids,
                         start_err,
                     );
@@ -968,12 +971,26 @@ impl Trader {
             if let Err(start_err) = start_component(&exec_algorithm_id.inner()) {
                 let e = trader
                     .borrow_mut()
-                    .exec_algorithm_start_error_with_rollback(
-                        exec_algorithm_id,
+                    .component_start_error_with_algorithm_rollback(
+                        exec_algorithm_id.inner(),
                         &restored_exec_algorithm_ids,
                         start_err,
                     );
                 return Err(e);
+            }
+        }
+
+        // Start strategies only after their algorithm endpoints are ready
+        for strategy_id in strategy_ids {
+            log::debug!("Starting strategy {strategy_id}");
+            if let Err(e) = Self::start_component_if_not_running(strategy_id.inner()) {
+                return Err(trader
+                    .borrow_mut()
+                    .component_start_error_with_algorithm_rollback(
+                        strategy_id.inner(),
+                        &restored_exec_algorithm_ids,
+                        e,
+                    ));
             }
         }
 
@@ -1054,16 +1071,16 @@ impl Trader {
         }
     }
 
-    fn exec_algorithm_start_error_with_rollback(
+    fn component_start_error_with_algorithm_rollback(
         &mut self,
-        exec_algorithm_id: ExecAlgorithmId,
+        component_id: Ustr,
         restored_exec_algorithm_ids: &[ExecAlgorithmId],
         start_err: anyhow::Error,
     ) -> anyhow::Error {
         match self.cleanup_exec_algorithm_subscriptions_for(restored_exec_algorithm_ids) {
             Ok(()) => start_err,
             Err(cleanup_err) => anyhow::anyhow!(
-                "Failed while starting execution algorithm {exec_algorithm_id}: {start_err:#}; \
+                "Failed while starting component {component_id}: {start_err:#}; \
                  failed to roll back restored subscriptions: {cleanup_err:#}"
             ),
         }

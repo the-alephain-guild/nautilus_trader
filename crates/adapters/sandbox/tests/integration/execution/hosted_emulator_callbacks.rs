@@ -1002,3 +1002,279 @@ asyncio.run(exercise())
         module.call_method0("cleanup").unwrap();
     });
 }
+
+#[rstest]
+fn test_hosted_twap_timer_children_preserve_canonical_fills_and_callback_writer() {
+    use nautilus_model::identifiers::ExecAlgorithmId;
+    use nautilus_trading::algorithm::twap::{TwapAlgorithm, TwapAlgorithmConfig};
+
+    Python::initialize();
+    let trader_id = TraderId::from("TIMED-001");
+    let account_id = AccountId::from("SIM-001");
+    let client_id = ClientId::from("TIMED");
+    let config = LiveNodeConfig {
+        trader_id,
+        environment: Environment::Sandbox,
+        timeout_connection: Duration::from_secs(3),
+        timeout_disconnection: Duration::from_millis(500),
+        delay_post_stop: Duration::ZERO,
+        timeout_shutdown: Duration::from_millis(500),
+        exec_engine: LiveExecutionEngineConfig {
+            reconciliation: false,
+            ..Default::default()
+        },
+        portfolio: Some(Default::default()),
+        ..Default::default()
+    };
+    let mut node = LiveNodeBuilder::from_config(config)
+        .unwrap()
+        .with_logging(LoggerConfig {
+            bypass_logging: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    let algorithm_id = ExecAlgorithmId::new("TWAP");
+    node.add_exec_algorithm(TwapAlgorithm::new(TwapAlgorithmConfig {
+        exec_algorithm_id: Some(algorithm_id),
+        ..Default::default()
+    }))
+    .unwrap();
+    let cache = node.kernel().cache();
+    let engine = node.kernel().exec_engine().clone();
+    let clock = node.kernel().clock();
+    let now = clock.borrow().timestamp_ns();
+    let mut instrument = binary_option();
+    instrument.id = InstrumentId::from("TIMED.SIM");
+    instrument.activation_ns = UnixNanos::from(1);
+    instrument.expiration_ns = UnixNanos::from(now.as_u64() + 86_400_000_000_000);
+    instrument.maker_fee = Decimal::ZERO;
+    instrument.taker_fee = Decimal::ZERO;
+    let instrument = InstrumentAny::BinaryOption(instrument);
+    {
+        let mut cache = cache.borrow_mut();
+        cache.add_instrument(instrument.clone()).unwrap();
+        cache
+            .add_quote(QuoteTick::new(
+                instrument.id(),
+                Price::from("0.400"),
+                Price::from("0.410"),
+                Quantity::from("10000.00"),
+                Quantity::from("10000.00"),
+                now,
+                now,
+            ))
+            .unwrap();
+    }
+    let observer = Python::attach(|py| {
+        let module = PyModule::new(py, "hosted_twap_observer").unwrap();
+        module
+            .setattr("Strategy", py.get_type::<PyStrategy>())
+            .unwrap();
+        module
+            .setattr("client_id", client_id.into_py_any(py).unwrap())
+            .unwrap();
+        py.run(
+            c_str!(
+                r#"
+import sqlite3
+import tempfile
+from pathlib import Path
+
+directory = tempfile.TemporaryDirectory()
+database = Path(directory.name) / "twap.sqlite3"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE fills (event_id TEXT PRIMARY KEY, order_id TEXT UNIQUE)")
+filled = []
+errors = []
+
+class TimedStrategy(Strategy):
+    def on_start(self):
+        self.submit_order(self.order, client_id=client_id)
+    def on_stop(self): pass
+    def on_dispose(self): pass
+    def on_order_denied(self, event):
+        errors.append(("denied", str(event.client_order_id), str(event.reason)))
+    def on_order_rejected(self, event):
+        errors.append(("rejected", str(event.client_order_id), str(event.reason)))
+    def on_order_filled(self, event):
+        try:
+            assert str(self.cache.order(event.client_order_id).status) == "FILLED"
+            row = (str(event.event_id), str(event.client_order_id))
+            with sqlite3.connect(database, timeout=0) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("INSERT INTO fills VALUES (?, ?)", row)
+            filled.append(row)
+        except BaseException as error:
+            errors.append(repr(error))
+            raise
+
+strategy = TimedStrategy()
+def mark_waiting(): pass
+def records():
+    with sqlite3.connect(database) as connection:
+        return connection.execute("SELECT event_id,order_id FROM fills ORDER BY rowid").fetchall()
+def cleanup(): directory.cleanup()
+"#
+            ),
+            Some(&module.dict()),
+            None,
+        )
+        .unwrap();
+        module.unbind()
+    });
+    let strategy = Python::attach(|py| observer.bind(py).getattr("strategy").unwrap().unbind());
+    let strategy_id = node
+        .kernel()
+        .trader()
+        .borrow_mut()
+        .add_python_strategy_instance(&strategy)
+        .unwrap();
+    let primary_id = ClientOrderId::from("TIMED-PARENT");
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .trader_id(trader_id)
+        .strategy_id(strategy_id)
+        .instrument_id(instrument.id())
+        .client_order_id(primary_id)
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from("120.00"))
+        .exec_algorithm_id(algorithm_id)
+        .exec_spawn_id(primary_id)
+        .exec_algorithm_params(
+            [
+                (Ustr::from("horizon_secs"), Ustr::from("0.375")),
+                (Ustr::from("interval_secs"), Ustr::from("0.125")),
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .build();
+    Python::attach(|py| {
+        strategy
+            .bind(py)
+            .setattr("order", order_any_to_pyobject(py, order).unwrap())
+            .unwrap();
+    });
+
+    let client_config = SandboxExecutionClientConfig {
+        account_id,
+        venue: Venue::from("SIM"),
+        account_type: AccountType::Cash,
+        oms_type: OmsType::Netting,
+        base_currency: Some(Currency::USDC()),
+        starting_balances: vec![Money::from("100000 USDC")],
+        ..Default::default()
+    };
+    let core = ExecutionClientCore::new(
+        trader_id,
+        client_id,
+        client_config.venue,
+        client_config.oms_type,
+        account_id,
+        client_config.account_type,
+        client_config.base_currency,
+        cache.clone(),
+    );
+    let inner = SandboxExecutionClient::new(core, client_config, clock, cache.clone());
+    let capture = inner.account_capture_probe().unwrap();
+    let stopped = Rc::new(Cell::new(0));
+    let waiting = Python::attach(|py| observer.bind(py).getattr("mark_waiting").unwrap().unbind());
+    engine
+        .borrow_mut()
+        .register_client(ready_hosted_sandbox_client(inner, waiting, stopped.clone()))
+        .unwrap();
+    let (py_node, records) = Python::attach(|py| {
+        let node = pyo3::Py::new(py, PyLiveNode::new(node)).unwrap();
+        let globals = PyDict::new(py);
+        globals.set_item("node", &node).unwrap();
+        globals.set_item("observer", observer.bind(py)).unwrap();
+        let outcome = py.run(
+            c_str!(
+                r#"
+import asyncio
+
+async def exercise():
+    task = asyncio.create_task(node.run_async())
+    async def wait_for_slices():
+        while len(observer.filled) < 3:
+            if observer.errors: raise AssertionError(observer.errors)
+            if task.done():
+                await task
+                raise AssertionError("node stopped before three native TWAP fills")
+            await asyncio.sleep(0)
+    try:
+        await asyncio.wait_for(wait_for_slices(), timeout=3)
+    finally:
+        node.handle().stop()
+        await asyncio.wait_for(task, timeout=3)
+asyncio.run(exercise())
+"#
+            ),
+            Some(&globals),
+            None,
+        );
+        let rows: Vec<(String, String)> = observer
+            .bind(py)
+            .call_method0("records")
+            .unwrap()
+            .extract()
+            .unwrap();
+        if let Err(e) = outcome {
+            e.print(py);
+            eprintln!(
+                "canonical TWAP primary at exit: {:?}",
+                cache.borrow().order_owned(&primary_id)
+            );
+            node.call_method0(py, "dispose").unwrap();
+            observer.bind(py).call_method0("cleanup").unwrap();
+            panic!("hosted TWAP failed after {} fills", rows.len());
+        }
+        (node, rows)
+    });
+    assert_eq!(records.len(), 3);
+    let cache = cache.borrow();
+    let mut times = Vec::new();
+    for (event_id, order_id) in records {
+        let order = cache
+            .order_owned(&ClientOrderId::from(order_id.as_str()))
+            .unwrap();
+        assert_eq!(order.status(), OrderStatus::Filled);
+        assert_eq!(order.filled_qty(), Quantity::from("40.00"));
+        assert_eq!(
+            order
+                .exec_spawn_id()
+                .unwrap_or_else(|| order.client_order_id()),
+            primary_id
+        );
+        let mut fills = order.events().into_iter().filter_map(|event| {
+            if let OrderEventAny::Filled(fill) = event {
+                Some(fill)
+            } else {
+                None
+            }
+        });
+        let fill = fills.next().unwrap();
+        assert!(fills.next().is_none());
+        assert_eq!(event_id, fill.event_id.to_string());
+        times.push(fill.ts_event);
+    }
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(
+        cache
+            .account_owned(&account_id)
+            .unwrap()
+            .balance_total(None)
+            .unwrap(),
+        Money::from("99950.8 USDC")
+    );
+    assert!(stopped.get() >= 1);
+    assert_eq!(
+        capture.capture().unwrap_err(),
+        ExecutionAccountCaptureError::Retired
+    );
+    drop(cache);
+    Python::attach(|py| {
+        py_node.call_method0(py, "dispose").unwrap();
+        observer.bind(py).call_method0("cleanup").unwrap();
+    });
+}
