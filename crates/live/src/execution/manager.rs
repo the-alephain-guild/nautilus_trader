@@ -623,13 +623,48 @@ impl ExecutionManager {
     #[expect(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        reason = "public reconciliation API stays async; live node and test callers await it"
+        reason = "preserve the public async reconciliation API for direct callers"
     )]
     pub async fn reconcile_execution_mass_status(
         &mut self,
         mass_status: ExecutionMassStatus,
         exec_engine: Rc<RefCell<ExecutionEngine>>,
     ) -> ReconciliationResult {
+        self.reconcile_mass_status(&mass_status, &exec_engine, false)
+            .unwrap_or_else(|error| {
+                log::error!("Mass status reconciliation failed: {error:#}");
+                ReconciliationResult::default()
+            })
+    }
+
+    pub(crate) fn reconcile_startup_mass_status(
+        &mut self,
+        mass_status: &ExecutionMassStatus,
+        exec_engine: &RefCell<ExecutionEngine>,
+    ) -> anyhow::Result<ReconciliationResult> {
+        self.reconcile_mass_status(mass_status, exec_engine, true)
+    }
+
+    fn reconcile_mass_status(
+        &mut self,
+        mass_status: &ExecutionMassStatus,
+        exec_engine: &RefCell<ExecutionEngine>,
+        require_native_outcome: bool,
+    ) -> anyhow::Result<ReconciliationResult> {
+        let apply_event = |event: &OrderEventAny, projection: Option<&OrderFilled>| {
+            let mut engine = exec_engine.borrow_mut();
+            if require_native_outcome {
+                return match projection {
+                    Some(fill) => engine.apply_retained_reconciliation_fill(fill),
+                    None => engine.apply_reconciliation_event(event),
+                };
+            }
+            match projection {
+                Some(fill) => engine.project_reconciliation_fill(fill),
+                None => engine.process(event),
+            }
+            Ok(())
+        };
         if exec_engine
             .borrow()
             .get_client(&mass_status.client_id)
@@ -639,10 +674,10 @@ impl ExecutionManager {
                 "Cannot reconcile ExecutionMassStatus from unknown client {}",
                 mass_status.client_id
             );
-            return ReconciliationResult::default();
+            return Ok(ReconciliationResult::default());
         }
 
-        self.validate_mass_status_order_sources(&mass_status);
+        self.validate_mass_status_order_sources(mass_status);
 
         // Publish raw reports before any state mutation (including fill adjustment
         // below, which can synthesize replacement order/fill reports). The
@@ -681,7 +716,7 @@ impl ExecutionManager {
                 "Execution client {} disappeared while publishing raw mass status reports",
                 mass_status.client_id
             );
-            return ReconciliationResult::default();
+            return Ok(ReconciliationResult::default());
         }
 
         let venue = mass_status.venue;
@@ -707,9 +742,9 @@ impl ExecutionManager {
             .map(|fill| (fill.account_id, fill.instrument_id, fill.trade_id))
             .collect();
         let (adjusted_order_reports, adjusted_fill_reports) =
-            self.adjust_mass_status_fills(&mass_status);
+            self.adjust_mass_status_fills(mass_status);
         let order_only_venue_order_ids = self.order_only_venue_order_ids(
-            &mass_status,
+            mass_status,
             &adjusted_order_reports,
             &adjusted_fill_reports,
             &retained_fill_state,
@@ -1156,18 +1191,18 @@ impl ExecutionManager {
         let mut unapplied_fill_position_ids = IndexSet::new();
 
         for event in &events {
-            if let OrderEventAny::Filled(fill) = event
+            let projection = if let OrderEventAny::Filled(fill) = event
                 && Self::should_project_reconciliation_fill(
                     fill,
                     &retained_fill_state,
                     &reported_fill_keys,
                     &order_only_venue_order_ids,
-                )
-            {
-                exec_engine.borrow_mut().project_reconciliation_fill(fill);
+                ) {
+                Some(fill)
             } else {
-                exec_engine.borrow_mut().process(event);
-            }
+                None
+            };
+            let applied = apply_event(event, projection);
 
             if let OrderEventAny::Filled(fill) = event
                 && let Some(fill_key) = fill_queue.event_fill_keys.get(&fill.event_id).copied()
@@ -1183,6 +1218,7 @@ impl ExecutionManager {
                     unapplied_fill_position_ids.insert(venue_position_id);
                 }
             }
+            applied?;
         }
 
         let mut positions_created = 0usize;
@@ -1226,7 +1262,7 @@ impl ExecutionManager {
                         &instruments_with_unattributed_fills,
                     ) {
                         for event in position_events {
-                            exec_engine.borrow_mut().process(&event);
+                            apply_event(&event, None)?;
                             events.push(event);
                         }
 
@@ -1253,10 +1289,10 @@ impl ExecutionManager {
             "Reconciliation complete for {venue}: reconciled={orders_reconciled}, external={external_orders_created}, open={open_orders_initialized}, fills={fills_applied}, positions={positions_created}, skipped={orders_skipped_duplicate}, filtered={orders_skipped_filtered}",
         );
 
-        ReconciliationResult {
+        Ok(ReconciliationResult {
             events,
             external_orders,
-        }
+        })
     }
 
     fn create_orphan_fill_order_report(

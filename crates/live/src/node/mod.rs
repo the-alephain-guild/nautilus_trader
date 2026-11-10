@@ -925,12 +925,9 @@ impl LiveNode {
                         color = LogColor::Blue
                     );
 
-                    let exec_engine_rc = self.kernel.exec_engine.clone();
-
                     let result = self
                         .exec_manager
-                        .reconcile_execution_mass_status(mass_status, exec_engine_rc)
-                        .await;
+                        .reconcile_startup_mass_status(&mass_status, &self.kernel.exec_engine)?;
 
                     anyhow::ensure!(
                         self.kernel

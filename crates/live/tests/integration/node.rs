@@ -2842,6 +2842,137 @@ pub(crate) mod serial_tests {
     }
 
     #[rstest]
+    #[case::normal(false)]
+    #[case::failed_position_write(true)]
+    #[tokio::test]
+    async fn test_startup_reconciliation_respects_position_write_outcome(
+        #[case] fail_position_write: bool,
+    ) {
+        use nautilus_testkit::cache::TestCacheDatabaseControl;
+
+        let source = ClientId::from("STARTUP-POSITION-WRITE");
+        let account = AccountId::from("BLOCKING-REPORT-001");
+        let venue = crypto_perpetual_ethusdt().id().venue;
+        let client_order = ClientOrderId::from("STARTUP-RECON-ORDER");
+        let venue_order = VenueOrderId::from("V-STARTUP-RECON-ORDER");
+        let first = TradeId::from("STARTUP-RECON-FIRST");
+        let second = TradeId::from("STARTUP-RECON-SECOND");
+        let state = StartupMassStatusClientState::default();
+        let mut node = live_node_with_available_mass_status(
+            "StartupReconciliationPositionWriteNode",
+            state.clone(),
+            source,
+            account,
+            venue,
+        );
+        add_reconciliation_test_account(&node);
+        let predecessor = ClientOrderId::from("STARTUP-RECON-PREDECESSOR");
+        add_accepted_test_order(
+            &node,
+            predecessor,
+            VenueOrderId::from("V-STARTUP-RECON-PREDECESSOR"),
+            source,
+        );
+        let seed = streamed_fill(
+            &node,
+            predecessor,
+            TradeId::from("STARTUP-RECON-SEED"),
+            Price::from("100.0"),
+            Money::from("0 USDT"),
+            UnixNanos::from(1_000_000),
+        );
+        node.kernel().exec_engine().borrow_mut().process(&seed);
+        let cache = node.kernel().cache();
+        let position_id = {
+            let cache = cache.borrow();
+            let positions = cache.positions_open(None, None, None, Some(&account), None);
+            assert_eq!(positions.len(), 1);
+            positions[0].id
+        };
+        add_accepted_test_order(&node, client_order, venue_order, source);
+        let mut mass = ExecutionMassStatus::new(source, account, venue, UnixNanos::default(), None);
+        mass.add_order_reports(vec![
+            terminal_order_report(
+                client_order,
+                venue_order,
+                OrderStatus::PartiallyFilled,
+                Quantity::from("2.0"),
+            )
+            .with_venue_position_id(position_id),
+        ]);
+        mass.add_fill_reports(
+            [first, second]
+                .into_iter()
+                .zip([2_000_000_u64, 3_000_000])
+                .map(|(trade, ts)| {
+                    let mut report = reconciliation_fill_report(
+                        client_order,
+                        venue_order,
+                        trade,
+                        Price::from("100.0"),
+                        Money::from("0 USDT"),
+                        UnixNanos::from(ts),
+                    );
+                    report.venue_position_id = Some(position_id);
+                    report
+                })
+                .collect(),
+        );
+        *state.mass_status.lock() = Some(mass);
+
+        let (database, control) = TestCacheDatabaseControl::create();
+        control.set_fail_update_position(fail_position_write);
+        let pending_database = RefCell::new(Some(database));
+        let cache_for_install = cache.clone();
+        let handler = ShareableMessageHandler::from_typed(move |_fill: &FillReport| {
+            if let Some(database) = pending_database.borrow_mut().take() {
+                cache_for_install
+                    .borrow_mut()
+                    .set_database(Box::new(database));
+            }
+        });
+        let raw_pattern: msgbus::MStr<msgbus::Pattern> =
+            MessagingSwitchboard::reconciliation_raw_fill_report_topic().into();
+        msgbus::subscribe_any(raw_pattern, handler.clone(), None);
+        let result = node.start().await;
+        msgbus::unsubscribe_any(raw_pattern, &handler);
+
+        assert!(state.mass_status_requested.load(Ordering::Relaxed));
+        let seen = {
+            let cache = cache.borrow();
+            let order = cache.order(&client_order).unwrap();
+            (
+                order.trade_ids().contains(&&first),
+                order.trade_ids().contains(&&second),
+            )
+        };
+        let startup_state = node.state();
+        if node.is_running() {
+            node.stop().await.unwrap();
+        }
+        node.dispose();
+
+        if fail_position_write {
+            let error =
+                result.expect_err("position write failure must abort startup reconciliation");
+            assert!(
+                format!("{error:#}").contains("test position update failure"),
+                "{error:#}"
+            );
+            assert_eq!(startup_state, NodeState::Stopped);
+            assert_eq!(
+                seen,
+                (true, false),
+                "failed persistence stops the next fill"
+            );
+        } else {
+            result.unwrap();
+            assert_eq!(startup_state, NodeState::Running);
+            assert_eq!(seen, (true, true));
+        }
+    }
+
+    #[rstest]
     #[tokio::test]
     async fn test_strategy_start_failure_stops_partial_start_and_disposes_resources() {
         let config = LiveNodeConfig {

@@ -1062,6 +1062,35 @@ impl ExecutionEngine {
         outcome
     }
 
+    /// Applies one prepared reconciliation event with its native failure outcome.
+    ///
+    /// # Errors
+    /// Returns the first failed native stage, including failures after the canonical
+    /// order has already changed.
+    pub fn apply_reconciliation_event(&mut self, event: &OrderEventAny) -> anyhow::Result<()> {
+        if let NativeEventDisposition::Skipped(reason) =
+            self.handle_event_outcome(event, true).into_result()?
+        {
+            log::debug!("Expected native report no-op: {reason:?}");
+        }
+        Ok(())
+    }
+
+    /// Projects a retained reconciliation fill without applying its economics again.
+    ///
+    /// # Errors
+    /// Returns an error when the retained fill evidence no longer matches or native
+    /// projection fails.
+    pub fn apply_retained_reconciliation_fill(&mut self, fill: &OrderFilled) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.retained_fill_evidence(fill)?,
+            "Retained fill evidence disappeared before projection"
+        );
+        self.handle_event_outcome(&OrderEventAny::Filled(fill.clone()), false)
+            .into_result()?;
+        Ok(())
+    }
+
     fn apply_report_step(&mut self, step: PreparedReportNative) -> Result<(), ReportApplyFailure> {
         match step {
             PreparedReportNative::Count(mass) => {
@@ -1129,23 +1158,11 @@ impl ExecutionEngine {
                     .ok_or_else(|| anyhow::anyhow!("External order materialization failed"))?;
             }
             PreparedReportNative::Process(event) => {
-                if let NativeEventDisposition::Skipped(reason) = self
-                    .handle_event_outcome(&event, true)
-                    .into_result()
-                    .map_err(ReportApplyFailure::continue_event)?
-                {
-                    log::debug!("Expected native report no-op: {reason:?}");
-                }
+                self.apply_reconciliation_event(&event)
+                    .map_err(ReportApplyFailure::continue_event)?;
             }
             PreparedReportNative::ProjectRetainedFill(fill) => {
-                if !self.retained_fill_evidence(&fill)? {
-                    return Err(anyhow::anyhow!(
-                        "Retained fill evidence disappeared before projection"
-                    )
-                    .into());
-                }
-                self.handle_event_outcome(&OrderEventAny::Filled(fill), false)
-                    .into_result()?;
+                self.apply_retained_reconciliation_fill(&fill)?;
             }
             PreparedReportNative::FilterExternal {
                 kind,
